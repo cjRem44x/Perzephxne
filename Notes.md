@@ -1,35 +1,25 @@
 # Notes
 
+There the is only one Type, T. Which is determined at compile time the reps need in asm.
+
 ```
-ls Foos: Foo # define a List
+import other_file_module
 
-enum X :
-| ONE | TWO | THREE
+dat Foo {x, y, z} # handled as a struct
 
-# mapping to specific vals
-enum Y: | ONE=3.145 | TWO="lol"
+enum ENUM {ONE, TWO, THREE}
 
-dat Foo:
-| x | y | z
+enum Mapped {ONE=3.145, TWO="Lol"}
 
-lbl:
-| ...
+myEnum = ENUM.ONE
 
-proc Foo(x, y, z) -> value:
-| ...
+foo = Foo
+foo.x = ...
 
-# driver
-START:
-| pf "Hello"
+foo2 = Foo {x=0, y="LOL", z=-3.45}
 
-| go lbl
-
-| f = Foo
-| f.x = ...
-| f2 = Foo: x=0, y="word", z=11 # init vals
-| foos = Foos | foos.add(f) | foos.add(f2)
-
-| x = foo(...)
-
-| var = X.ONE
+# THIS COMPILES TO A SMART PTR,
+# where the pointer it tracked and freed automatically.
+*p = alo(Foo) # allocate mem to heap
+p.* = Foo {...}
 ```
