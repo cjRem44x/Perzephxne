@@ -294,3 +294,34 @@ Pass as params,
 ```
 fn foo(rfp: *type, smrtp: ^type)
 ```
+
+
+## Module System
+
+NO HEADERS, we use modules.
+
+```
+# big import block
+import(
+    alias = "path/to/file",
+    lib = ...,
+)
+
+fn main() {
+    ...
+}
+```
+
+## Std/Libs API Naming
+
+I prefer lowcaps underscores with camelcased type names.
+
+`func_foo_bar()`
+
+And I like the name minimal and not long.
+
+`myType`
+
+Combined
+
+`get_myType()`
