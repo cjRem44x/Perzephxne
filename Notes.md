@@ -1,25 +1,31 @@
 # Notes
 
-There the is only one Type, T. Which is determined at compile time the reps need in asm.
+A programming language influenced the by the modern schemes of things. No GC baggage, no OOP principles, just pure C flavored programming.
 
+Source compiles into LLVM IR (llvm backend) as it represents a more flexible format then hardware assembly.
+
+## Compiling
+
+Using the Perzephxne build structure.
+`przp init`
+`przp build`
+`przp run`
+
+Producing the structure.
 ```
-import other_file_module
-
-dat Foo {x, y, z} # handled as a struct
-
-enum ENUM {ONE, TWO, THREE}
-
-enum Mapped {ONE=3.145, TWO="Lol"}
-
-myEnum = ENUM.ONE
-
-foo = Foo
-foo.x = ...
-
-foo2 = Foo {x=0, y="LOL", z=-3.45}
-
-# THIS COMPILES TO A SMART PTR,
-# where the pointer it tracked and freed automatically.
-*p = alo(Foo) # allocate mem to heap
-p.* = Foo {...}
+/project
+    .git # fresh git repo
+    /bin
+        # compiled binaries
+    /src
+        /main
+            /przp # source code
+                main.przp
+    przp.toml     # manage project deps
+    .gitignore    # default for przp project
 ```
+
+Down the road, like cargo, I would like simple `przp add <pkg>` to link deps.
+
+Using Stand-Alone-Compiler.
+`przp sac <files> -o=Name`
