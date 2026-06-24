@@ -198,6 +198,11 @@ for 0..N # or 0..=N {} # basic counting loop
 struct Foo {
     x: i32, y: str, z: f64
 }
+
+foo: Foo = Foo
+foo.x = ...
+
+foo2: Foo = Foo{.x=12, ...} # one field or all
 ```
 
 ## Implements
@@ -213,4 +218,79 @@ impl Foo {
     }
 }
 ```
+
+## Type Alias
+`type T = ...`
+
+Such as `type int = i32`
+
+## Enums
+
+```
+enum X {
+    ONE, TWO, THREE
+}
+
+x: X = X.ONE
+
+enum Y => i32 {
+    ONE=13, TWO=456,
+}
+y: Y = Y.ONE
+```
+
+## Unions
+```
+unn X {
+    a: i32, b: f32, ...
+}
+
+x: X = X{.a=11}
+x.a = ...
+```
+
+Tagged unions
+```
+unn Y => enum {
+    a: i32, b: str, c: MyStruct
+}
+
+y: Y = Y{.b="john"}
+
+when y {
+    .a => ...,
+    .b => ...,
+    .c => ...,
+    - => ...
+}
+```
+
+## Pointers
+
+Perzephxne offers both Raw-Fat Pointers ans Smart Pointers. Where raw pointers also store there size to prevent indexing issues. And smart pointers track themselves and don't require to be freed.
+
+```
+x: i32 = 12
+p_x: *i32 = &x # raw pointer to the stack
+
+# how manual mem alloc works
+heap_var: *type = @alo(T) # compiler determines size in usize
+@free(heap_var)
+
+size: usize = @size(heap_var) # we can do it but compiler does it internally with alo
+
+# to acces the value
+heap_var.* = ... # just like Zig
+```
+
+Then we have smart pointers reps with `^`
+```
+smrt_ptr: ^i32 = @alo(i32)
+smrt_ptr.^ = 100
+# no free, it handles itself
+```
+
+Pass as params,
+```
+fn foo(rfp: *type, smrtp: ^type)
 ```
