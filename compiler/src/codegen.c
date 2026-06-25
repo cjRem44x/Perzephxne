@@ -44,10 +44,16 @@ typedef struct DeferEntry {
     StmtList           stmts;
 } DeferEntry;
 
+typedef struct RCDrop {
+    struct RCDrop *next;
+    const char    *alloca; /* llvm name ("%tN") of the alloca holding the ^T ptr */
+} RCDrop;
+
 typedef struct Scope {
     struct Scope  *parent;
     Symbol        *syms;
     DeferEntry    *defers;      /* LIFO — head = most recently deferred */
+    RCDrop        *rc_drops;    /* ^T locals to decrement at scope exit */
     int            is_loop;     /* 1 if this scope is the body of a loop */
     int            break_label; /* label to branch to on break */
     int            cont_label;  /* label to branch to on continue */
@@ -63,8 +69,9 @@ typedef struct {
     int          tmp_id;      /* next %t<n> temporary */
     int          label_id;    /* next label suffix     */
     Scope       *scope;
-    const char  *cur_fn_ret; /* LLVM type string of current function return */
-    int          terminated;  /* 1 = current block already has a terminator */
+    const char  *cur_fn_ret;   /* LLVM type string of current function return */
+    const char  *skip_rc_drop; /* alloca to skip in RC drops (being moved out by ret) */
+    int          terminated;   /* 1 = current block already has a terminator */
     int          had_error;
 } CG;
 
@@ -118,8 +125,50 @@ static void push_loop_scope(CG *cg, int break_l, int cont_l) {
 /* emit deferred stmts for one scope in LIFO order, then clear the list */
 static void emit_defers_for_scope(CG *cg, Scope *sc);
 
+/* Decrement RC of a ^T local (alloca holds ptr to RC block).
+   Emits: load ptr, load rc, dec, store, cmp zero, conditional free. */
+static void emit_rc_dec(CG *cg, const char *alloca_name) {
+    if (cg->terminated) return;
+    int sp   = new_tmp(cg);
+    int rc   = new_tmp(cg);
+    int dec  = new_tmp(cg);
+    int zero = new_tmp(cg);
+    int free_l = new_label(cg);
+    int done_l = new_label(cg);
+    emit(cg, "  %%t%d = load ptr, ptr %s\n", sp, alloca_name);
+    emit(cg, "  %%t%d = load i64, ptr %%t%d\n", rc, sp);
+    emit(cg, "  %%t%d = sub i64 %%t%d, 1\n", dec, rc);
+    emit(cg, "  store i64 %%t%d, ptr %%t%d\n", dec, sp);
+    emit(cg, "  %%t%d = icmp eq i64 %%t%d, 0\n", zero, dec);
+    emit_br(cg, "  br i1 %%t%d, label %%l%d, label %%l%d\n", zero, free_l, done_l);
+    emit_label(cg, free_l);
+    emit(cg, "  call void @free(ptr %%t%d)\n", sp);
+    emit_br(cg, "  br label %%l%d\n", done_l);
+    emit_label(cg, done_l);
+}
+
+static void emit_rc_inc(CG *cg, const char *smart_ptr_buf); /* defined after Val */
+
+/* Emit RC decrements for all ^T locals in a scope (defers ran first).
+   Skips cg->skip_rc_drop if set (for move-on-return). */
+static void emit_rc_drops_for_scope(CG *cg, Scope *sc) {
+    for (RCDrop *d = sc->rc_drops; d; d = d->next) {
+        if (cg->skip_rc_drop && !strcmp(d->alloca, cg->skip_rc_drop)) continue;
+        emit_rc_dec(cg, d->alloca);
+    }
+}
+
+/* Register a ^T alloca for auto-drop at scope exit. */
+static void register_rc_drop(CG *cg, const char *alloca_name) {
+    RCDrop *d = ARENA_NEW(cg->arena, RCDrop);
+    d->alloca = alloca_name;
+    d->next   = cg->scope->rc_drops;
+    cg->scope->rc_drops = d;
+}
+
 static void pop_scope(CG *cg) {
     emit_defers_for_scope(cg, cg->scope);
+    emit_rc_drops_for_scope(cg, cg->scope);
     cg->scope = cg->scope->parent;
 }
 
@@ -277,6 +326,15 @@ typedef struct { char buf[64]; } Val;
 
 static Val val_tmp(int id)  { Val v; snprintf(v.buf, sizeof(v.buf), "%%t%d", id); return v; }
 static Val val_str(const char *s) { Val v; snprintf(v.buf, sizeof(v.buf), "%s", s); return v; }
+
+/* Increment RC given the smart ptr value buf (e.g. "%t5"). */
+static void emit_rc_inc(CG *cg, const char *smart_ptr_buf) {
+    int rc  = new_tmp(cg);
+    int rc1 = new_tmp(cg);
+    emit(cg, "  %%t%d = load i64, ptr %s\n", rc, smart_ptr_buf);
+    emit(cg, "  %%t%d = add i64 %%t%d, 1\n", rc1, rc);
+    emit(cg, "  store i64 %%t%d, ptr %s\n", rc1, smart_ptr_buf);
+}
 
 /* forward declarations */
 static Val cg_expr(CG *cg, Expr *e, Type **out_ty);
@@ -506,6 +564,41 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                 int res = new_tmp(cg);
                 emit(cg, "  %%t%d = load { ptr, i64 }, ptr %%t%d\n", res, sl);
                 return val_tmp(res);
+            }
+
+            /* @new(val: T) → allocate RC block { i64 rc, T data }, RC=1, return ^T ptr */
+            if (!strcmp(name, "new") && e->builtin.args.len >= 1) {
+                Type *vty = NULL;
+                Val val = cg_expr(cg, e->builtin.args.data[0], &vty);
+                const char *inner_llt = vty ? llvm_type(vty) : "i32";
+                /* malloc(8 + sizeof(T)) using GEP-from-null sizeof trick */
+                int sz  = new_tmp(cg);
+                int blk = new_tmp(cg);
+                int dp  = new_tmp(cg);
+                emit(cg, "  %%t%d = add i64 8, ptrtoint (ptr getelementptr (%s, ptr null, i32 1) to i64)\n",
+                     sz, inner_llt);
+                emit(cg, "  %%t%d = call ptr @malloc(i64 %%t%d)\n", blk, sz);
+                emit(cg, "  store i64 1, ptr %%t%d\n", blk);  /* RC = 1 */
+                emit(cg, "  %%t%d = getelementptr i8, ptr %%t%d, i64 8\n", dp, blk);
+                /* for struct inner types: val is a ptr to the struct — copy it */
+                if (vty && vty->kind == TY_NAMED && find_struct(cg, vty->named.name)) {
+                    int loaded = new_tmp(cg);
+                    emit(cg, "  %%t%d = load %s, ptr %s\n", loaded, inner_llt, val.buf);
+                    emit(cg, "  store %s %%t%d, ptr %%t%d\n", inner_llt, loaded, dp);
+                } else {
+                    emit(cg, "  store %s %s, ptr %%t%d\n", inner_llt, val.buf, dp);
+                }
+                if (out_ty) *out_ty = e->ty;
+                return val_tmp(blk);
+            }
+
+            /* @clone(ptr: ^T) → increment RC, return same ptr */
+            if (!strcmp(name, "clone") && e->builtin.args.len >= 1) {
+                Type *pty = NULL;
+                Val ptr = cg_expr(cg, e->builtin.args.data[0], &pty);
+                emit_rc_inc(cg, ptr.buf);
+                if (out_ty) *out_ty = pty;
+                return ptr;
             }
 
             /* @alo */
@@ -832,10 +925,20 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
 
         case EXPR_SMARTDEREF: {
             Type *pt = NULL;
-            Val ptr = cg_expr(cg, e->deref.operand, &pt);
+            Val block = cg_expr(cg, e->deref.operand, &pt);
+            Type *inner_ty = (pt && pt->ptr.inner) ? pt->ptr.inner : NULL;
+            /* data starts at byte offset 8 (after the i64 refcount) */
+            int dp = new_tmp(cg);
+            emit(cg, "  %%t%d = getelementptr i8, ptr %s, i64 8\n", dp, block.buf);
+            if (out_ty) *out_ty = inner_ty;
+            /* for struct inner types return the data ptr (struct value = ptr convention) */
+            if (inner_ty && inner_ty->kind == TY_NAMED
+                    && find_struct(cg, inner_ty->named.name))
+                return val_tmp(dp);
+            /* for scalars load the value */
             int t = new_tmp(cg);
-            const char *inner = (pt && pt->ptr.inner) ? llvm_type(pt->ptr.inner) : "i32";
-            emit(cg, "  %%t%d = load %s, ptr %s\n", t, inner, ptr.buf);
+            const char *llt = inner_ty ? llvm_type(inner_ty) : "i32";
+            emit(cg, "  %%t%d = load %s, ptr %%t%d\n", t, llt, dp);
             return val_tmp(t);
         }
 
@@ -986,6 +1089,11 @@ static void cg_stmt(CG *cg, Stmt *s) {
                 Val init = cg_expr(cg, s->let.init, &init_ty);
                 int is_struct = init_ty && init_ty->kind == TY_NAMED
                                 && !find_enum(cg, init_ty->named.name);
+                /* ^T copy: auto-increment RC when source is an identifier
+                   (EXPR_CALL and builtins @new/@clone manage RC themselves) */
+                int is_rc_copy = init_ty && init_ty->kind == TY_SMART_PTR
+                                 && s->let.init->kind == EXPR_IDENT;
+                if (is_rc_copy) emit_rc_inc(cg, init.buf);
                 if (is_struct) {
                     /* struct init returns a ptr — copy via load+store */
                     int loaded = new_tmp(cg);
@@ -1002,9 +1110,12 @@ static void cg_stmt(CG *cg, Stmt *s) {
             /* register symbol — store the alloca name */
             char llvm_name[32];
             snprintf(llvm_name, sizeof(llvm_name), "%%t%d", alloca);
-            define_sym(cg, s->let.name,
-                       arena_strdup(cg->arena, llvm_name), 0,
-                       s->let.ty);
+            const char *sym_llvm = arena_strdup(cg->arena, llvm_name);
+            define_sym(cg, s->let.name, sym_llvm, 0, s->let.ty);
+
+            /* ^T local: register for auto-drop at scope exit */
+            if (s->let.ty && s->let.ty->kind == TY_SMART_PTR)
+                register_rc_drop(cg, sym_llvm);
             break;
         }
 
@@ -1113,6 +1224,17 @@ static void cg_stmt(CG *cg, Stmt *s) {
                 Val rhs = cg_expr(cg, s->assign.val, &vty);
                 const char *llt = vty ? llvm_type(vty) : "i32";
                 emit(cg, "  store %s %s, ptr %s\n", llt, rhs.buf, ptr.buf);
+            } else if (s->assign.target->kind == EXPR_SMARTDEREF) {
+                /* p.^ = val : store into data portion of the RC block */
+                Type *pt = NULL;
+                Val block = cg_expr(cg, s->assign.target->deref.operand, &pt);
+                Type *inner_ty = pt ? pt->ptr.inner : NULL;
+                int dp = new_tmp(cg);
+                emit(cg, "  %%t%d = getelementptr i8, ptr %s, i64 8\n", dp, block.buf);
+                Type *vty = NULL;
+                Val rhs = cg_expr(cg, s->assign.val, &vty);
+                const char *llt = (vty ? vty : inner_ty) ? llvm_type(vty ? vty : inner_ty) : "i32";
+                emit(cg, "  store %s %s, ptr %%t%d\n", llt, rhs.buf, dp);
             } else {
                 /* generic lvalue — emit rhs at least */
                 cg_expr(cg, s->assign.val, NULL);
@@ -1129,10 +1251,20 @@ static void cg_stmt(CG *cg, Stmt *s) {
                 Type *rt = NULL;
                 rv = cg_expr(cg, s->ret.val, &rt);
                 if (rt) llt = llvm_type(rt);
+                /* if returning a ^T identifier, exempt it from scope RC drops
+                   (ownership is transferred to caller; RC stays at current value) */
+                if (rt && rt->kind == TY_SMART_PTR
+                        && s->ret.val->kind == EXPR_IDENT) {
+                    Symbol *sym = lookup(cg, s->ret.val->ident.name);
+                    if (sym) cg->skip_rc_drop = sym->llvm_name;
+                }
             }
-            /* flush all scopes' defers in LIFO order before the ret */
-            for (Scope *sc = cg->scope; sc; sc = sc->parent)
+            /* flush all scopes: defers first, then RC drops */
+            for (Scope *sc = cg->scope; sc; sc = sc->parent) {
                 emit_defers_for_scope(cg, sc);
+                emit_rc_drops_for_scope(cg, sc);
+            }
+            cg->skip_rc_drop = NULL;
             if (has_val)
                 emit_br(cg, "  ret %s %s\n", llt, rv.buf);
             else
@@ -1398,10 +1530,10 @@ static void cg_stmt(CG *cg, Stmt *s) {
         }
 
         case STMT_BREAK: {
-            /* flush defers from current scope out through (and including) the loop scope */
             Scope *loop_sc = NULL;
             for (Scope *sc = cg->scope; sc; sc = sc->parent) {
                 emit_defers_for_scope(cg, sc);
+                emit_rc_drops_for_scope(cg, sc);
                 if (sc->is_loop) { loop_sc = sc; break; }
             }
             if (loop_sc)
@@ -1410,10 +1542,10 @@ static void cg_stmt(CG *cg, Stmt *s) {
         }
 
         case STMT_CONTINUE: {
-            /* flush defers from current scope out through (and including) the loop scope */
             Scope *loop_sc = NULL;
             for (Scope *sc = cg->scope; sc; sc = sc->parent) {
                 emit_defers_for_scope(cg, sc);
+                emit_rc_drops_for_scope(cg, sc);
                 if (sc->is_loop) { loop_sc = sc; break; }
             }
             if (loop_sc)
@@ -1463,7 +1595,15 @@ static void cg_fn(CG *cg, Item *item) {
         emit(cg, "  store %s %%%s, ptr %%t%d\n", llt, par->name, alloca);
         char llvm_name[32];
         snprintf(llvm_name, sizeof(llvm_name), "%%t%d", alloca);
-        define_sym(cg, par->name, arena_strdup(cg->arena, llvm_name), 0, par->ty);
+        const char *sym_llvm = arena_strdup(cg->arena, llvm_name);
+        define_sym(cg, par->name, sym_llvm, 0, par->ty);
+        /* ^T param: increment RC at entry (caller retains its ref), auto-drop at exit */
+        if (par->ty && par->ty->kind == TY_SMART_PTR) {
+            char param_llvm[128];
+            snprintf(param_llvm, sizeof(param_llvm), "%%%s", par->name);
+            emit_rc_inc(cg, param_llvm);
+            register_rc_drop(cg, sym_llvm);
+        }
     }
 
     cg->terminated = 0;

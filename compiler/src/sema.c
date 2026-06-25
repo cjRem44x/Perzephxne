@@ -312,9 +312,16 @@ static Type *check_expr(Sema *s, Expr *e) {
             for (size_t i = 0; i < e->builtin.args.len; i++)
                 check_expr(s, e->builtin.args.data[i]);
             Type *ret = builtin_ret_ty(s, e->builtin.name);
-            /* for min/max/abs: inherit first arg type */
-            if (!ret && e->builtin.args.len > 0)
+            if (!strcmp(e->builtin.name, "new") && e->builtin.args.len > 0) {
+                /* @new(val: T) → ^T */
+                ret = make_ptr(s, TY_SMART_PTR, e->builtin.args.data[0]->ty);
+            } else if (!strcmp(e->builtin.name, "clone") && e->builtin.args.len > 0) {
+                /* @clone(ptr: ^T) → ^T */
                 ret = e->builtin.args.data[0]->ty;
+            } else if (!ret && e->builtin.args.len > 0) {
+                /* for min/max/abs: inherit first arg type */
+                ret = e->builtin.args.data[0]->ty;
+            }
             e->ty = ret;
             break;
         }
