@@ -200,11 +200,12 @@ static Expr *mkexpr(Parser *p, ExprKind k, Span span) {
 static void infix_bp(TokenKind k, int *lbp, int *rbp) {
     *lbp = 0; *rbp = 0;
     switch (k) {
+        /* assign ops: lbp=0 so the Pratt loop exits and parse_stmt handles them */
         case TOK_EQ: case TOK_PLUSEQ: case TOK_MINUSEQ:
         case TOK_STAREQ: case TOK_SLASHEQ: case TOK_PERCENTEQ:
         case TOK_AMPEQ: case TOK_PIPEEQ: case TOK_CARETEQ:
         case TOK_SHLEQ: case TOK_SHREQ:
-            *lbp = 2; *rbp = 1; return;   /* right-assoc */
+            *lbp = 0; *rbp = 0; return;
         case TOK_OR:     *lbp = 4;  *rbp = 5;  return;
         case TOK_AND:    *lbp = 6;  *rbp = 7;  return;
         case TOK_PIPE:   *lbp = 8;  *rbp = 9;  return;
@@ -594,32 +595,7 @@ static Expr *parse_expr_bp(Parser *p, int min_bp) {
         advance(p);
         (void)op_span;
 
-        if (is_assign_op(op)) {
-            Expr *rhs = parse_expr_bp(p, rbp);
-            Stmt *s = ARENA_NEW(p->arena, Stmt);
-            s->kind          = STMT_ASSIGN;
-            s->span          = span_merge(lhs->span, rhs->span);
-            s->assign.target = lhs;
-            s->assign.op     = tok_to_assignop(op);
-            s->assign.val    = rhs;
-            /* wrap assign as an expr — caller handles */
-            /* we can't return a Stmt here; treat assignment as expr by making
-               a synthetic lhs that carries the statement.  Instead, bail out
-               and let the statement parser handle assignments.  */
-            /* Actually for expression contexts we just build a binop-like node.
-               We never emit assignment-as-expression to codegen anyway. */
-            (void)s;
-            /* The statement parser intercepts assignment before calling parse_expr
-               by peeking at the next token, so this path shouldn't be reached
-               in practice from parse_stmt.  Leave it as-is for now. */
-            Expr *rhs2 = rhs;
-            Expr *e = mkexpr(p, EXPR_BINOP, span_merge(lhs->span, rhs2->span));
-            e->binop.l  = lhs;
-            e->binop.op = BINOP_ADD; /* placeholder */
-            e->binop.r  = rhs2;
-            return e;
-        }
-
+        /* assign ops have lbp=0 and never reach here; only binary ops do */
         Expr *rhs = parse_expr_bp(p, rbp);
         Expr *e   = mkexpr(p, EXPR_BINOP, span_merge(lhs->span, rhs->span));
         e->binop.l  = lhs;

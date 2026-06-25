@@ -173,7 +173,10 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
             return v;
         }
         case EXPR_FLOAT: {
-            Val v; snprintf(v.buf, sizeof(v.buf), "%a", e->fval);
+            /* LLVM IR requires IEEE 754 hex: 0x followed by 16 uppercase hex digits */
+            union { double d; uint64_t u; } bits;
+            bits.d = e->fval;
+            Val v; snprintf(v.buf, sizeof(v.buf), "0x%016" PRIX64, bits.u);
             return v;
         }
         case EXPR_BOOL: {
@@ -232,20 +235,24 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                 if (e->builtin.args.len == 0)
                     fatal_at(e->span, "@pf requires at least a format string");
 
-                Expr *fmt_expr = e->builtin.args.data[0];
-                Val fmt_val = cg_expr(cg, fmt_expr, NULL);
-
-                /* gather extra args */
+                /* evaluate all args before emitting the call */
+                size_t na = e->builtin.args.len;
+                Val   *pf_vals = malloc(sizeof(Val)   * na);
+                Type **pf_tys  = malloc(sizeof(Type*) * na);
+                for (size_t i = 0; i < na; i++) {
+                    pf_tys[i]  = NULL;
+                    pf_vals[i] = cg_expr(cg, e->builtin.args.data[i], &pf_tys[i]);
+                }
                 int t = new_tmp(cg);
                 emit(cg, "  %%t%d = call i32 (ptr, ...) @printf(ptr %s",
-                     t, fmt_val.buf);
-                for (size_t i = 1; i < e->builtin.args.len; i++) {
-                    Type *argt = NULL;
-                    Val av = cg_expr(cg, e->builtin.args.data[i], &argt);
-                    const char *llt = argt ? llvm_type(argt) : "i32";
-                    emit(cg, ", %s %s", llt, av.buf);
+                     t, pf_vals[0].buf);
+                for (size_t i = 1; i < na; i++) {
+                    const char *llt = pf_tys[i] ? llvm_type(pf_tys[i]) : "i32";
+                    emit(cg, ", %s %s", llt, pf_vals[i].buf);
                 }
                 emit(cg, ")\n");
+                free(pf_vals);
+                free(pf_tys);
                 return val_tmp(t);
             }
 
@@ -451,21 +458,47 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
         }
 
         case EXPR_CALL: {
+            /* Resolve callee: for a direct ident, use @name; for indirect, cg_expr */
+            char fn_name_buf[128];
+            const char *fn_name;
             Type *callee_ty = NULL;
-            Val callee = cg_expr(cg, e->call.callee, &callee_ty);
-            int t = new_tmp(cg);
+            const char *ret_llt = "i32";
 
-            /* Simple case: direct named call */
-            const char *fn_name = callee.buf;
-            emit(cg, "  %%t%d = call i32 %s(", t, fn_name);
-            for (size_t i = 0; i < e->call.args.len; i++) {
-                Type *at = NULL;
-                Val av = cg_expr(cg, e->call.args.data[i], &at);
-                const char *llt = at ? llvm_type(at) : "i32";
+            if (e->call.callee->kind == EXPR_IDENT) {
+                snprintf(fn_name_buf, sizeof(fn_name_buf), "@%s",
+                         e->call.callee->ident.name);
+                fn_name = fn_name_buf;
+                /* look up return type from sema-annotated callee expression */
+                callee_ty = e->call.callee->ty;
+            } else {
+                Val cv = cg_expr(cg, e->call.callee, &callee_ty);
+                fn_name = cv.buf;
+            }
+
+            if (callee_ty && callee_ty->kind == TY_FN && callee_ty->fn.ret)
+                ret_llt = llvm_type(callee_ty->fn.ret);
+            else if (callee_ty)
+                ret_llt = llvm_type(callee_ty);
+
+            /* evaluate all args before emitting the call instruction */
+            size_t nargs = e->call.args.len;
+            Val   *arg_vals = nargs ? malloc(sizeof(Val) * nargs) : NULL;
+            Type **arg_tys  = nargs ? malloc(sizeof(Type*) * nargs) : NULL;
+            for (size_t i = 0; i < nargs; i++) {
+                arg_tys[i] = NULL;
+                arg_vals[i] = cg_expr(cg, e->call.args.data[i], &arg_tys[i]);
+            }
+
+            int t = new_tmp(cg);
+            emit(cg, "  %%t%d = call %s %s(", t, ret_llt, fn_name);
+            for (size_t i = 0; i < nargs; i++) {
+                const char *llt = arg_tys[i] ? llvm_type(arg_tys[i]) : "i32";
                 if (i) emit(cg, ", ");
-                emit(cg, "%s %s", llt, av.buf);
+                emit(cg, "%s %s", llt, arg_vals[i].buf);
             }
             emit(cg, ")\n");
+            free(arg_vals);
+            free(arg_tys);
             return val_tmp(t);
         }
 
