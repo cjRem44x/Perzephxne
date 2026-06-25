@@ -645,6 +645,8 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
             Val l = cg_expr(cg, e->binop.l, &lt);
             Val r = cg_expr(cg, e->binop.r, &rt);
             Type *ty = lt ? lt : rt;
+            /* use sema type for out_ty — comparisons return bool, not operand type */
+            if (out_ty) *out_ty = e->ty ? e->ty : ty;
             const char *llt = ty ? llvm_type(ty) : "i32";
             int t = new_tmp(cg);
             int is_flt = type_is_float(ty);

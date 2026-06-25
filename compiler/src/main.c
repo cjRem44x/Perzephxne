@@ -27,6 +27,357 @@ static char *read_file(const char *path) {
     return buf;
 }
 
+/* ── Module system ─────────────────────────────────────────────────────────── */
+
+static void src_dir_of(const char *path, char *out, size_t outsz) {
+    const char *slash = strrchr(path, '/');
+    if (slash && slash > path) {
+        size_t n = (size_t)(slash - path);
+        if (n >= outsz) n = outsz - 1;
+        memcpy(out, path, n);
+        out[n] = '\0';
+    } else {
+        snprintf(out, outsz, ".");
+    }
+}
+
+/* Rewrite TY_NAMED references that match any of orig_names → alias__name */
+static void rw_type(Type *ty, const char **orig, size_t n, const char *alias, Arena *a) {
+    if (!ty) return;
+    switch (ty->kind) {
+        case TY_NAMED:
+            for (size_t i = 0; i < n; i++) {
+                if (!strcmp(ty->named.name, orig[i])) {
+                    char *buf = arena_alloc(a, strlen(alias) + 2 + strlen(orig[i]) + 1);
+                    sprintf(buf, "%s__%s", alias, orig[i]);
+                    ty->named.name = buf;
+                    break;
+                }
+            }
+            break;
+        case TY_PTR: case TY_SLICE:
+            rw_type(ty->ptr.inner, orig, n, alias, a);
+            break;
+        case TY_FN:
+            for (size_t i = 0; i < ty->fn.params.len; i++)
+                rw_type(ty->fn.params.data[i], orig, n, alias, a);
+            rw_type(ty->fn.ret, orig, n, alias, a);
+            break;
+        default: break;
+    }
+}
+
+static void rw_types_in_stmts(StmtList sl, const char **orig, size_t n, const char *alias, Arena *a);
+
+static void rw_types_in_stmts(StmtList sl, const char **orig, size_t n, const char *alias, Arena *a) {
+    for (size_t i = 0; i < sl.len; i++) {
+        Stmt *s = sl.data[i];
+        if (!s) continue;
+        if (s->kind == STMT_LET) rw_type(s->let.ty, orig, n, alias, a);
+        /* recurse into nested stmts */
+        if (s->kind == STMT_IF) {
+            for (size_t j = 0; j < s->if_.branches.len; j++)
+                rw_types_in_stmts(s->if_.branches.data[j].body, orig, n, alias, a);
+            rw_types_in_stmts(s->if_.else_body, orig, n, alias, a);
+        } else if (s->kind == STMT_WHILE) {
+            rw_types_in_stmts(s->while_.body, orig, n, alias, a);
+        } else if (s->kind == STMT_FOR) {
+            rw_types_in_stmts(s->for_.body, orig, n, alias, a);
+        } else if (s->kind == STMT_WHEN) {
+            for (size_t j = 0; j < s->when.arms.len; j++) {
+                Stmt *body = s->when.arms.data[j].body;
+                if (body) rw_types_in_stmts((StmtList){.data=&body,.len=1}, orig, n, alias, a);
+            }
+        } else if (s->kind == STMT_BLOCK) {
+            rw_types_in_stmts(s->block, orig, n, alias, a);
+        }
+    }
+}
+
+/* Prefix all item names in mod with "alias__", and rewrite type references */
+static void mangle_items(Module *mod, const char *alias, Arena *arena) {
+    /* collect original names before mangling (for type rewriting) */
+    const char *orig[256];
+    size_t n_orig = 0;
+    for (size_t i = 0; i < mod->items.len && n_orig < 256; i++) {
+        Item *item = mod->items.data[i];
+        if (item->name) orig[n_orig++] = item->name;
+    }
+
+    char buf[512];
+    for (size_t i = 0; i < mod->items.len; i++) {
+        Item *item = mod->items.data[i];
+        if (!item->name) continue;
+        snprintf(buf, sizeof(buf), "%s__%s", alias, item->name);
+        item->name = arena_strdup(arena, buf);
+        /* For impl blocks, also mangle the target type name */
+        if (item->kind == ITEM_IMPL) {
+            snprintf(buf, sizeof(buf), "%s__%s", alias, item->impl.ty_name);
+            item->impl.ty_name = arena_strdup(arena, buf);
+        }
+    }
+
+    /* rewrite all TY_NAMED type annotations within the module */
+    for (size_t i = 0; i < mod->items.len; i++) {
+        Item *item = mod->items.data[i];
+        if (item->kind == ITEM_FN || item->kind == ITEM_EXTERN_FN) {
+            for (size_t j = 0; j < item->fn.params.len; j++)
+                rw_type(item->fn.params.data[j].ty, orig, n_orig, alias, arena);
+            rw_type(item->fn.ret, orig, n_orig, alias, arena);
+            rw_types_in_stmts(item->fn.body, orig, n_orig, alias, arena);
+        } else if (item->kind == ITEM_STRUCT) {
+            for (size_t j = 0; j < item->struct_.fields.len; j++)
+                rw_type(item->struct_.fields.data[j].ty, orig, n_orig, alias, arena);
+        } else if (item->kind == ITEM_GLOBAL) {
+            rw_type(item->global.ty, orig, n_orig, alias, arena);
+        } else if (item->kind == ITEM_IMPL) {
+            for (size_t j = 0; j < item->impl.methods.len; j++) {
+                Item *m = item->impl.methods.data[j];
+                for (size_t k = 0; k < m->fn.params.len; k++)
+                    rw_type(m->fn.params.data[k].ty, orig, n_orig, alias, arena);
+                rw_type(m->fn.ret, orig, n_orig, alias, arena);
+                rw_types_in_stmts(m->fn.body, orig, n_orig, alias, arena);
+            }
+        }
+    }
+}
+
+/* ── AST rewrite: EXPR_FIELD(EXPR_IDENT("alias"), "x") → EXPR_IDENT("alias__x") ── */
+
+static int is_alias(const char **aliases, size_t n, const char *name) {
+    for (size_t i = 0; i < n; i++)
+        if (!strcmp(aliases[i], name)) return 1;
+    return 0;
+}
+
+static void rw_stmt(Stmt *s, const char **al, size_t n, Arena *a);
+
+static void rw_stmts(StmtList sl, const char **al, size_t n, Arena *a) {
+    for (size_t i = 0; i < sl.len; i++) rw_stmt(sl.data[i], al, n, a);
+}
+
+static void rw_expr(Expr *e, const char **al, size_t n, Arena *a) {
+    if (!e) return;
+    switch (e->kind) {
+        case EXPR_FIELD:
+            if (e->field.obj && e->field.obj->kind == EXPR_IDENT
+                    && is_alias(al, n, e->field.obj->ident.name)) {
+                /* rewrite in-place: EXPR_FIELD → EXPR_IDENT("alias__name") */
+                char buf[512];
+                snprintf(buf, sizeof(buf), "%s__%s",
+                         e->field.obj->ident.name, e->field.field);
+                e->kind       = EXPR_IDENT;
+                e->ident.name = arena_strdup(a, buf);
+            } else {
+                rw_expr(e->field.obj, al, n, a);
+            }
+            break;
+        case EXPR_CALL:
+            rw_expr(e->call.callee, al, n, a);
+            for (size_t i = 0; i < e->call.args.len; i++)
+                rw_expr(e->call.args.data[i], al, n, a);
+            break;
+        case EXPR_BINOP:
+            rw_expr(e->binop.l, al, n, a);
+            rw_expr(e->binop.r, al, n, a);
+            break;
+        case EXPR_UNOP:
+            rw_expr(e->unop.operand, al, n, a);
+            break;
+        case EXPR_INDEX:
+            rw_expr(e->index.arr, al, n, a);
+            rw_expr(e->index.idx, al, n, a);
+            break;
+        case EXPR_DEREF:
+        case EXPR_SMARTDEREF:
+            rw_expr(e->deref.operand, al, n, a);
+            break;
+        case EXPR_CAST:
+            rw_expr(e->cast.val, al, n, a);
+            break;
+        case EXPR_BUILTIN:
+            for (size_t i = 0; i < e->builtin.args.len; i++)
+                rw_expr(e->builtin.args.data[i], al, n, a);
+            break;
+        case EXPR_STRUCT_LIT:
+            for (size_t i = 0; i < e->struct_lit.fields.len; i++)
+                rw_expr(e->struct_lit.fields.data[i].val, al, n, a);
+            break;
+        case EXPR_ARRAY_LIT:
+            for (size_t i = 0; i < e->array_lit.len; i++)
+                rw_expr(e->array_lit.data[i], al, n, a);
+            break;
+        case EXPR_IF:
+            rw_expr(e->if_expr.cond, al, n, a);
+            rw_stmt(e->if_expr.then_, al, n, a);
+            rw_stmt(e->if_expr.else_, al, n, a);
+            break;
+        case EXPR_WHEN:
+            rw_expr(e->when.cond, al, n, a);
+            for (size_t i = 0; i < e->when.arms.len; i++) {
+                WhenArm *arm = &e->when.arms.data[i];
+                for (size_t j = 0; j < arm->pats.len; j++)
+                    rw_expr(arm->pats.data[j], al, n, a);
+                rw_stmt(arm->body, al, n, a);
+            }
+            break;
+        default: break; /* leaf nodes */
+    }
+}
+
+static void rw_stmt(Stmt *s, const char **al, size_t n, Arena *a) {
+    if (!s) return;
+    switch (s->kind) {
+        case STMT_EXPR:
+            rw_expr(s->expr, al, n, a);
+            break;
+        case STMT_LET:
+            rw_expr(s->let.init, al, n, a);
+            break;
+        case STMT_ASSIGN:
+            rw_expr(s->assign.target, al, n, a);
+            rw_expr(s->assign.val, al, n, a);
+            break;
+        case STMT_RET:
+            rw_expr(s->ret.val, al, n, a);
+            break;
+        case STMT_IF:
+            for (size_t i = 0; i < s->if_.branches.len; i++) {
+                rw_expr(s->if_.branches.data[i].cond, al, n, a);
+                rw_stmts(s->if_.branches.data[i].body, al, n, a);
+            }
+            rw_stmts(s->if_.else_body, al, n, a);
+            break;
+        case STMT_WHILE:
+            rw_expr(s->while_.cond, al, n, a);
+            rw_stmts(s->while_.body, al, n, a);
+            break;
+        case STMT_FOR:
+            rw_expr(s->for_.clause.iter, al, n, a);
+            rw_expr(s->for_.clause.range_end, al, n, a);
+            rw_expr(s->for_.clause.cond, al, n, a);
+            rw_stmt(s->for_.clause.init, al, n, a);
+            rw_stmt(s->for_.clause.step, al, n, a);
+            rw_stmts(s->for_.body, al, n, a);
+            break;
+        case STMT_WHEN:
+            rw_expr(s->when.val, al, n, a);
+            for (size_t i = 0; i < s->when.arms.len; i++) {
+                WhenArm *arm = &s->when.arms.data[i];
+                for (size_t j = 0; j < arm->pats.len; j++)
+                    rw_expr(arm->pats.data[j], al, n, a);
+                rw_stmt(arm->body, al, n, a);
+            }
+            break;
+        case STMT_DEFER:  rw_stmts(s->defer, al, n, a); break;
+        case STMT_BLOCK:  rw_stmts(s->block, al, n, a); break;
+        default: break;
+    }
+}
+
+static void rw_item(Item *item, const char **al, size_t n, Arena *a) {
+    if (!item) return;
+    switch (item->kind) {
+        case ITEM_FN:
+            for (size_t i = 0; i < item->fn.body.len; i++)
+                rw_stmt(item->fn.body.data[i], al, n, a);
+            break;
+        case ITEM_IMPL:
+            for (size_t i = 0; i < item->impl.methods.len; i++)
+                rw_item(item->impl.methods.data[i], al, n, a);
+            break;
+        case ITEM_GLOBAL:
+            rw_expr(item->global.init, al, n, a);
+            break;
+        case ITEM_ENUM:
+            for (size_t i = 0; i < item->enum_.variants.len; i++)
+                rw_expr(item->enum_.variants.data[i].val, al, n, a);
+            break;
+        default: break;
+    }
+}
+
+/* Append items from imp into mod, skipping ITEM_IMPORT entries */
+static void merge_items(Module *mod, Module *imp) {
+    size_t extra = 0;
+    for (size_t i = 0; i < imp->items.len; i++)
+        if (imp->items.data[i]->kind != ITEM_IMPORT) extra++;
+    if (!extra) return;
+
+    size_t new_len = mod->items.len + extra;
+    Item **new_data = arena_alloc(mod->arena, new_len * sizeof(Item*));
+    memcpy(new_data, mod->items.data, mod->items.len * sizeof(Item*));
+    size_t dst = mod->items.len;
+    for (size_t i = 0; i < imp->items.len; i++)
+        if (imp->items.data[i]->kind != ITEM_IMPORT)
+            new_data[dst++] = imp->items.data[i];
+    mod->items.data = new_data;
+    mod->items.len  = new_len;
+}
+
+/*
+ * Load all imports into mod.  loading[] is the set of paths currently being
+ * processed (for cycle detection).  The main file's error context is restored
+ * by the caller after this returns.
+ */
+static void load_imports(Module *mod, const char *src_path,
+                         Arena *arena, const char **loading, size_t n_loading) {
+    /* collect (alias, resolved-path) pairs from ITEM_IMPORT items */
+    const char *aliases[64];
+    size_t      n_aliases = 0;
+    char        src_dir[1024];
+    src_dir_of(src_path, src_dir, sizeof(src_dir));
+
+    for (size_t i = 0; i < mod->items.len && n_aliases < 64; i++) {
+        Item *item = mod->items.data[i];
+        if (item->kind != ITEM_IMPORT) continue;
+
+        for (size_t j = 0; j < item->imports.len && n_aliases < 64; j++) {
+            const char *alias     = item->imports.data[j].alias;
+            const char *imp_path  = item->imports.data[j].path;
+
+            /* resolve path: append .przp */
+            char full[1024];
+            if (imp_path[0] == '/')
+                snprintf(full, sizeof(full), "%s.przp", imp_path);
+            else
+                snprintf(full, sizeof(full), "%s/%s.przp", src_dir, imp_path);
+
+            /* cycle detection */
+            int cycle = 0;
+            for (size_t k = 0; k < n_loading; k++)
+                if (!strcmp(loading[k], full)) { cycle = 1; break; }
+            if (cycle) {
+                fprintf(stderr, "przp: import cycle: '%s'\n", full);
+                continue;
+            }
+
+            /* read + parse imported file */
+            char *imp_src = read_file(full);
+            error_init(full, imp_src);
+            Module *imp = parse(imp_src, (uint32_t)(n_loading + 1), arena);
+
+            /* recurse: handle imports inside the imported module */
+            const char *new_loading[64];
+            memcpy(new_loading, loading, n_loading * sizeof(char*));
+            new_loading[n_loading] = full;
+            load_imports(imp, full, arena, new_loading, n_loading + 1);
+
+            /* mangle imported items, merge into main module */
+            mangle_items(imp, alias, arena);
+            merge_items(mod, imp);
+
+            aliases[n_aliases++] = alias;
+        }
+    }
+
+    /* rewrite module accesses in the calling module */
+    if (n_aliases > 0) {
+        for (size_t i = 0; i < mod->items.len; i++)
+            rw_item(mod->items.data[i], aliases, n_aliases, arena);
+    }
+}
+
 /* strip extension, return basename without it */
 static void basename_no_ext(const char *path, char *out, size_t outsz) {
     const char *slash = strrchr(path, '/');
@@ -47,6 +398,12 @@ static int compile_file(const char *src_path, const char *out_path, int release)
 
     error_init(src_path, src);
     Module *mod = parse(src, 0, &arena);
+
+    /* load and merge imported modules before sema */
+    const char *loading[1] = { src_path };
+    load_imports(mod, src_path, &arena, loading, 1);
+    error_init(src_path, src); /* restore main file context for sema/codegen errors */
+
     if (!sema_check(mod)) { arena_free(&arena); free(src); return 1; }
 
     /* write .ll to a temp file next to the source */

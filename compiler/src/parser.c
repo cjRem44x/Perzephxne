@@ -173,7 +173,7 @@ static Type *parse_type(Parser *p) {
         return ty;
     }
 
-    /* named / primitive */
+    /* named / primitive — including qualified "alias.TypeName" */
     if (t.kind == TOK_IDENT) {
         advance(p);
         int pk = prim_from_name(t.sval);
@@ -181,7 +181,16 @@ static Type *parse_type(Parser *p) {
             return mktype(p, (TypeKind)pk, span);
         }
         Type *ty = mktype(p, TY_NAMED, span);
-        ty->named.name = t.sval;
+        /* support module-qualified types: alias.TypeName → alias__TypeName */
+        if (cur(p).kind == TOK_DOT && peek(p).kind == TOK_IDENT) {
+            advance(p); /* consume '.' */
+            Token member = cur(p); advance(p);
+            char *buf = arena_alloc(p->arena, strlen(t.sval) + 2 + strlen(member.sval) + 1);
+            sprintf(buf, "%s__%s", t.sval, member.sval);
+            ty->named.name = buf;
+        } else {
+            ty->named.name = t.sval;
+        }
         return ty;
     }
 
@@ -676,10 +685,35 @@ static Expr *parse_postfix(Parser *p, Expr *e) {
         } else if (check(p, TOK_DOT)) {
             advance(p);
             Token fname = expect(p, TOK_IDENT);
-            Expr *fe = mkexpr(p, EXPR_FIELD, span_merge(span, fname.span));
-            fe->field.obj   = e;
-            fe->field.field = fname.sval;
-            e = fe;
+            /* qualified struct literal: alias.TypeName { .x = ... } */
+            if (e->kind == EXPR_IDENT
+                    && check(p, TOK_LBRACE) && peek(p).kind == TOK_DOT) {
+                advance(p); /* consume '{' */
+                FieldInitList fields = {0};
+                while (!check(p, TOK_RBRACE) && !check(p, TOK_EOF)) {
+                    expect(p, TOK_DOT);
+                    Token fn = expect(p, TOK_IDENT);
+                    expect(p, TOK_EQ);
+                    Expr *val = parse_expr(p);
+                    FieldInit fi = { .name = fn.sval, .val = val };
+                    SLICE_PUSH(p->arena, &fields, FieldInit, fi);
+                    eat(p, TOK_COMMA);
+                }
+                Span end = cur(p).span;
+                expect(p, TOK_RBRACE);
+                char *mangled = arena_alloc(p->arena,
+                    strlen(e->ident.name) + 2 + strlen(fname.sval) + 1);
+                sprintf(mangled, "%s__%s", e->ident.name, fname.sval);
+                Expr *sl = mkexpr(p, EXPR_STRUCT_LIT, span_merge(span, end));
+                sl->struct_lit.ty_name = mangled;
+                sl->struct_lit.fields  = fields;
+                e = sl;
+            } else {
+                Expr *fe = mkexpr(p, EXPR_FIELD, span_merge(span, fname.span));
+                fe->field.obj   = e;
+                fe->field.field = fname.sval;
+                e = fe;
+            }
         } else {
             break;
         }
