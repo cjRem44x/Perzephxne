@@ -809,28 +809,56 @@ static Stmt *parse_stmt(Parser *p) {
             /* Could be: for i := 0,  */
         }
 
-        /* simplification: for 0..N or for 0..=N (counting) */
+        /* for IDENT in EXPR..EXPR  — range with named variable
+           for IDENT in EXPR        — for-each with 'in' keyword
+           for IDENT, IDENT in EXPR — for-each with index and element
+           for EXPR..EXPR           — anonymous range
+           for EXPR => COLLECTION   — for-each with fat-arrow */
         if (check(p, TOK_INT) || check(p, TOK_IDENT)) {
-            Expr *start = parse_expr_bp(p, 1);
-            if (check(p, TOK_DOTDOT) || check(p, TOK_DOTDOTEQ)) {
-                clause.kind      = FOR_RANGE;
-                clause.inclusive = check(p, TOK_DOTDOTEQ);
-                advance(p);
-                clause.iter      = start;
-                clause.range_end = parse_expr(p);
-            } else if (check(p, TOK_FATARROW)) {
-                /* for e => arr */
-                advance(p);
-                Expr *arr = parse_expr(p);
-                clause.kind = FOR_EACH;
-                clause.elem = start->ident.name;
-                clause.iter = arr;
+            /* peek ahead: if next is 'in' or ',', this is the variable name */
+            if (check(p, TOK_IDENT) && (check2(p, TOK_IN) || check2(p, TOK_COMMA))) {
+                const char *elem_name = cur(p).sval;
+                advance(p); /* consume elem name */
+                const char *idx_name = NULL;
                 if (eat(p, TOK_COMMA)) {
-                    Expr *re = parse_expr(p);
-                    clause.range_end = re;
+                    /* for idx, elem in EXPR */
+                    idx_name  = elem_name;
+                    elem_name = cur(p).sval;
+                    expect(p, TOK_IDENT);
+                }
+                expect(p, TOK_IN);
+                Expr *rhs = parse_expr(p); /* full expression — may be BINOP_RANGE */
+                if (rhs->kind == EXPR_BINOP &&
+                    (rhs->binop.op == BINOP_RANGE || rhs->binop.op == BINOP_RANGE_INC)) {
+                    clause.kind      = FOR_RANGE;
+                    clause.inclusive = (rhs->binop.op == BINOP_RANGE_INC);
+                    clause.elem      = elem_name;
+                    clause.iter      = rhs->binop.l;
+                    clause.range_end = rhs->binop.r;
+                } else {
+                    clause.kind = idx_name ? FOR_EACH_IDX : FOR_EACH;
+                    clause.elem = elem_name;
+                    clause.idx  = idx_name;
+                    clause.iter = rhs;
                 }
             } else {
-                fatal_at(cur(p).span, "unexpected token in for loop");
+                Expr *start = parse_expr_bp(p, 1);
+                if (check(p, TOK_DOTDOT) || check(p, TOK_DOTDOTEQ)) {
+                    clause.kind      = FOR_RANGE;
+                    clause.inclusive = check(p, TOK_DOTDOTEQ);
+                    advance(p);
+                    clause.iter      = start;
+                    clause.range_end = parse_expr(p);
+                } else if (check(p, TOK_FATARROW)) {
+                    /* for e => arr */
+                    advance(p);
+                    Expr *arr = parse_expr(p);
+                    clause.kind = FOR_EACH;
+                    clause.elem = start->ident.name;
+                    clause.iter = arr;
+                } else {
+                    fatal_at(cur(p).span, "unexpected token in for loop");
+                }
             }
         }
 

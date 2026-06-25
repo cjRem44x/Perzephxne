@@ -200,6 +200,7 @@ static TokenKind keyword_or_ident(const char *s) {
     if (!strcmp(s, "break"))    return TOK_BREAK;
     if (!strcmp(s, "continue")) return TOK_CONTINUE;
     if (!strcmp(s, "asm"))      return TOK_ASM;
+    if (!strcmp(s, "in"))       return TOK_IN;
     if (!strcmp(s, "_"))        return TOK_UNDER;
     return TOK_IDENT;
 }

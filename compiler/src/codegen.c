@@ -23,9 +23,18 @@ typedef struct Symbol {
     Type          *ty;
 } Symbol;
 
+typedef struct DeferEntry {
+    struct DeferEntry *next;
+    StmtList           stmts;
+} DeferEntry;
+
 typedef struct Scope {
-    struct Scope *parent;
-    Symbol       *syms;
+    struct Scope  *parent;
+    Symbol        *syms;
+    DeferEntry    *defers;      /* LIFO — head = most recently deferred */
+    int            is_loop;     /* 1 if this scope is the body of a loop */
+    int            break_label; /* label to branch to on break */
+    int            cont_label;  /* label to branch to on continue */
 } Scope;
 
 typedef struct {
@@ -70,11 +79,29 @@ static void emit_label(CG *cg, int id) {
 
 static void push_scope(CG *cg) {
     Scope *s = ARENA_NEW(cg->arena, Scope);
-    s->parent  = cg->scope;
-    cg->scope  = s;
+    s->parent      = cg->scope;
+    s->defers      = NULL;
+    s->is_loop     = 0;
+    s->break_label = -1;
+    s->cont_label  = -1;
+    cg->scope = s;
 }
 
+static void push_loop_scope(CG *cg, int break_l, int cont_l) {
+    Scope *s = ARENA_NEW(cg->arena, Scope);
+    s->parent      = cg->scope;
+    s->defers      = NULL;
+    s->is_loop     = 1;
+    s->break_label = break_l;
+    s->cont_label  = cont_l;
+    cg->scope = s;
+}
+
+/* emit deferred stmts for one scope in LIFO order, then clear the list */
+static void emit_defers_for_scope(CG *cg, Scope *sc);
+
 static void pop_scope(CG *cg) {
+    emit_defers_for_scope(cg, cg->scope);
     cg->scope = cg->scope->parent;
 }
 
@@ -176,9 +203,19 @@ typedef struct { char buf[64]; } Val;
 static Val val_tmp(int id)  { Val v; snprintf(v.buf, sizeof(v.buf), "%%t%d", id); return v; }
 static Val val_str(const char *s) { Val v; snprintf(v.buf, sizeof(v.buf), "%s", s); return v; }
 
-/* forward declaration */
+/* forward declarations */
 static Val cg_expr(CG *cg, Expr *e, Type **out_ty);
 static void cg_stmt(CG *cg, Stmt *s);
+
+static void emit_defers_for_scope(CG *cg, Scope *sc) {
+    /* Emit into the CURRENT basic block only — cg_stmt's terminated guard prevents
+       double-emission: if we already have a terminator (e.g. from break/ret),
+       cg_stmt returns early.  We do NOT clear sc->defers so that pop_scope can
+       still emit the defers for the natural (non-break) code path. */
+    for (DeferEntry *d = sc->defers; d; d = d->next)
+        for (size_t i = 0; i < d->stmts.len; i++)
+            cg_stmt(cg, d->stmts.data[i]);
+}
 
 static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
     if (out_ty) *out_ty = NULL;
@@ -639,6 +676,7 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
 /* ── Statement codegen ────────────────────────────────────────────────────── */
 
 static void cg_stmt(CG *cg, Stmt *s) {
+    if (cg->terminated) return;  /* dead code after a terminator */
     switch (s->kind) {
         case STMT_EXPR: {
             cg_expr(cg, s->expr, NULL);
@@ -710,14 +748,22 @@ static void cg_stmt(CG *cg, Stmt *s) {
         }
 
         case STMT_RET: {
-            if (s->ret.val) {
+            /* evaluate return value before flushing defers */
+            Val rv = val_str("0");
+            const char *llt = cg->cur_fn_ret ? cg->cur_fn_ret : "void";
+            int has_val = s->ret.val != NULL;
+            if (has_val) {
                 Type *rt = NULL;
-                Val rv = cg_expr(cg, s->ret.val, &rt);
-                const char *llt = rt ? llvm_type(rt) : (cg->cur_fn_ret ? cg->cur_fn_ret : "i32");
-                emit_br(cg, "  ret %s %s\n", llt, rv.buf);
-            } else {
-                emit_br(cg, "  ret void\n");
+                rv = cg_expr(cg, s->ret.val, &rt);
+                if (rt) llt = llvm_type(rt);
             }
+            /* flush all scopes' defers in LIFO order before the ret */
+            for (Scope *sc = cg->scope; sc; sc = sc->parent)
+                emit_defers_for_scope(cg, sc);
+            if (has_val)
+                emit_br(cg, "  ret %s %s\n", llt, rv.buf);
+            else
+                emit_br(cg, "  ret void\n");
             break;
         }
 
@@ -756,11 +802,16 @@ static void cg_stmt(CG *cg, Stmt *s) {
             int end_l  = new_label(cg);
             emit_br(cg, "  br label %%l%d\n", cond_l);
             emit_label(cg, cond_l);
-            Val cond = cg_expr(cg, s->while_.cond, NULL);
-            emit_br(cg, "  br i1 %s, label %%l%d, label %%l%d\n",
-                    cond.buf, body_l, end_l);
+            if (s->while_.cond) {
+                Val cond = cg_expr(cg, s->while_.cond, NULL);
+                emit_br(cg, "  br i1 %s, label %%l%d, label %%l%d\n",
+                        cond.buf, body_l, end_l);
+            } else {
+                /* loop {} — unconditional */
+                emit_br(cg, "  br label %%l%d\n", body_l);
+            }
             emit_label(cg, body_l);
-            push_scope(cg);
+            push_loop_scope(cg, end_l, cond_l);
             for (size_t i = 0; i < s->while_.body.len; i++)
                 cg_stmt(cg, s->while_.body.data[i]);
             pop_scope(cg);
@@ -777,7 +828,12 @@ static void cg_stmt(CG *cg, Stmt *s) {
                 int i_alloca = new_tmp(cg);
                 emit(cg, "  %%t%d = alloca i64\n", i_alloca);
                 emit(cg, "  store i64 %s, ptr %%t%d\n", start.buf, i_alloca);
-                int cond_l = new_label(cg), body_l = new_label(cg), end_l = new_label(cg);
+
+                int cond_l = new_label(cg);
+                int body_l = new_label(cg);
+                int inc_l  = new_label(cg); /* continue target — runs increment */
+                int end_l  = new_label(cg);
+
                 emit_br(cg, "  br label %%l%d\n", cond_l);
                 emit_label(cg, cond_l);
                 int i_val = new_tmp(cg);
@@ -787,22 +843,108 @@ static void cg_stmt(CG *cg, Stmt *s) {
                      cmp, fc->inclusive ? "sle" : "slt", i_val, end.buf);
                 emit_br(cg, "  br i1 %%t%d, label %%l%d, label %%l%d\n",
                         cmp, body_l, end_l);
+
                 emit_label(cg, body_l);
-                push_scope(cg);
+                push_loop_scope(cg, end_l, inc_l);
+                /* expose the loop variable */
+                if (fc->elem) {
+                    Type *i64_ty = ARENA_NEW(cg->arena, Type);
+                    i64_ty->kind = TY_I64;
+                    char lvar[32];
+                    snprintf(lvar, sizeof(lvar), "%%t%d", i_alloca);
+                    define_sym(cg, fc->elem, arena_strdup(cg->arena, lvar), 0, i64_ty);
+                }
                 for (size_t j = 0; j < s->for_.body.len; j++)
                     cg_stmt(cg, s->for_.body.data[j]);
                 pop_scope(cg);
-                if (!cg->terminated) {
-                    int inc = new_tmp(cg);
-                    emit(cg, "  %%t%d = load i64, ptr %%t%d\n", inc, i_alloca);
-                    int inc2 = new_tmp(cg);
-                    emit(cg, "  %%t%d = add i64 %%t%d, 1\n", inc2, inc);
-                    emit(cg, "  store i64 %%t%d, ptr %%t%d\n", inc2, i_alloca);
-                    emit_br(cg, "  br label %%l%d\n", cond_l);
+
+                emit_br(cg, "  br label %%l%d\n", inc_l);
+                emit_label(cg, inc_l);
+                int inc = new_tmp(cg);
+                emit(cg, "  %%t%d = load i64, ptr %%t%d\n", inc, i_alloca);
+                int inc2 = new_tmp(cg);
+                emit(cg, "  %%t%d = add i64 %%t%d, 1\n", inc2, inc);
+                emit(cg, "  store i64 %%t%d, ptr %%t%d\n", inc2, i_alloca);
+                emit_br(cg, "  br label %%l%d\n", cond_l);
+                emit_label(cg, end_l);
+
+            } else if (fc->kind == FOR_EACH || fc->kind == FOR_EACH_IDX) {
+                /* for v => slice  /  for i, v => slice */
+                Type *iter_ty = NULL;
+                Val iter = cg_expr(cg, fc->iter, &iter_ty);
+
+                /* extract data pointer and length from the fat pointer */
+                const char *elem_llt = "i8";
+                Type *elem_ty = NULL;
+                if (iter_ty && (iter_ty->kind == TY_SLICE || iter_ty->kind == TY_STR)) {
+                    elem_ty  = (iter_ty->kind == TY_SLICE) ? iter_ty->ptr.inner : NULL;
+                    elem_llt = elem_ty ? llvm_type(elem_ty) : "ptr";
                 }
+                int data_t = new_tmp(cg);
+                int len_t  = new_tmp(cg);
+                emit(cg, "  %%t%d = extractvalue { ptr, i64 } %s, 0\n", data_t, iter.buf);
+                emit(cg, "  %%t%d = extractvalue { ptr, i64 } %s, 1\n", len_t,  iter.buf);
+
+                /* loop index alloca */
+                int idx_alloca = new_tmp(cg);
+                emit(cg, "  %%t%d = alloca i64\n", idx_alloca);
+                emit(cg, "  store i64 0, ptr %%t%d\n", idx_alloca);
+
+                int cond_l = new_label(cg);
+                int body_l = new_label(cg);
+                int inc_l  = new_label(cg);
+                int end_l  = new_label(cg);
+
+                emit_br(cg, "  br label %%l%d\n", cond_l);
+                emit_label(cg, cond_l);
+                int idx_t = new_tmp(cg);
+                emit(cg, "  %%t%d = load i64, ptr %%t%d\n", idx_t, idx_alloca);
+                int cmp_t = new_tmp(cg);
+                emit(cg, "  %%t%d = icmp slt i64 %%t%d, %%t%d\n", cmp_t, idx_t, len_t);
+                emit_br(cg, "  br i1 %%t%d, label %%l%d, label %%l%d\n",
+                        cmp_t, body_l, end_l);
+
+                emit_label(cg, body_l);
+                push_loop_scope(cg, end_l, inc_l);
+
+                /* load current element */
+                int ep_t = new_tmp(cg);
+                emit(cg, "  %%t%d = getelementptr %s, ptr %%t%d, i64 %%t%d\n",
+                     ep_t, elem_llt, data_t, idx_t);
+                int ev_alloca = new_tmp(cg);
+                emit(cg, "  %%t%d = alloca %s\n", ev_alloca, elem_llt);
+                int ev_t = new_tmp(cg);
+                emit(cg, "  %%t%d = load %s, ptr %%t%d\n", ev_t, elem_llt, ep_t);
+                emit(cg, "  store %s %%t%d, ptr %%t%d\n", elem_llt, ev_t, ev_alloca);
+                if (fc->elem) {
+                    char ename[32];
+                    snprintf(ename, sizeof(ename), "%%t%d", ev_alloca);
+                    define_sym(cg, fc->elem, arena_strdup(cg->arena, ename), 0, elem_ty);
+                }
+                if (fc->kind == FOR_EACH_IDX && fc->idx) {
+                    /* expose index variable */
+                    Type *i64_ty = ARENA_NEW(cg->arena, Type);
+                    i64_ty->kind = TY_I64;
+                    char iname[32];
+                    snprintf(iname, sizeof(iname), "%%t%d", idx_alloca);
+                    define_sym(cg, fc->idx, arena_strdup(cg->arena, iname), 0, i64_ty);
+                }
+
+                for (size_t j = 0; j < s->for_.body.len; j++)
+                    cg_stmt(cg, s->for_.body.data[j]);
+                pop_scope(cg);
+
+                emit_br(cg, "  br label %%l%d\n", inc_l);
+                emit_label(cg, inc_l);
+                int inc_t = new_tmp(cg);
+                emit(cg, "  %%t%d = load i64, ptr %%t%d\n", inc_t, idx_alloca);
+                int inc2_t = new_tmp(cg);
+                emit(cg, "  %%t%d = add i64 %%t%d, 1\n", inc2_t, inc_t);
+                emit(cg, "  store i64 %%t%d, ptr %%t%d\n", inc2_t, idx_alloca);
+                emit_br(cg, "  br label %%l%d\n", cond_l);
                 emit_label(cg, end_l);
             } else {
-                emit(cg, "  ; for loop (for-each not fully implemented)\n");
+                emit(cg, "  ; unsupported for kind\n");
             }
             break;
         }
@@ -853,8 +995,11 @@ static void cg_stmt(CG *cg, Stmt *s) {
         }
 
         case STMT_DEFER: {
-            for (size_t i = 0; i < s->defer.len; i++)
-                cg_stmt(cg, s->defer.data[i]);
+            /* push onto current scope's LIFO defer stack */
+            DeferEntry *de = ARENA_NEW(cg->arena, DeferEntry);
+            de->stmts = s->defer;
+            de->next  = cg->scope->defers;
+            cg->scope->defers = de;
             break;
         }
 
@@ -866,10 +1011,29 @@ static void cg_stmt(CG *cg, Stmt *s) {
             break;
         }
 
-        case STMT_BREAK:
-        case STMT_CONTINUE:
-            emit_br(cg, "  br label %%l0\n");
+        case STMT_BREAK: {
+            /* flush defers from current scope out through (and including) the loop scope */
+            Scope *loop_sc = NULL;
+            for (Scope *sc = cg->scope; sc; sc = sc->parent) {
+                emit_defers_for_scope(cg, sc);
+                if (sc->is_loop) { loop_sc = sc; break; }
+            }
+            if (loop_sc)
+                emit_br(cg, "  br label %%l%d\n", loop_sc->break_label);
             break;
+        }
+
+        case STMT_CONTINUE: {
+            /* flush defers from current scope out through (and including) the loop scope */
+            Scope *loop_sc = NULL;
+            for (Scope *sc = cg->scope; sc; sc = sc->parent) {
+                emit_defers_for_scope(cg, sc);
+                if (sc->is_loop) { loop_sc = sc; break; }
+            }
+            if (loop_sc)
+                emit_br(cg, "  br label %%l%d\n", loop_sc->cont_label);
+            break;
+        }
 
         default:
             emit(cg, "  ; unhandled stmt kind %d\n", (int)s->kind);
