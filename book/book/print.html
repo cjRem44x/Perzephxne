@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-4730c41f.js";
+            window.path_to_searchindex_js = "searchindex-0abdca4e.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-d2cdd05f.js"></script>
@@ -721,11 +721,11 @@ while i &lt; 10 {
 }
 </code></pre>
 <h2 id="for--range"><a class="header" href="#for--range"><code>for</code> — Range</a></h2>
-<pre><code>for i in 0..10 {      # 0, 1, ..., 9
+<pre><code>for i =&gt; 0..10 {      # 0, 1, ..., 9
     @pf("{i}\n")
 }
 
-for i in 0..=10 {     # 0, 1, ..., 10
+for i =&gt; 0..=10 {     # 0, 1, ..., 10
     @pf("{i}\n")
 }
 </code></pre>
@@ -742,7 +742,7 @@ for v =&gt; nums {
 }
 </code></pre>
 <h2 id="break-and-continue"><a class="header" href="#break-and-continue"><code>break</code> and <code>continue</code></a></h2>
-<pre><code>for i in 0..100 {
+<pre><code>for i =&gt; 0..100 {
     if i == 5  { continue }   # skip 5
     if i == 10 { break }      # stop at 10
     @pf("{i}\n")
@@ -831,7 +831,7 @@ defer @pf("3\n")
 </code></pre>
 <h2 id="defer-in-loops"><a class="header" href="#defer-in-loops">Defer in Loops</a></h2>
 <p>Each loop iteration has its own defer stack:</p>
-<pre><code>for i in 0..3 {
+<pre><code>for i =&gt; 0..3 {
     defer @pf("end {i}\n")
     @pf("start {i}\n")
 }

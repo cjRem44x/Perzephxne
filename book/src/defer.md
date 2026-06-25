@@ -33,7 +33,7 @@ defer @pf("3\n")
 Each loop iteration has its own defer stack:
 
 ```
-for i in 0..3 {
+for i => 0..3 {
     defer @pf("end {i}\n")
     @pf("start {i}\n")
 }

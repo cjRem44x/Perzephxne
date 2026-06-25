@@ -42,11 +42,11 @@ while i < 10 {
 ## `for` — Range
 
 ```
-for i in 0..10 {      # 0, 1, ..., 9
+for i => 0..10 {      # 0, 1, ..., 9
     @pf("{i}\n")
 }
 
-for i in 0..=10 {     # 0, 1, ..., 10
+for i => 0..=10 {     # 0, 1, ..., 10
     @pf("{i}\n")
 }
 ```
@@ -72,7 +72,7 @@ for i, v => nums {
 ## `break` and `continue`
 
 ```
-for i in 0..100 {
+for i => 0..100 {
     if i == 5  { continue }   # skip 5
     if i == 10 { break }      # stop at 10
     @pf("{i}\n")

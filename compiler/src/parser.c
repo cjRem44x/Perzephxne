@@ -809,24 +809,23 @@ static Stmt *parse_stmt(Parser *p) {
             /* Could be: for i := 0,  */
         }
 
-        /* for IDENT in EXPR..EXPR  — range with named variable
-           for IDENT in EXPR        — for-each with 'in' keyword
-           for IDENT, IDENT in EXPR — for-each with index and element
-           for EXPR..EXPR           — anonymous range
-           for EXPR => COLLECTION   — for-each with fat-arrow */
+        /* for IDENT => EXPR..EXPR  — range with named variable
+           for IDENT => COLLECTION  — for-each over slice/array
+           for IDENT, IDENT => ...  — for-each with index and element
+           for EXPR..EXPR           — anonymous range */
         if (check(p, TOK_INT) || check(p, TOK_IDENT)) {
-            /* peek ahead: if next is 'in' or ',', this is the variable name */
-            if (check(p, TOK_IDENT) && (check2(p, TOK_IN) || check2(p, TOK_COMMA))) {
+            /* peek: if next is '=>' or ',', the first token is the variable name */
+            if (check(p, TOK_IDENT) && (check2(p, TOK_FATARROW) || check2(p, TOK_COMMA))) {
                 const char *elem_name = cur(p).sval;
                 advance(p); /* consume elem name */
                 const char *idx_name = NULL;
                 if (eat(p, TOK_COMMA)) {
-                    /* for idx, elem in EXPR */
+                    /* for idx, elem => EXPR */
                     idx_name  = elem_name;
                     elem_name = cur(p).sval;
                     expect(p, TOK_IDENT);
                 }
-                expect(p, TOK_IN);
+                expect(p, TOK_FATARROW);
                 Expr *rhs = parse_expr(p); /* full expression — may be BINOP_RANGE */
                 if (rhs->kind == EXPR_BINOP &&
                     (rhs->binop.op == BINOP_RANGE || rhs->binop.op == BINOP_RANGE_INC)) {
@@ -842,6 +841,7 @@ static Stmt *parse_stmt(Parser *p) {
                     clause.iter = rhs;
                 }
             } else {
+                /* anonymous range: for 0..N */
                 Expr *start = parse_expr_bp(p, 1);
                 if (check(p, TOK_DOTDOT) || check(p, TOK_DOTDOTEQ)) {
                     clause.kind      = FOR_RANGE;
@@ -849,13 +849,6 @@ static Stmt *parse_stmt(Parser *p) {
                     advance(p);
                     clause.iter      = start;
                     clause.range_end = parse_expr(p);
-                } else if (check(p, TOK_FATARROW)) {
-                    /* for e => arr */
-                    advance(p);
-                    Expr *arr = parse_expr(p);
-                    clause.kind = FOR_EACH;
-                    clause.elem = start->ident.name;
-                    clause.iter = arr;
                 } else {
                     fatal_at(cur(p).span, "unexpected token in for loop");
                 }
