@@ -293,6 +293,107 @@ static ExprList parse_args(Parser *p) {
     return args;
 }
 
+/* Desugar @pf/@epf format string interpolation.
+   Syntax:
+     {expr}        — interpolate expr with auto-detected printf specifier
+     {expr:spec}   — interpolate expr with explicit printf spec (e.g. 05d, .2f)
+     /{            — literal '{'
+     /}            — literal '}'
+   Each interpolation is encoded as \x01<spec>\x02 in the intermediate format
+   string, with an empty spec meaning auto-detect.  The expression is appended to
+   the interp list in order. */
+static ExprList desugar_pf_interp(Parser *p, ExprList orig) {
+    const char *s = orig.data[0]->sval;
+    /* quick bail: nothing to do if no '{' and no '/}' */
+    if (!strchr(s, '{') && !strstr(s, "/}")) return orig;
+
+    char new_fmt[4096];
+    size_t nf = 0;
+    ExprList interp = {0};
+
+    while (*s) {
+        /* /{ or /} — literal brace */
+        if (*s == '/' && (s[1] == '{' || s[1] == '}')) {
+            if (nf < sizeof(new_fmt) - 1) new_fmt[nf++] = s[1];
+            s += 2;
+        /* { — begin interpolation */
+        } else if (*s == '{') {
+            s++;
+            const char *content_start = s;
+            int depth = 1;
+            while (*s && depth > 0) {
+                if      (*s == '{') depth++;
+                else if (*s == '}') depth--;
+                s++;
+            }
+            if (depth != 0)
+                fatal_at(orig.data[0]->span, "unclosed '{' in @pf format string");
+            /* s is now past the closing '}'; content is [content_start, s-1) */
+            size_t content_len = (size_t)((s - 1) - content_start);
+            if (content_len == 0)
+                fatal_at(orig.data[0]->span, "empty '{}' in @pf format string");
+
+            /* split on first ':' at depth 0 to separate expr from format spec */
+            const char *colon = NULL;
+            {
+                int d = 0;
+                for (const char *c = content_start; c < content_start + content_len; c++) {
+                    if      (*c == '{') d++;
+                    else if (*c == '}') d--;
+                    else if (*c == ':' && d == 0) { colon = c; break; }
+                }
+            }
+
+            size_t expr_len, spec_len;
+            const char *spec_start;
+            if (colon) {
+                expr_len   = (size_t)(colon - content_start);
+                spec_start = colon + 1;
+                spec_len   = content_len - expr_len - 1;
+            } else {
+                expr_len   = content_len;
+                spec_start = NULL;
+                spec_len   = 0;
+            }
+            if (expr_len == 0)
+                fatal_at(orig.data[0]->span, "empty expression in @pf format string");
+
+            /* emit sentinel: \x01 + spec (possibly empty) + \x02 */
+            if (nf < sizeof(new_fmt) - 1) new_fmt[nf++] = '\x01';
+            for (size_t i = 0; i < spec_len && nf < sizeof(new_fmt) - 2; i++)
+                new_fmt[nf++] = spec_start[i];
+            if (nf < sizeof(new_fmt) - 1) new_fmt[nf++] = '\x02';
+
+            /* parse the expression text via a sub-parser */
+            char *expr_text = ARENA_ALLOC(p->arena, char, expr_len + 1);
+            memcpy(expr_text, content_start, expr_len);
+            expr_text[expr_len] = '\0';
+
+            Parser sub = {0};
+            lexer_init(&sub.lexer, expr_text, orig.data[0]->span.file_id, p->arena);
+            sub.arena = p->arena;
+            sub.cur   = lexer_next(&sub.lexer);
+            sub.peek  = lexer_next(&sub.lexer);
+            Expr *inner = parse_expr(&sub);
+            LIST_PUSH(p->arena, &interp, Expr, inner);
+        } else {
+            if (nf < sizeof(new_fmt) - 1) new_fmt[nf++] = *s++;
+        }
+    }
+    new_fmt[nf] = '\0';
+
+    Expr *fmt_expr = mkexpr(p, EXPR_STR, orig.data[0]->span);
+    fmt_expr->sval = arena_strndup(p->arena, new_fmt, nf);
+
+    ExprList result = {0};
+    LIST_PUSH(p->arena, &result, Expr, fmt_expr);
+    for (size_t i = 0; i < interp.len; i++)
+        LIST_PUSH(p->arena, &result, Expr, interp.data[i]);
+    for (size_t i = 1; i < orig.len; i++)
+        LIST_PUSH(p->arena, &result, Expr, orig.data[i]);
+    return result;
+}
+
 /* parse primary expression */
 static Expr *parse_primary(Parser *p) {
     Token t = cur(p);
@@ -374,6 +475,10 @@ static Expr *parse_primary(Parser *p) {
             ExprList args = {0};
             if (check(p, TOK_LPAREN)) {
                 args = parse_args(p);
+            }
+            if ((!strcmp(name, "pf") || !strcmp(name, "epf")) &&
+                args.len > 0 && args.data[0]->kind == EXPR_STR) {
+                args = desugar_pf_interp(p, args);
             }
             Expr *e = mkexpr(p, EXPR_BUILTIN, span_merge(span, cur(p).span));
             e->builtin.name = name;

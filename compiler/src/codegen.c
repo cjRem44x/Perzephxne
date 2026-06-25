@@ -172,6 +172,22 @@ static int type_is_signed(Type *ty) {
            ty->kind == TY_I32 || ty->kind == TY_I64;
 }
 
+static const char *pf_specifier(Type *ty) {
+    if (!ty) return "%d";
+    switch (ty->kind) {
+        case TY_I8:  case TY_I16: case TY_I32: return "%d";
+        case TY_I64: return "%lld";
+        case TY_U8:  case TY_U16: case TY_U32: return "%u";
+        case TY_U64: case TY_USIZE: return "%llu";
+        case TY_CHAR: return "%c";
+        case TY_BOOL: return "%d";
+        case TY_F16: case TY_F32: case TY_F64: return "%f";
+        case TY_STR: return "%s";
+        case TY_PTR: return "%p";
+        default:     return "%d";
+    }
+}
+
 /* ── Emit string constants (at module top) ────────────────────────────────── */
 
 static void escape_str_for_ir(FILE *out, const char *s) {
@@ -288,8 +304,85 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                 if (e->builtin.args.len == 0)
                     fatal_at(e->span, "@pf requires at least a format string");
 
-                /* evaluate all args before emitting the call */
                 size_t na = e->builtin.args.len;
+                Expr *fmt_arg = e->builtin.args.data[0];
+
+                /* Interpolated path: format string has \x01 sentinels from parser */
+                if (fmt_arg->kind == EXPR_STR && strchr(fmt_arg->sval, '\x01')) {
+                    Val   *ivals     = malloc(sizeof(Val)   * na);
+                    Type **itys      = malloc(sizeof(Type*) * na);
+                    Val   *printable = malloc(sizeof(Val)   * na);
+
+                    for (size_t i = 1; i < na; i++) {
+                        itys[i]  = NULL;
+                        ivals[i] = cg_expr(cg, e->builtin.args.data[i], &itys[i]);
+                    }
+
+                    /* Pre-extract ptr field for str args (str is { ptr, i64 }) */
+                    for (size_t i = 1; i < na; i++) {
+                        if (itys[i] && itys[i]->kind == TY_STR) {
+                            int sv = new_tmp(cg);
+                            emit(cg, "  %%t%d = extractvalue { ptr, i64 } %s, 0\n",
+                                 sv, ivals[i].buf);
+                            printable[i] = val_tmp(sv);
+                        } else {
+                            printable[i] = ivals[i];
+                        }
+                    }
+
+                    /* Build printf format string: replace \x01<spec>\x02 blocks.
+                       Empty spec means auto-detect from arg type. */
+                    char pf_fmt[4096];
+                    size_t pff = 0, ai = 1;
+                    for (const char *fs = fmt_arg->sval;
+                         *fs && pff < sizeof(pf_fmt) - 32; fs++) {
+                        if ((unsigned char)*fs == '\x01') {
+                            fs++;
+                            /* read explicit spec until \x02 */
+                            char spec_buf[64];
+                            size_t sl = 0;
+                            while (*fs && (unsigned char)*fs != '\x02'
+                                   && sl < sizeof(spec_buf) - 1)
+                                spec_buf[sl++] = *fs++;
+                            /* fs now points at \x02; the for-loop ++ will skip it */
+                            spec_buf[sl] = '\0';
+                            pf_fmt[pff++] = '%';
+                            if (sl > 0) {
+                                /* user-supplied spec */
+                                for (size_t j = 0; j < sl; j++)
+                                    pf_fmt[pff++] = spec_buf[j];
+                            } else {
+                                /* auto-detect: pf_specifier returns "%X", skip the % */
+                                const char *auto_spec = pf_specifier(itys[ai]);
+                                for (const char *sp = auto_spec + 1; *sp; sp++)
+                                    pf_fmt[pff++] = *sp;
+                            }
+                            ai++;
+                        } else {
+                            pf_fmt[pff++] = *fs;
+                        }
+                    }
+                    pf_fmt[pff] = '\0';
+
+                    int fmtid = intern_str(cg, arena_strndup(cg->arena, pf_fmt, pff));
+                    int ft    = new_tmp(cg);
+                    emit(cg, "  %%t%d = getelementptr inbounds [%zu x i8],"
+                             " ptr @.str.%d, i32 0, i32 0\n", ft, pff + 1, fmtid);
+
+                    int t = new_tmp(cg);
+                    emit(cg, "  %%t%d = call i32 (ptr, ...) @printf(ptr %%t%d", t, ft);
+                    for (size_t i = 1; i < na; i++) {
+                        const char *llt = (itys[i] && itys[i]->kind == TY_STR)
+                                          ? "ptr" : (itys[i] ? llvm_type(itys[i]) : "i32");
+                        emit(cg, ", %s %s", llt, printable[i].buf);
+                    }
+                    emit(cg, ")\n");
+
+                    free(ivals); free(itys); free(printable);
+                    return val_tmp(t);
+                }
+
+                /* Non-interpolated path: pass args directly to printf */
                 Val   *pf_vals = malloc(sizeof(Val)   * na);
                 Type **pf_tys  = malloc(sizeof(Type*) * na);
                 for (size_t i = 0; i < na; i++) {
