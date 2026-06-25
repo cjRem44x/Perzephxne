@@ -244,6 +244,10 @@ static Type *builtin_ret_ty(Sema *s, const char *name) {
     if (!strcmp(name, "os.linux") || !strcmp(name, "os.windows") ||
         !strcmp(name, "os.mac"))                      return s->ty_bool;
     if (!strncmp(name, "arch.", 5))                   return s->ty_bool;
+    if (!strcmp(name, "args")) {
+        Type *sl = make_ptr(s, TY_SLICE, s->ty_str);
+        return sl;
+    }
     return NULL;
 }
 

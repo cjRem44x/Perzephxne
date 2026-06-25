@@ -37,6 +37,7 @@ typedef struct {
     int        label_id;    /* next label suffix     */
     Scope     *scope;
     const char *cur_fn_ret; /* LLVM type string of current function return */
+    int         terminated;  /* 1 = current block already has a terminator */
     int         had_error;
 } CG;
 
@@ -51,6 +52,21 @@ static void emit(CG *cg, const char *fmt, ...) {
 
 static int new_tmp(CG *cg)   { return cg->tmp_id++; }
 static int new_label(CG *cg) { return cg->label_id++; }
+
+/* emit a branch/jump terminator (only if block not already terminated) */
+static void emit_br(CG *cg, const char *fmt, ...) {
+    if (cg->terminated) return;
+    va_list ap; va_start(ap, fmt);
+    vfprintf(cg->out, fmt, ap);
+    va_end(ap);
+    cg->terminated = 1;
+}
+
+/* emit a label, which starts a new basic block */
+static void emit_label(CG *cg, int id) {
+    emit(cg, "l%d:\n", id);
+    cg->terminated = 0;
+}
 
 static void push_scope(CG *cg) {
     Scope *s = ARENA_NEW(cg->arena, Scope);
@@ -260,7 +276,7 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
             if (!strcmp(name, "exit")) {
                 Val code = cg_expr(cg, e->builtin.args.data[0], NULL);
                 emit(cg, "  call void @exit(i32 %s)\n", code.buf);
-                emit(cg, "  unreachable\n");
+                emit_br(cg, "  unreachable\n");
                 return val_str("0");
             }
 
@@ -269,7 +285,7 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                 Val msg = cg_expr(cg, e->builtin.args.data[0], NULL);
                 emit(cg, "  call i32 (ptr, ...) @printf(ptr %s)\n", msg.buf);
                 emit(cg, "  call void @exit(i32 1)\n");
-                emit(cg, "  unreachable\n");
+                emit_br(cg, "  unreachable\n");
                 return val_str("0");
             }
 
@@ -278,13 +294,35 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                 Val cond = cg_expr(cg, e->builtin.args.data[0], NULL);
                 int pass  = new_label(cg);
                 int fail  = new_label(cg);
-                emit(cg, "  br i1 %s, label %%l%d, label %%l%d\n",
-                     cond.buf, pass, fail);
-                emit(cg, "l%d:\n", fail);
+                emit_br(cg, "  br i1 %s, label %%l%d, label %%l%d\n",
+                        cond.buf, pass, fail);
+                emit_label(cg, fail);
                 emit(cg, "  call void @exit(i32 1)\n");
-                emit(cg, "  unreachable\n");
-                emit(cg, "l%d:\n", pass);
+                emit_br(cg, "  unreachable\n");
+                emit_label(cg, pass);
                 return val_str("0");
+            }
+
+            /* @args — returns []str (argc/argv from main, passed via globals) */
+            if (!strcmp(name, "args")) {
+                int t = new_tmp(cg);
+                emit(cg, "  %%t%d = load i32, ptr @__przp_argc\n", t);
+                int t2 = new_tmp(cg);
+                emit(cg, "  %%t%d = load ptr, ptr @__przp_argv\n", t2);
+                /* pack into { ptr, i64 } slice */
+                int sl = new_tmp(cg);
+                emit(cg, "  %%t%d = alloca { ptr, i64 }\n", sl);
+                int p0 = new_tmp(cg);
+                emit(cg, "  %%t%d = getelementptr { ptr, i64 }, ptr %%t%d, i32 0, i32 0\n", p0, sl);
+                emit(cg, "  store ptr %%t%d, ptr %%t%d\n", t2, p0);
+                int p1 = new_tmp(cg);
+                emit(cg, "  %%t%d = getelementptr { ptr, i64 }, ptr %%t%d, i32 0, i32 1\n", p1, sl);
+                int argc64 = new_tmp(cg);
+                emit(cg, "  %%t%d = sext i32 %%t%d to i64\n", argc64, t);
+                emit(cg, "  store i64 %%t%d, ptr %%t%d\n", argc64, p1);
+                int res = new_tmp(cg);
+                emit(cg, "  %%t%d = load { ptr, i64 }, ptr %%t%d\n", res, sl);
+                return val_tmp(res);
             }
 
             /* @alo */
@@ -546,21 +584,20 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
         case EXPR_IF: {
             Val cond = cg_expr(cg, e->if_expr.cond, NULL);
             int then_l = new_label(cg), else_l = new_label(cg), end_l = new_label(cg);
-            emit(cg, "  br i1 %s, label %%l%d, label %%l%d\n",
-                 cond.buf, then_l, else_l);
-            /* result alloca */
+            emit_br(cg, "  br i1 %s, label %%l%d, label %%l%d\n",
+                    cond.buf, then_l, else_l);
             int res = new_tmp(cg);
-            emit(cg, "  %%t%d = alloca i64\n", res); /* generic — sema will fix type */
+            emit(cg, "  %%t%d = alloca i64\n", res);
 
-            emit(cg, "l%d:\n", then_l);
+            emit_label(cg, then_l);
             if (e->if_expr.then_) cg_stmt(cg, e->if_expr.then_);
-            emit(cg, "  br label %%l%d\n", end_l);
+            emit_br(cg, "  br label %%l%d\n", end_l);
 
-            emit(cg, "l%d:\n", else_l);
+            emit_label(cg, else_l);
             if (e->if_expr.else_) cg_stmt(cg, e->if_expr.else_);
-            emit(cg, "  br label %%l%d\n", end_l);
+            emit_br(cg, "  br label %%l%d\n", end_l);
 
-            emit(cg, "l%d:\n", end_l);
+            emit_label(cg, end_l);
             int load = new_tmp(cg);
             emit(cg, "  %%t%d = load i64, ptr %%t%d\n", load, res);
             return val_tmp(load);
@@ -677,9 +714,9 @@ static void cg_stmt(CG *cg, Stmt *s) {
                 Type *rt = NULL;
                 Val rv = cg_expr(cg, s->ret.val, &rt);
                 const char *llt = rt ? llvm_type(rt) : (cg->cur_fn_ret ? cg->cur_fn_ret : "i32");
-                emit(cg, "  ret %s %s\n", llt, rv.buf);
+                emit_br(cg, "  ret %s %s\n", llt, rv.buf);
             } else {
-                emit(cg, "  ret void\n");
+                emit_br(cg, "  ret void\n");
             }
             break;
         }
@@ -687,29 +724,29 @@ static void cg_stmt(CG *cg, Stmt *s) {
         case STMT_IF: {
             int end_l = new_label(cg);
             for (size_t i = 0; i < s->if_.branches.len; i++) {
-                IfBranch *br = &s->if_.branches.data[i];
-                Val cond = cg_expr(cg, br->cond, NULL);
+                IfBranch *br_item = &s->if_.branches.data[i];
+                Val cond = cg_expr(cg, br_item->cond, NULL);
                 int body_l = new_label(cg);
                 int next_l = (i + 1 < s->if_.branches.len || s->if_.else_body.len)
                              ? new_label(cg) : end_l;
-                emit(cg, "  br i1 %s, label %%l%d, label %%l%d\n",
-                     cond.buf, body_l, next_l);
-                emit(cg, "l%d:\n", body_l);
+                emit_br(cg, "  br i1 %s, label %%l%d, label %%l%d\n",
+                        cond.buf, body_l, next_l);
+                emit_label(cg, body_l);
                 push_scope(cg);
-                for (size_t j = 0; j < br->body.len; j++)
-                    cg_stmt(cg, br->body.data[j]);
+                for (size_t j = 0; j < br_item->body.len; j++)
+                    cg_stmt(cg, br_item->body.data[j]);
                 pop_scope(cg);
-                emit(cg, "  br label %%l%d\n", end_l);
-                if (next_l != end_l) emit(cg, "l%d:\n", next_l);
+                emit_br(cg, "  br label %%l%d\n", end_l);
+                if (next_l != end_l) emit_label(cg, next_l);
             }
             if (s->if_.else_body.len) {
                 push_scope(cg);
                 for (size_t j = 0; j < s->if_.else_body.len; j++)
                     cg_stmt(cg, s->if_.else_body.data[j]);
                 pop_scope(cg);
-                emit(cg, "  br label %%l%d\n", end_l);
+                emit_br(cg, "  br label %%l%d\n", end_l);
             }
-            emit(cg, "l%d:\n", end_l);
+            emit_label(cg, end_l);
             break;
         }
 
@@ -717,59 +754,60 @@ static void cg_stmt(CG *cg, Stmt *s) {
             int cond_l = new_label(cg);
             int body_l = new_label(cg);
             int end_l  = new_label(cg);
-            emit(cg, "  br label %%l%d\n", cond_l);
-            emit(cg, "l%d:\n", cond_l);
+            emit_br(cg, "  br label %%l%d\n", cond_l);
+            emit_label(cg, cond_l);
             Val cond = cg_expr(cg, s->while_.cond, NULL);
-            emit(cg, "  br i1 %s, label %%l%d, label %%l%d\n",
-                 cond.buf, body_l, end_l);
-            emit(cg, "l%d:\n", body_l);
+            emit_br(cg, "  br i1 %s, label %%l%d, label %%l%d\n",
+                    cond.buf, body_l, end_l);
+            emit_label(cg, body_l);
             push_scope(cg);
             for (size_t i = 0; i < s->while_.body.len; i++)
                 cg_stmt(cg, s->while_.body.data[i]);
             pop_scope(cg);
-            emit(cg, "  br label %%l%d\n", cond_l);
-            emit(cg, "l%d:\n", end_l);
+            emit_br(cg, "  br label %%l%d\n", cond_l);
+            emit_label(cg, end_l);
             break;
         }
 
         case STMT_FOR: {
             ForClause *fc = &s->for_.clause;
             if (fc->kind == FOR_RANGE) {
-                /* for start..end */
                 Val start = cg_expr(cg, fc->iter, NULL);
                 Val end   = cg_expr(cg, fc->range_end, NULL);
                 int i_alloca = new_tmp(cg);
                 emit(cg, "  %%t%d = alloca i64\n", i_alloca);
                 emit(cg, "  store i64 %s, ptr %%t%d\n", start.buf, i_alloca);
                 int cond_l = new_label(cg), body_l = new_label(cg), end_l = new_label(cg);
-                emit(cg, "  br label %%l%d\n", cond_l);
-                emit(cg, "l%d:\n", cond_l);
+                emit_br(cg, "  br label %%l%d\n", cond_l);
+                emit_label(cg, cond_l);
                 int i_val = new_tmp(cg);
                 emit(cg, "  %%t%d = load i64, ptr %%t%d\n", i_val, i_alloca);
                 int cmp = new_tmp(cg);
                 emit(cg, "  %%t%d = icmp %s i64 %%t%d, %s\n",
                      cmp, fc->inclusive ? "sle" : "slt", i_val, end.buf);
-                emit(cg, "  br i1 %%t%d, label %%l%d, label %%l%d\n",
-                     cmp, body_l, end_l);
-                emit(cg, "l%d:\n", body_l);
+                emit_br(cg, "  br i1 %%t%d, label %%l%d, label %%l%d\n",
+                        cmp, body_l, end_l);
+                emit_label(cg, body_l);
                 push_scope(cg);
                 for (size_t j = 0; j < s->for_.body.len; j++)
                     cg_stmt(cg, s->for_.body.data[j]);
                 pop_scope(cg);
-                int inc = new_tmp(cg);
-                emit(cg, "  %%t%d = add i64 %%t%d, 1\n", inc, i_val);
-                emit(cg, "  store i64 %%t%d, ptr %%t%d\n", inc, i_alloca);
-                emit(cg, "  br label %%l%d\n", cond_l);
-                emit(cg, "l%d:\n", end_l);
+                if (!cg->terminated) {
+                    int inc = new_tmp(cg);
+                    emit(cg, "  %%t%d = load i64, ptr %%t%d\n", inc, i_alloca);
+                    int inc2 = new_tmp(cg);
+                    emit(cg, "  %%t%d = add i64 %%t%d, 1\n", inc2, inc);
+                    emit(cg, "  store i64 %%t%d, ptr %%t%d\n", inc2, i_alloca);
+                    emit_br(cg, "  br label %%l%d\n", cond_l);
+                }
+                emit_label(cg, end_l);
             } else {
-                /* FOR_EACH and others: simplified stub */
                 emit(cg, "  ; for loop (for-each not fully implemented)\n");
             }
             break;
         }
 
         case STMT_WHEN: {
-            /* emit if-else chain */
             int end_l = new_label(cg);
             Type *val_ty = NULL;
             Val val = cg_expr(cg, s->when.val, &val_ty);
@@ -779,14 +817,12 @@ static void cg_stmt(CG *cg, Stmt *s) {
                 int body_l = new_label(cg);
                 int next_l = (i + 1 < s->when.arms.len) ? new_label(cg) : end_l;
 
-                /* check first pattern (multi-pattern: OR of all) */
                 int cond_t = -1;
                 for (size_t pi = 0; pi < arm->pats.len; pi++) {
                     Expr *pat = arm->pats.data[pi];
-                    /* wildcard _ */
                     if (pat->kind == EXPR_DISCARD) {
                         int wc = new_tmp(cg);
-                        emit(cg, "  %%t%d = add i1 0, 1\n", wc); /* true */
+                        emit(cg, "  %%t%d = add i1 0, 1\n", wc);
                         cond_t = wc;
                         break;
                     }
@@ -803,21 +839,20 @@ static void cg_stmt(CG *cg, Stmt *s) {
                 }
                 if (cond_t < 0) { int wc = new_tmp(cg); emit(cg,"  %%t%d = add i1 0,1\n",wc); cond_t=wc; }
 
-                emit(cg, "  br i1 %%t%d, label %%l%d, label %%l%d\n",
-                     cond_t, body_l, next_l);
-                emit(cg, "l%d:\n", body_l);
+                emit_br(cg, "  br i1 %%t%d, label %%l%d, label %%l%d\n",
+                        cond_t, body_l, next_l);
+                emit_label(cg, body_l);
                 push_scope(cg);
                 cg_stmt(cg, arm->body);
                 pop_scope(cg);
-                emit(cg, "  br label %%l%d\n", end_l);
-                if (next_l != end_l) emit(cg, "l%d:\n", next_l);
+                emit_br(cg, "  br label %%l%d\n", end_l);
+                if (next_l != end_l) emit_label(cg, next_l);
             }
-            emit(cg, "l%d:\n", end_l);
+            emit_label(cg, end_l);
             break;
         }
 
         case STMT_DEFER: {
-            /* deferred stmts run at end of scope — basic inline-at-exit for now */
             for (size_t i = 0; i < s->defer.len; i++)
                 cg_stmt(cg, s->defer.data[i]);
             break;
@@ -833,8 +868,7 @@ static void cg_stmt(CG *cg, Stmt *s) {
 
         case STMT_BREAK:
         case STMT_CONTINUE:
-            /* TODO: proper labeled break/continue */
-            emit(cg, "  br label %%l0\n");
+            emit_br(cg, "  br label %%l0\n");
             break;
 
         default:
@@ -882,15 +916,17 @@ static void cg_fn(CG *cg, Item *item) {
         define_sym(cg, par->name, arena_strdup(cg->arena, llvm_name), 0, par->ty);
     }
 
+    cg->terminated = 0;
     for (size_t i = 0; i < item->fn.body.len; i++)
         cg_stmt(cg, item->fn.body.data[i]);
 
     pop_scope(cg);
 
-    /* implicit void return */
-    if (is_void) emit(cg, "  ret void\n");
-    else if (item->fn.ret && item->fn.ret->kind == TY_I32)
-        emit(cg, "  ret i32 0\n");
+    /* implicit return only if last block has no terminator */
+    if (!cg->terminated) {
+        if (is_void) emit(cg, "  ret void\n");
+        else         emit(cg, "  ret %s 0\n", ret_llt);
+    }
 
     emit(cg, "}\n\n");
 }
@@ -957,7 +993,11 @@ int codegen(Module *mod, FILE *out) {
     emit(&cg, "declare void @free(ptr)\n");
     emit(&cg, "declare void @exit(i32)\n\n");
 
-    /* format string constants for @str cast */
+    /* globals for @args support */
+    emit(&cg, "@__przp_argc = internal global i32 0\n");
+    emit(&cg, "@__przp_argv = internal global ptr null\n\n");
+
+    /* format string constants */
     emit(&cg, "@.fmt.d = private constant [3 x i8] c\"%%d\\00\"\n\n");
 
     /* globals and externs */
@@ -968,13 +1008,30 @@ int codegen(Module *mod, FILE *out) {
     }
     emit(&cg, "\n");
 
-    /* functions */
+    /* functions — rename user's `main` to `__przp_main` */
+    int has_main = 0;
     for (size_t i = 0; i < mod->items.len; i++) {
         Item *item = mod->items.data[i];
-        if (item->kind == ITEM_FN) cg_fn(&cg, item);
+        if (item->kind == ITEM_FN) {
+            if (!strcmp(item->name, "main")) { has_main = 1; item->name = "__przp_main"; }
+            cg_fn(&cg, item);
+            if (!strcmp(item->name, "__przp_main")) item->name = "main"; /* restore */
+        }
     }
 
-    /* string constants — emitted after functions so we know which ones are needed */
+    /* emit a real C main that stores argc/argv then calls __przp_main */
+    if (has_main) {
+        emit(&cg,
+            "define i32 @main(i32 %%argc, ptr %%argv) {\n"
+            "entry:\n"
+            "  store i32 %%argc, ptr @__przp_argc\n"
+            "  store ptr %%argv, ptr @__przp_argv\n"
+            "  %%r = call i32 @__przp_main()\n"
+            "  ret i32 %%r\n"
+            "}\n\n");
+    }
+
+    /* string constants */
     emit(&cg, "\n");
     emit_str_constants(&cg);
 
