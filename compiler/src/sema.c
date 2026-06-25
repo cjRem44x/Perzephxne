@@ -20,13 +20,22 @@ typedef struct Scope {
     Sym          *syms;
 } Scope;
 
+/* ── Struct field table ───────────────────────────────────────────────────── */
+
+typedef struct StructEntry {
+    struct StructEntry *next;
+    const char         *name;
+    FieldList          *fields; /* points into the Item's field list */
+} StructEntry;
+
 /* ── Sema context ─────────────────────────────────────────────────────────── */
 
 typedef struct {
-    Arena  *arena;
-    Scope  *scope;
-    Type   *cur_ret;   /* return type of the function being checked */
-    int     errors;
+    Arena       *arena;
+    Scope       *scope;
+    Type        *cur_ret;   /* return type of the function being checked */
+    int          errors;
+    StructEntry *structs;   /* name → field list for struct lookup */
     /* built-in types — interned once */
     Type   *ty_void, *ty_bool, *ty_i8, *ty_i16, *ty_i32, *ty_i64;
     Type   *ty_u8,   *ty_u16,  *ty_u32, *ty_u64, *ty_usize;
@@ -423,14 +432,24 @@ static Type *check_expr(Sema *s, Expr *e) {
         case EXPR_FIELD: {
             Type *obj_ty = check_expr(s, e->field.obj);
             obj_ty = resolve_named(s, obj_ty);
+            e->ty = NULL;
             if (obj_ty && obj_ty->kind == TY_NAMED) {
-                /* struct not yet resolved — leave e->ty NULL and recover */
-                e->ty = NULL;
-            } else if (!obj_ty) {
-                e->ty = NULL;
-            } else {
-                /* only named/struct types have fields at this stage */
-                e->ty = NULL;
+                for (StructEntry *se = s->structs; se; se = se->next) {
+                    if (!strcmp(se->name, obj_ty->named.name)) {
+                        for (size_t i = 0; i < se->fields->len; i++) {
+                            if (!strcmp(se->fields->data[i].name, e->field.field)) {
+                                e->ty = se->fields->data[i].ty;
+                                break;
+                            }
+                        }
+                        break;
+                    }
+                }
+                if (!e->ty)
+                    sema_error(s, e->span, "struct '%s' has no field '%s'",
+                               obj_ty->named.name, e->field.field);
+            } else if (obj_ty) {
+                sema_error(s, e->span, "field access on non-struct type '%s'", ty_str(obj_ty));
             }
             break;
         }
@@ -712,12 +731,7 @@ static void check_fn(Sema *s, Item *item) {
 }
 
 static void check_struct(Sema *s, Item *item) {
-    /* register struct type in scope */
-    Type *ty = make_ty(s, TY_NAMED);
-    ty->named.name = item->name;
-    define(s, item->span, item->name, ty, 0, 1);
-
-    /* validate field types */
+    /* type already registered in register_item — just validate field types */
     for (size_t i = 0; i < item->struct_.fields.len; i++) {
         Field *f = &item->struct_.fields.data[i];
         f->ty = check_type(s, f->ty);
@@ -798,6 +812,12 @@ static void register_item(Sema *s, Item *item) {
             Type *ty = make_ty(s, TY_NAMED);
             ty->named.name = item->name;
             define(s, item->span, item->name, ty, 0, 1);
+            /* register field list so EXPR_FIELD can look up types */
+            StructEntry *se = ARENA_NEW(s->arena, StructEntry);
+            se->name   = item->name;
+            se->fields = &item->struct_.fields;
+            se->next   = s->structs;
+            s->structs = se;
             break;
         }
         case ITEM_ENUM: {

@@ -15,6 +15,12 @@ typedef struct StrConst {
     size_t           len; /* byte length including null terminator */
 } StrConst;
 
+typedef struct StructInfo {
+    struct StructInfo *next;
+    const char        *name;
+    FieldList          fields; /* copy of ITEM_STRUCT's field list */
+} StructInfo;
+
 typedef struct Symbol {
     struct Symbol *next;
     const char    *name;
@@ -38,16 +44,17 @@ typedef struct Scope {
 } Scope;
 
 typedef struct {
-    FILE      *out;
-    Arena     *arena;
-    StrConst  *str_consts;
-    int        str_id;
-    int        tmp_id;      /* next %t<n> temporary */
-    int        label_id;    /* next label suffix     */
-    Scope     *scope;
-    const char *cur_fn_ret; /* LLVM type string of current function return */
-    int         terminated;  /* 1 = current block already has a terminator */
-    int         had_error;
+    FILE        *out;
+    Arena       *arena;
+    StrConst    *str_consts;
+    StructInfo  *structs;    /* name → field list for struct layout */
+    int          str_id;
+    int          tmp_id;      /* next %t<n> temporary */
+    int          label_id;    /* next label suffix     */
+    Scope       *scope;
+    const char  *cur_fn_ret; /* LLVM type string of current function return */
+    int          terminated;  /* 1 = current block already has a terminator */
+    int          had_error;
 } CG;
 
 /* ── Utilities ────────────────────────────────────────────────────────────── */
@@ -156,9 +163,34 @@ static const char *llvm_type(Type *ty) {
         case TY_SMART_PTR: return "ptr";
         case TY_SLICE:     return "{ ptr, i64 }";
         case TY_FAILABLE:  return llvm_type(ty->ptr.inner); /* value part */
-        case TY_NAMED:     return ty->named.name; /* resolved by sema later */
+        case TY_NAMED: {
+            /* Round-robin static buffers — safe for up to 8 concurrent uses */
+            static char bufs[8][128];
+            static int  bi = 0;
+            bi = (bi + 1) % 8;
+            snprintf(bufs[bi], sizeof(bufs[bi]), "%%%s", ty->named.name);
+            return bufs[bi];
+        }
         default:           return "ptr";
     }
+}
+
+static StructInfo *find_struct(CG *cg, const char *name) {
+    for (StructInfo *si = cg->structs; si; si = si->next)
+        if (!strcmp(si->name, name)) return si;
+    return NULL;
+}
+
+static int struct_field_index(StructInfo *si, const char *field) {
+    for (size_t i = 0; i < si->fields.len; i++)
+        if (!strcmp(si->fields.data[i].name, field)) return (int)i;
+    return -1;
+}
+
+static Type *struct_field_type(StructInfo *si, const char *field) {
+    for (size_t i = 0; i < si->fields.len; i++)
+        if (!strcmp(si->fields.data[i].name, field)) return si->fields.data[i].ty;
+    return NULL;
 }
 
 static int type_is_float(Type *ty) {
@@ -281,19 +313,13 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
             if (!sym)
                 fatal_at(e->span, "undefined identifier '%s'", e->ident.name);
             if (out_ty) *out_ty = sym->ty;
-            if (sym->is_global) {
-                /* load from global */
-                int t = new_tmp(cg);
-                const char *llt = sym->ty ? llvm_type(sym->ty) : "i32";
-                emit(cg, "  %%t%d = load %s, ptr %s\n", t, llt, sym->llvm_name);
-                return val_tmp(t);
-            } else {
-                /* local alloca — load it */
-                int t = new_tmp(cg);
-                const char *llt = sym->ty ? llvm_type(sym->ty) : "i32";
-                emit(cg, "  %%t%d = load %s, ptr %s\n", t, llt, sym->llvm_name);
-                return val_tmp(t);
-            }
+            /* Struct values are represented as alloca ptrs — return ptr directly */
+            if (sym->ty && sym->ty->kind == TY_NAMED)
+                return val_str(sym->llvm_name);
+            int t = new_tmp(cg);
+            const char *llt = sym->ty ? llvm_type(sym->ty) : "i32";
+            emit(cg, "  %%t%d = load %s, ptr %s\n", t, llt, sym->llvm_name);
+            return val_tmp(t);
         }
 
         case EXPR_BUILTIN: {
@@ -673,9 +699,23 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
         case EXPR_FIELD: {
             Type *obj_ty = NULL;
             Val obj = cg_expr(cg, e->field.obj, &obj_ty);
-            (void)obj;
-            /* Simplified: just return undef — full struct layout in sema pass */
-            return val_str("undef");
+            if (!obj_ty || obj_ty->kind != TY_NAMED)
+                fatal_at(e->span, "field access on non-struct value");
+            StructInfo *si = find_struct(cg, obj_ty->named.name);
+            if (!si)
+                fatal_at(e->span, "unknown struct '%s'", obj_ty->named.name);
+            int fidx = struct_field_index(si, e->field.field);
+            if (fidx < 0)
+                fatal_at(e->span, "struct '%s' has no field '%s'",
+                         obj_ty->named.name, e->field.field);
+            Type *fty = si->fields.data[fidx].ty;
+            if (out_ty) *out_ty = fty;
+            int fp = new_tmp(cg);
+            emit(cg, "  %%t%d = getelementptr %%%s, ptr %s, i32 0, i32 %d\n",
+                 fp, obj_ty->named.name, obj.buf, fidx);
+            int t = new_tmp(cg);
+            emit(cg, "  %%t%d = load %s, ptr %%t%d\n", t, llvm_type(fty), fp);
+            return val_tmp(t);
         }
 
         case EXPR_DEREF: {
@@ -734,16 +774,28 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
         }
 
         case EXPR_STRUCT_LIT: {
-            /* zero-init struct and set fields — simplified */
+            StructInfo *si = find_struct(cg, e->struct_lit.ty_name);
             int t = new_tmp(cg);
-            emit(cg, "  %%t%d = alloca %%struct.%s\n", t, e->struct_lit.ty_name);
+            emit(cg, "  %%t%d = alloca %%%s\n", t, e->struct_lit.ty_name);
             for (size_t i = 0; i < e->struct_lit.fields.len; i++) {
                 FieldInit *fi = &e->struct_lit.fields.data[i];
-                Val fv = cg_expr(cg, fi->val, NULL);
+                Type *fty = NULL;
+                Val fv = cg_expr(cg, fi->val, &fty);
+                int fidx = si ? struct_field_index(si, fi->name) : (int)i;
+                if (fidx < 0) fidx = (int)i;
+                if (!fty && si) fty = struct_field_type(si, fi->name);
+                const char *store_llt = fty ? llvm_type(fty) : "i64";
                 int fp = new_tmp(cg);
-                emit(cg, "  %%t%d = getelementptr %%struct.%s, ptr %%t%d, i32 0, i32 %zu\n",
-                     fp, e->struct_lit.ty_name, t, i);
-                emit(cg, "  store i64 %s, ptr %%t%d\n", fv.buf, fp);
+                emit(cg, "  %%t%d = getelementptr %%%s, ptr %%t%d, i32 0, i32 %d\n",
+                     fp, e->struct_lit.ty_name, t, fidx);
+                emit(cg, "  store %s %s, ptr %%t%d\n", store_llt, fv.buf, fp);
+            }
+            /* out_ty = the named struct type */
+            if (out_ty) {
+                Type *sty = ARENA_NEW(cg->arena, Type);
+                sty->kind = TY_NAMED;
+                sty->named.name = e->struct_lit.ty_name;
+                *out_ty = sty;
             }
             return val_tmp(t);
         }
@@ -787,10 +839,17 @@ static void cg_stmt(CG *cg, Stmt *s) {
             if (s->let.init) {
                 Type *init_ty = NULL;
                 Val init = cg_expr(cg, s->let.init, &init_ty);
-                const char *store_ty = init_ty ? llvm_type(init_ty) : llt;
-                if (init_ty && init_ty->kind == TY_FAILABLE)
-                    store_ty = llvm_type(init_ty->ptr.inner);
-                emit(cg, "  store %s %s, ptr %%t%d\n", store_ty, init.buf, alloca);
+                if (init_ty && init_ty->kind == TY_NAMED) {
+                    /* struct init returns a ptr — copy via load+store */
+                    int loaded = new_tmp(cg);
+                    emit(cg, "  %%t%d = load %s, ptr %s\n", loaded, llvm_type(init_ty), init.buf);
+                    emit(cg, "  store %s %%t%d, ptr %%t%d\n", llvm_type(init_ty), loaded, alloca);
+                } else {
+                    const char *store_ty = init_ty ? llvm_type(init_ty) : llt;
+                    if (init_ty && init_ty->kind == TY_FAILABLE)
+                        store_ty = llvm_type(init_ty->ptr.inner);
+                    emit(cg, "  store %s %s, ptr %%t%d\n", store_ty, init.buf, alloca);
+                }
             }
 
             /* register symbol — store the alloca name */
@@ -810,7 +869,12 @@ static void cg_stmt(CG *cg, Stmt *s) {
                 Type *vty = NULL;
                 Val rhs = cg_expr(cg, s->assign.val, &vty);
                 const char *llt = sym->ty ? llvm_type(sym->ty) : "i32";
-                if (s->assign.op == ASSIGN_EQ) {
+                if (s->assign.op == ASSIGN_EQ && sym->ty && sym->ty->kind == TY_NAMED) {
+                    /* struct copy: rhs is a ptr, load then store */
+                    int loaded = new_tmp(cg);
+                    emit(cg, "  %%t%d = load %s, ptr %s\n", loaded, llt, rhs.buf);
+                    emit(cg, "  store %s %%t%d, ptr %s\n", llt, loaded, sym->llvm_name);
+                } else if (s->assign.op == ASSIGN_EQ) {
                     emit(cg, "  store %s %s, ptr %s\n", llt, rhs.buf, sym->llvm_name);
                 } else {
                     /* load, operate, store */
@@ -826,6 +890,25 @@ static void cg_stmt(CG *cg, Stmt *s) {
                         default:         emit(cg, "  %%t%d = add %s %%t%d, 0\n",  res_t, llt, cur_t); break;
                     }
                     emit(cg, "  store %s %%t%d, ptr %s\n", llt, res_t, sym->llvm_name);
+                }
+            } else if (s->assign.target->kind == EXPR_FIELD) {
+                /* p.field = val */
+                Type *obj_ty = NULL;
+                Val obj = cg_expr(cg, s->assign.target->field.obj, &obj_ty);
+                if (obj_ty && obj_ty->kind == TY_NAMED) {
+                    StructInfo *si = find_struct(cg, obj_ty->named.name);
+                    const char *fname = s->assign.target->field.field;
+                    int fidx = si ? struct_field_index(si, fname) : -1;
+                    Type *fty = si ? struct_field_type(si, fname) : NULL;
+                    if (fidx >= 0) {
+                        Type *vty = NULL;
+                        Val rhs = cg_expr(cg, s->assign.val, &vty);
+                        const char *llt = fty ? llvm_type(fty) : (vty ? llvm_type(vty) : "i32");
+                        int fp = new_tmp(cg);
+                        emit(cg, "  %%t%d = getelementptr %%%s, ptr %s, i32 0, i32 %d\n",
+                             fp, obj_ty->named.name, obj.buf, fidx);
+                        emit(cg, "  store %s %s, ptr %%t%d\n", llt, rhs.buf, fp);
+                    }
                 }
             } else if (s->assign.target->kind == EXPR_DEREF) {
                 Val ptr = cg_expr(cg, s->assign.target->deref.operand, NULL);
@@ -1256,6 +1339,26 @@ int codegen(Module *mod, FILE *out) {
 
     /* format string constants */
     emit(&cg, "@.fmt.d = private constant [3 x i8] c\"%%d\\00\"\n\n");
+
+    /* struct type declarations and layout table */
+    for (size_t i = 0; i < mod->items.len; i++) {
+        Item *item = mod->items.data[i];
+        if (item->kind != ITEM_STRUCT) continue;
+        /* register layout */
+        StructInfo *si = ARENA_NEW(cg.arena, StructInfo);
+        si->name   = item->name;
+        si->fields = item->struct_.fields;
+        si->next   = cg.structs;
+        cg.structs = si;
+        /* emit LLVM named type */
+        emit(&cg, "%%%s = type { ", item->name);
+        for (size_t j = 0; j < item->struct_.fields.len; j++) {
+            if (j) emit(&cg, ", ");
+            emit(&cg, "%s", llvm_type(item->struct_.fields.data[j].ty));
+        }
+        emit(&cg, " }\n");
+    }
+    emit(&cg, "\n");
 
     /* globals and externs */
     for (size_t i = 0; i < mod->items.len; i++) {
