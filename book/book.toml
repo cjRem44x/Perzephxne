@@ -1,0 +1,13 @@
+[book]
+title       = "The Perzephxne Programming Language"
+authors     = ["cjRem44x"]
+language    = "en"
+src         = "src"
+
+[output.html]
+default-theme      = "navy"
+git-repository-url = "https://github.com/cjRem44x/Perzephxne"
+
+[output.html.fold]
+enable    = true
+level     = 1

@@ -1,0 +1,1936 @@
+<!DOCTYPE HTML>
+<html lang="en" class="navy sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>The Perzephxne Programming Language</title>
+        <meta name="robots" content="noindex">
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="favicon-de23e50b.svg">
+        <link rel="shortcut icon" href="favicon-8114d1fc.png">
+        <link rel="stylesheet" href="css/variables-8adf115d.css">
+        <link rel="stylesheet" href="css/general-0392ca55.css">
+        <link rel="stylesheet" href="css/chrome-fc474251.css">
+        <link rel="stylesheet" href="css/print-9e4910d8.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="fonts/fonts-9644e21d.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" id="mdbook-highlight-css" href="highlight-493f70e1.css">
+        <link rel="stylesheet" id="mdbook-tomorrow-night-css" href="tomorrow-night-4c0ae647.css">
+        <link rel="stylesheet" id="mdbook-ayu-highlight-css" href="ayu-highlight-3fdfc3ac.css">
+
+        <!-- Custom theme stylesheets -->
+
+
+        <!-- Provide site root and default themes to javascript -->
+        <script>
+            const path_to_root = "";
+            const default_light_theme = "navy";
+            const default_dark_theme = "navy";
+            window.path_to_searchindex_js = "searchindex-4730c41f.js";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="toc-d2cdd05f.js"></script>
+    </head>
+    <body>
+    <div id="mdbook-help-container">
+        <div id="mdbook-help-popup">
+            <h2 class="mdbook-help-title">Keyboard shortcuts</h2>
+            <div>
+                <p>Press <kbd>←</kbd> or <kbd>→</kbd> to navigate between chapters</p>
+                <p>Press <kbd>S</kbd> or <kbd>/</kbd> to search in the book</p>
+                <p>Press <kbd>?</kbd> to show this help</p>
+                <p>Press <kbd>Esc</kbd> to hide this help</p>
+            </div>
+        </div>
+    </div>
+    <div id="mdbook-body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                let theme = localStorage.getItem('mdbook-theme');
+                let sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            const default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? default_dark_theme : default_light_theme;
+            let theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('navy')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="mdbook-sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            let sidebar = null;
+            const sidebar_toggle = document.getElementById("mdbook-sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+                sidebar_toggle.checked = false;
+            }
+            if (sidebar === 'visible') {
+                sidebar_toggle.checked = true;
+            } else {
+                html.classList.remove('sidebar-visible');
+            }
+        </script>
+
+        <nav id="mdbook-sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="toc.html"></iframe>
+            </noscript>
+            <div id="mdbook-sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="mdbook-page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="mdbook-menu-bar-hover-placeholder"></div>
+                <div id="mdbook-menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="mdbook-sidebar-toggle" class="icon-button" for="mdbook-sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="mdbook-sidebar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M0 96C0 78.3 14.3 64 32 64H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32C14.3 128 0 113.7 0 96zM0 256c0-17.7 14.3-32 32-32H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32c-17.7 0-32-14.3-32-32zM448 416c0 17.7-14.3 32-32 32H32c-17.7 0-32-14.3-32-32s14.3-32 32-32H416c17.7 0 32 14.3 32 32z"/></svg></span>
+                        </label>
+                        <button id="mdbook-theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="mdbook-theme-list">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M371.3 367.1c27.3-3.9 51.9-19.4 67.2-42.9L600.2 74.1c12.6-19.5 9.4-45.3-7.6-61.2S549.7-4.4 531.1 9.6L294.4 187.2c-24 18-38.2 46.1-38.4 76.1L371.3 367.1zm-19.6 25.4l-116-104.4C175.9 290.3 128 339.6 128 400c0 3.9 .2 7.8 .6 11.6c1.8 17.5-10.2 36.4-27.8 36.4H96c-17.7 0-32 14.3-32 32s14.3 32 32 32H240c61.9 0 112-50.1 112-112c0-2.5-.1-5-.2-7.5z"/></svg></span>
+                        </button>
+                        <ul id="mdbook-theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-default_theme">Auto</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-ayu">Ayu</button></li>
+                        </ul>
+                        <button id="mdbook-search-toggle" class="icon-button" type="button" title="Search (`/`)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="/ s" aria-controls="mdbook-searchbar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M416 208c0 45.9-14.9 88.3-40 122.7L502.6 457.4c12.5 12.5 12.5 32.8 0 45.3s-32.8 12.5-45.3 0L330.7 376c-34.4 25.2-76.8 40-122.7 40C93.1 416 0 322.9 0 208S93.1 0 208 0S416 93.1 416 208zM208 352c79.5 0 144-64.5 144-144s-64.5-144-144-144S64 128.5 64 208s64.5 144 144 144z"/></svg></span>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">The Perzephxne Programming Language</h1>
+
+                    <div class="right-buttons">
+                        <a href="print.html" title="Print this book" aria-label="Print this book">
+                            <span class=fa-svg id="print-button"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M128 0C92.7 0 64 28.7 64 64v96h64V64H354.7L384 93.3V160h64V93.3c0-17-6.7-33.3-18.7-45.3L400 18.7C388 6.7 371.7 0 354.7 0H128zM384 352v32 64H128V384 368 352H384zm64 32h32c17.7 0 32-14.3 32-32V256c0-35.3-28.7-64-64-64H64c-35.3 0-64 28.7-64 64v96c0 17.7 14.3 32 32 32H64v64c0 35.3 28.7 64 64 64H384c35.3 0 64-28.7 64-64V384zm-16-88c-13.3 0-24-10.7-24-24s10.7-24 24-24s24 10.7 24 24s-10.7 24-24 24z"/></svg></span>
+                        </a>
+                        <a href="https://github.com/cjRem44x/Perzephxne" title="Git repository" aria-label="Git repository">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 496 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M165.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6zm-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3zm44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9zM244.8 8C106.1 8 0 113.3 0 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C428.2 457.8 496 362.9 496 252 496 113.3 383.5 8 244.8 8zM97.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1zm-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7zm32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1zm-11.4-14.7c-1.6 1-1.6 3.6 0 5.9 1.6 2.3 4.3 3.3 5.6 2.3 1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2z"/></svg></span>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="mdbook-search-wrapper" class="hidden">
+                    <form id="mdbook-searchbar-outer" class="searchbar-outer">
+                        <div class="search-wrapper">
+                            <input type="search" id="mdbook-searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="mdbook-searchresults-outer" aria-describedby="searchresults-header">
+                            <div class="spinner-wrapper">
+                                <span class=fa-svg id="fa-spin"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M304 48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zm0 416c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM48 304c26.5 0 48-21.5 48-48s-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48zm464-48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM142.9 437c18.7-18.7 18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zm0-294.2c18.7-18.7 18.7-49.1 0-67.9S93.7 56.2 75 75s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zM369.1 437c18.7 18.7 49.1 18.7 67.9 0s18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9z"/></svg></span>
+                            </div>
+                        </div>
+                    </form>
+                    <div id="mdbook-searchresults-outer" class="searchresults-outer hidden">
+                        <div id="mdbook-searchresults-header" class="searchresults-header"></div>
+                        <ul id="mdbook-searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('mdbook-sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('mdbook-sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#mdbook-sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="mdbook-content" class="content">
+                    <main>
+                        <h1 id="introduction"><a class="header" href="#introduction">Introduction</a></h1>
+<p>Perzephxne is a compiled, statically typed, systems programming language with a C-flavored syntax.</p>
+<p><strong>Core design goals:</strong></p>
+<ul>
+<li>No garbage collector — memory is manual or scope-tracked via smart pointers</li>
+<li>No OOP — data and behavior are separated; <code>impl</code> blocks are namespace organization, not inheritance</li>
+<li>No header files — modules are source files, all declarations are visible across files in a project</li>
+<li>LLVM backend — compiles to LLVM IR for portable, optimized code generation</li>
+<li>Explicit is better than implicit — errors are values, casts are explicit, lifetimes are visible</li>
+</ul>
+<pre><code>fn main() {
+    @pf("Hello, World!\n")
+}
+</code></pre>
+<h2 id="what-perzephxne-is"><a class="header" href="#what-perzephxne-is">What Perzephxne Is</a></h2>
+<p>A language for people who want the directness of C with a saner type system: proper enums, slices, failable return types, and generic functions without templates.</p>
+<p>If you’ve written C, Odin, or Zig you’ll feel at home. If you’re coming from Rust, the main difference is that Perzephxne has no borrow checker — memory safety is the programmer’s responsibility, aided by smart pointers and <code>defer</code>.</p>
+<h2 id="what-perzephxne-is-not"><a class="header" href="#what-perzephxne-is-not">What Perzephxne Is Not</a></h2>
+<ul>
+<li>A safe language — there is no borrow checker, and raw pointers are fully exposed</li>
+<li>An object-oriented language — there is no inheritance, no virtual dispatch, no <code>self</code> keyword</li>
+<li>A scripting language — every program is compiled to a native binary</li>
+</ul>
+<h2 id="source-file-extension"><a class="header" href="#source-file-extension">Source File Extension</a></h2>
+<p>Perzephxne source files use the <code>.przp</code> extension.</p>
+<h2 id="compiler"><a class="header" href="#compiler">Compiler</a></h2>
+<p>The compiler (<code>przp</code>) emits LLVM IR text (<code>.ll</code> files) and invokes <code>clang</code> to produce the final native binary. You need <code>clang</code> on your <code>PATH</code>.</p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="getting-started"><a class="header" href="#getting-started">Getting Started</a></h1>
+<h2 id="installation"><a class="header" href="#installation-1">Installation</a></h2>
+<p>You need:</p>
+<ul>
+<li><code>clang</code> (any recent version, 14+)</li>
+<li>The <code>przp</code> compiler binary (build from source)</li>
+</ul>
+<pre><code class="language-sh">git clone https://github.com/cjRem44x/Perzephxne
+cd Perzephxne/compiler
+make
+sudo cp przp /usr/local/bin/
+</code></pre>
+<h2 id="hello-world"><a class="header" href="#hello-world-1">Hello World</a></h2>
+<p>Create <code>main.przp</code>:</p>
+<pre><code>fn main() {
+    @pf("Hello, World!\n")
+}
+</code></pre>
+<p>Compile and run outside a project with the stand-alone compiler:</p>
+<pre><code class="language-sh">przp sac main.przp -o=hello
+./hello
+</code></pre>
+<p>Or inside a project:</p>
+<pre><code class="language-sh">mkdir myproject &amp;&amp; cd myproject
+przp init
+przp run
+</code></pre>
+<h2 id="comments"><a class="header" href="#comments">Comments</a></h2>
+<pre><code># single line comment
+
+##
+multi
+line
+comment
+##
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="installation-1"><a class="header" href="#installation-1">Installation</a></h1>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="hello-world-1"><a class="header" href="#hello-world-1">Hello World</a></h1>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="build-system-przp"><a class="header" href="#build-system-przp">Build System (<code>przp</code>)</a></h1>
+<p><code>przp</code> is the Perzephxne build tool, similar to Cargo for Rust.</p>
+<h2 id="commands"><a class="header" href="#commands">Commands</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Command</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>przp init [name]</code></td><td>Initialize a new project</td></tr>
+<tr><td><code>przp build</code></td><td>Compile (debug by default)</td></tr>
+<tr><td><code>przp build --release</code></td><td>Optimized release build</td></tr>
+<tr><td><code>przp run</code></td><td>Build and run</td></tr>
+<tr><td><code>przp run --release</code></td><td>Build and run with optimizations</td></tr>
+<tr><td><code>przp sac &lt;files&gt; -o=Name</code></td><td>Stand-Alone Compiler — compile files without a project</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="build-modes"><a class="header" href="#build-modes">Build Modes</a></h2>
+<p><strong>Debug</strong> (default): no optimization, bounds checking, overflow traps, <code>@assert</code> active.</p>
+<p><strong>Release</strong> (<code>--release</code>): full optimization, bounds checking off, overflow wraps, <code>@assert</code> stripped.</p>
+<p>Query the current mode at compile time:</p>
+<pre><code>if @debug   { @pf("debug build\n") }
+if @release { @pf("release build\n") }
+</code></pre>
+<h2 id="project-structure"><a class="header" href="#project-structure">Project Structure</a></h2>
+<pre><code>MyProject/
+  src/
+    main.przp      # entry point
+  przp.toml        # project manifest
+</code></pre>
+<h2 id="przptoml"><a class="header" href="#przptoml"><code>przp.toml</code></a></h2>
+<pre><code class="language-toml">[package]
+name    = "MyProject"
+version = "0.1.0"
+
+[build]
+entry = "src/main.przp"
+</code></pre>
+<h2 id="quick-start"><a class="header" href="#quick-start">Quick Start</a></h2>
+<pre><code class="language-sh">przp init myproject
+cd myproject
+przp run
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="literals"><a class="header" href="#literals">Literals</a></h1>
+<h2 id="integer-literals"><a class="header" href="#integer-literals">Integer Literals</a></h2>
+<pre><code>42           # decimal — default type i32
+0xFF         # hex
+0b1010_1010  # binary (underscore separators allowed anywhere)
+0o17         # octal
+1_000_000    # decimal with separators
+</code></pre>
+<p>Type suffixes (when context can’t infer):</p>
+<pre><code>42u8    42u16    42u32    42u64
+42i8    42i16    42i32    42i64
+42usize
+</code></pre>
+<h2 id="float-literals"><a class="header" href="#float-literals">Float Literals</a></h2>
+<pre><code>3.14         # default type f64
+1.5e-3       # scientific notation
+1_000.0      # underscores allowed
+</code></pre>
+<p>Type suffixes:</p>
+<pre><code>3.14f32    3.14f64
+</code></pre>
+<h2 id="character-literals"><a class="header" href="#character-literals">Character Literals</a></h2>
+<pre><code>c: char = 'A'
+nl: char = '\n'
+</code></pre>
+<h2 id="boolean-literals"><a class="header" href="#boolean-literals">Boolean Literals</a></h2>
+<pre><code>true    false
+</code></pre>
+<h2 id="string-literals"><a class="header" href="#string-literals">String Literals</a></h2>
+<pre><code>"hello world"
+</code></pre>
+<p>Escape sequences:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Sequence</th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>\n</code></td><td>newline</td></tr>
+<tr><td><code>\t</code></td><td>tab</td></tr>
+<tr><td><code>\r</code></td><td>carriage return</td></tr>
+<tr><td><code>\0</code></td><td>null byte</td></tr>
+<tr><td><code>\\</code></td><td>backslash</td></tr>
+<tr><td><code>\"</code></td><td>double quote</td></tr>
+<tr><td><code>\'</code></td><td>single quote</td></tr>
+<tr><td><code>\xHH</code></td><td>hex byte</td></tr>
+<tr><td><code>\uHHHH</code></td><td>Unicode code point (UTF-8)</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="default-literal-types"><a class="header" href="#default-literal-types">Default Literal Types</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Literal</th><th>Default type</th></tr>
+</thead>
+<tbody>
+<tr><td><code>42</code></td><td><code>i32</code></td></tr>
+<tr><td><code>3.14</code></td><td><code>f64</code></td></tr>
+<tr><td><code>'A'</code></td><td><code>char</code></td></tr>
+<tr><td><code>true</code> / <code>false</code></td><td><code>bool</code></td></tr>
+<tr><td><code>"..."</code></td><td><code>str</code></td></tr>
+</tbody>
+</table>
+</div>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="variables--types"><a class="header" href="#variables--types">Variables &amp; Types</a></h1>
+<h2 id="mutability"><a class="header" href="#mutability-1">Mutability</a></h2>
+<p>Every variable is either <strong>mutable</strong> (declared with <code>=</code>) or <strong>immutable</strong> (declared with <code>:</code>).</p>
+<pre><code>x: i32 = 5      # mutable — can be reassigned
+PI: f64 : 3.14  # immutable — assignment after this is a compile error
+</code></pre>
+<p>Attempting to assign to an immutable binding is a compile-time error:</p>
+<pre><code>N: usize : 10
+N = 20           # ERROR: cannot assign to immutable binding 'N'
+</code></pre>
+<h2 id="primitive-types"><a class="header" href="#primitive-types-1">Primitive Types</a></h2>
+<h3 id="integers"><a class="header" href="#integers">Integers</a></h3>
+<pre><code>u8   i8
+u16  i16
+u32  i32
+u64  i64
+usize        # platform-width (64-bit on 64-bit targets) — use for sizes and indices
+</code></pre>
+<h3 id="floats"><a class="header" href="#floats">Floats</a></h3>
+<pre><code>f16
+f32
+f64
+</code></pre>
+<h3 id="other-primitives"><a class="header" href="#other-primitives">Other Primitives</a></h3>
+<pre><code>char         # single byte character — alias for u8
+bool         # true / false
+</code></pre>
+<h2 id="strings-and-arrays"><a class="header" href="#strings-and-arrays">Strings and Arrays</a></h2>
+<h3 id="str"><a class="header" href="#str"><code>str</code></a></h3>
+<p><code>str</code> is a fat pointer <code>{*u8 data, usize len}</code>. String literals are immutable.</p>
+<pre><code>name: str   = "Alice"
+len: usize  = name.len
+first: char = name[0]    # indexing returns char
+</code></pre>
+<p>Concatenation and mutation require the standard library (<code>std/str</code>).</p>
+<h3 id="fixed-arrays"><a class="header" href="#fixed-arrays">Fixed Arrays</a></h3>
+<p>Fixed-size arrays live on the stack. The size must be a compile-time constant.</p>
+<pre><code>N: usize : 5
+arr: [N]i32 = [1, 2, 3, 4, 5]
+arr[0] = 10
+
+count: usize = @len(arr)     # 5
+</code></pre>
+<p>Multidimensional arrays:</p>
+<pre><code>matrix: [3][3]f32 = [[1.0, 0.0, 0.0],
+                     [0.0, 1.0, 0.0],
+                     [0.0, 0.0, 1.0]]
+val: f32 = matrix[1][2]
+</code></pre>
+<h2 id="slices"><a class="header" href="#slices-1">Slices</a></h2>
+<p>A slice is a fat pointer <code>{*T data, usize len}</code> — a non-owning view into an array or allocation.</p>
+<pre><code>arr: [5]i32 = [10, 20, 30, 40, 50]
+sl:  []i32  = arr[1..3]    # [20, 30] — exclusive end
+sl2: []i32  = arr[1..=3]   # [20, 30, 40] — inclusive end
+
+len: usize = @len(sl)      # 2
+</code></pre>
+<p>Passing a slice to a function:</p>
+<pre><code>fn sum(s: []i32) -&gt; i32 {
+    total: i32 = 0
+    for v =&gt; s { total += v }
+    ret total
+}
+</code></pre>
+<h2 id="any"><a class="header" href="#any"><code>any</code></a></h2>
+<p><code>any</code> holds a value of any type alongside a runtime type tag. Use <code>when</code> to inspect:</p>
+<pre><code>x: any = 42
+x = "hello"
+
+when x {
+    i32 n  =&gt; @pf("int: {n}\n"),
+    str s  =&gt; @pf("str: {s}\n"),
+    bool b =&gt; @pf("bool: {b}\n"),
+    _      =&gt; @pf("unknown\n"),
+}
+</code></pre>
+<h2 id="value-semantics"><a class="header" href="#value-semantics">Value Semantics</a></h2>
+<p>Structs and arrays are <strong>copied by value</strong> on assignment and when passed to functions — the same as C.</p>
+<pre><code>a: vec2 = vec2{.x=1.0, .y=2.0}
+b: vec2 = a           # independent copy
+b.x = 99.0
+@pf("{a.x}\n")        # still 1.0
+
+fn zero(v: vec2) {
+    v.x = 0.0         # modifies local copy only
+}
+</code></pre>
+<p>To mutate the caller’s value, pass a pointer:</p>
+<pre><code>fn zero_ptr(v: *vec2) {
+    v.*.x = 0.0
+}
+</code></pre>
+<h2 id="implicit-widening"><a class="header" href="#implicit-widening">Implicit Widening</a></h2>
+<p>Smaller integers widen to larger ones automatically. Narrowing is a compile error.</p>
+<pre><code>x: i32 = 10
+y: i64 = x        # ok — i32 fits in i64
+z: i16 = x        # ERROR — use @i16(x) instead
+n: i32 = 5
+f: f64 = n        # ok — int widens to float
+</code></pre>
+<h2 id="overflow-behavior"><a class="header" href="#overflow-behavior">Overflow Behavior</a></h2>
+<p>Both signed and unsigned integers use defined 2’s-complement wrapping — overflow is never undefined behavior.</p>
+<p>In <strong>debug builds</strong> overflow triggers a runtime panic. In <strong>release builds</strong> it wraps silently.</p>
+<pre><code>x: u8 = 255
+x = x + 1    # wraps to 0 — defined
+</code></pre>
+<p>Use <code>@checked_*</code> to detect overflow in any build mode:</p>
+<pre><code>result, err: !i32 = @checked_add(a, b)
+if err != @err.ok { @panic("overflow") }
+</code></pre>
+<h2 id="special-values"><a class="header" href="#special-values">Special Values</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Value</th><th>Valid on</th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>undef</code></td><td>any type</td><td>explicitly uninitialized</td></tr>
+<tr><td><code>null</code></td><td>raw pointers (<code>*T</code>) only</td><td>zero pointer</td></tr>
+</tbody>
+</table>
+</div>
+<pre><code>x: i32  = undef
+p: *i32 = null
+
+x = 5
+if p != null { p.* = x }
+</code></pre>
+<h2 id="type-casting"><a class="header" href="#type-casting-1">Type Casting</a></h2>
+<p>Use <code>@T(val)</code> where <code>T</code> is the target type:</p>
+<pre><code>x: i32  = 300
+y: u8   = @u8(x)         # truncates to 44
+
+a: f64  = 3.7
+b: i32  = @i32(a)        # truncates to 3
+
+n: i32  = @i32("42")     # parse string → int
+s: str  = @str(99)       # int → "99"
+c: char = @char(65)      # → 'A'
+</code></pre>
+<p>All cast builtins: <code>@i8</code> <code>@i16</code> <code>@i32</code> <code>@i64</code> <code>@u8</code> <code>@u16</code> <code>@u32</code> <code>@u64</code>
+<code>@f16</code> <code>@f32</code> <code>@f64</code> <code>@usize</code> <code>@bool</code> <code>@char</code> <code>@str</code></p>
+<p>Raw bit reinterpretation (same size, no conversion):</p>
+<pre><code>f: f32    = 1.0
+bits: u32 = @bitcast(u32, f)
+</code></pre>
+<h2 id="type-aliases"><a class="header" href="#type-aliases-1">Type Aliases</a></h2>
+<pre><code>type int  = i32
+type uint = u32
+type byte = u8
+type cstr = *u8    # null-terminated C string
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="mutability-1"><a class="header" href="#mutability-1">Mutability</a></h1>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="primitive-types-1"><a class="header" href="#primitive-types-1">Primitive Types</a></h1>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="strings--arrays"><a class="header" href="#strings--arrays">Strings &amp; Arrays</a></h1>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="slices-1"><a class="header" href="#slices-1">Slices</a></h1>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="type-casting-1"><a class="header" href="#type-casting-1">Type Casting</a></h1>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="type-aliases-1"><a class="header" href="#type-aliases-1">Type Aliases</a></h1>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="generics"><a class="header" href="#generics">Generics</a></h1>
+<p>Generic functions and types are parameterized over one or more type variables written in <code>[T]</code> after the name.</p>
+<h2 id="generic-functions"><a class="header" href="#generic-functions">Generic Functions</a></h2>
+<pre><code>fn max[T](a: T, b: T) -&gt; T {
+    if a &gt; b { ret a }
+    ret b
+}
+
+x: i32 = max[i32](10, 20)   # explicit
+y: f64 = max(1.5, 0.7)      # inferred from args
+</code></pre>
+<p>Multiple type parameters:</p>
+<pre><code>fn zip[A, B](a: A, b: B) -&gt; {A, B} {
+    ret {a, b}
+}
+</code></pre>
+<h2 id="generic-structs"><a class="header" href="#generic-structs">Generic Structs</a></h2>
+<pre><code>struct Pair[T, U] {
+    first:  T,
+    second: U,
+}
+
+p: Pair[i32, str] = Pair[i32, str]{.first=1, .second="one"}
+@pf("{p.second}\n")
+</code></pre>
+<h2 id="generic-enums"><a class="header" href="#generic-enums">Generic Enums</a></h2>
+<pre><code>enum Option[T] {
+    Some(T),
+    None,
+}
+
+fn find[T](s: []T, pred: fn(T) -&gt; bool) -&gt; Option[T] {
+    for v =&gt; s {
+        if pred(v) { ret Option[T].Some(v) }
+    }
+    ret Option[T].None
+}
+</code></pre>
+<h2 id="constraints"><a class="header" href="#constraints">Constraints</a></h2>
+<p>Use <code>where</code> to restrict what types are accepted:</p>
+<pre><code>fn print_all[T](items: []T) where T: @Display {
+    for x =&gt; items { @pf("{x}\n") }
+}
+</code></pre>
+<p>Built-in constraint traits:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Constraint</th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>@Display</code></td><td>type can be formatted with <code>@pf</code></td></tr>
+<tr><td><code>@Eq</code></td><td>type supports <code>==</code> and <code>!=</code></td></tr>
+<tr><td><code>@Ord</code></td><td>type supports <code>&lt;</code>, <code>&gt;</code>, <code>&lt;=</code>, <code>&gt;=</code></td></tr>
+<tr><td><code>@Copy</code></td><td>type is trivially copyable (all primitives)</td></tr>
+<tr><td><code>@Zero</code></td><td>type has a zero value</td></tr>
+</tbody>
+</table>
+</div>
+<p>Multiple constraints use <code>+</code>:</p>
+<pre><code>fn clamp[T](v: T, lo: T, hi: T) -&gt; T where T: @Ord + @Copy { ... }
+</code></pre>
+<h2 id="monomorphization"><a class="header" href="#monomorphization">Monomorphization</a></h2>
+<p>Generics are compiled to concrete, specialized versions at the call site — the same approach as C++ templates, with no runtime overhead.</p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="functions"><a class="header" href="#functions">Functions</a></h1>
+<h2 id="basic-syntax"><a class="header" href="#basic-syntax">Basic Syntax</a></h2>
+<pre><code>fn add(a: i32, b: i32) -&gt; i32 {
+    ret a + b
+}
+</code></pre>
+<h2 id="no-return-value"><a class="header" href="#no-return-value">No Return Value</a></h2>
+<p>Omit <code>-&gt;</code> when the function returns nothing:</p>
+<pre><code>fn greet(name: str) {
+    @pf("Hello, {name}!\n")
+}
+</code></pre>
+<h2 id="multiple-return-values"><a class="header" href="#multiple-return-values">Multiple Return Values</a></h2>
+<pre><code>fn divmod(a: i32, b: i32) -&gt; (i32, i32) {
+    ret (a / b, a % b)
+}
+
+q, r: i32 = divmod(17, 5)
+@pf("{q} remainder {r}\n")
+</code></pre>
+<h2 id="named-return-values"><a class="header" href="#named-return-values">Named Return Values</a></h2>
+<pre><code>fn stats(s: []f64) -&gt; (mean: f64, max: f64) {
+    sum: f64 = 0.0
+    mx: f64  = s[0]
+    for v =&gt; s {
+        sum += v
+        if v &gt; mx { mx = v }
+    }
+    ret (sum / @f64(@len(s)), mx)
+}
+</code></pre>
+<h2 id="failable-functions"><a class="header" href="#failable-functions">Failable Functions</a></h2>
+<p>Use <code>!T</code> to indicate the function might return an error:</p>
+<pre><code>fn parse_int(s: str) -&gt; !i32 {
+    # returns an error value on failure
+}
+
+n: !i32 = parse_int("abc")
+if n == @err { @pf("parse failed\n") }
+</code></pre>
+<p>Use the <code>?</code> operator to propagate errors up:</p>
+<pre><code>fn load_config() -&gt; !Config {
+    text: str    = read_file("config.toml")?
+    parsed: Config = parse_toml(text)?
+    ret parsed
+}
+</code></pre>
+<h2 id="entry-point"><a class="header" href="#entry-point">Entry Point</a></h2>
+<pre><code>fn main() {
+    # program starts here
+}
+
+# or with an exit code
+fn main() -&gt; i32 {
+    ret 0
+}
+</code></pre>
+<h2 id="first-class-functions"><a class="header" href="#first-class-functions">First-Class Functions</a></h2>
+<p>Functions are values. The type of a function is written <code>fn(params) -&gt; ret</code>:</p>
+<pre><code>op: fn(i32, i32) -&gt; i32 = add
+result: i32 = op(3, 4)
+</code></pre>
+<p>Passing functions to other functions:</p>
+<pre><code>fn apply(f: fn(i32) -&gt; i32, x: i32) -&gt; i32 {
+    ret f(x)
+}
+
+fn double(x: i32) -&gt; i32 { ret x * 2 }
+y: i32 = apply(double, 5)   # 10
+</code></pre>
+<h2 id="function-pointers-vs-closures"><a class="header" href="#function-pointers-vs-closures">Function Pointers vs Closures</a></h2>
+<p>Bare function references (like <code>double</code> above) are plain pointers — zero overhead.</p>
+<p>Closures that capture the environment are not yet supported (planned for a future version).</p>
+<h2 id="extern-functions"><a class="header" href="#extern-functions">Extern Functions</a></h2>
+<p>To call C functions, declare them with <code>extern</code>:</p>
+<pre><code>extern fn printf(fmt: *u8, ...) -&gt; i32
+extern fn malloc(size: usize) -&gt; *u8
+extern fn free(p: *u8)
+</code></pre>
+<p>Variadic <code>...</code> is allowed in extern declarations only.</p>
+<h2 id="inline-and-no-inline-hints"><a class="header" href="#inline-and-no-inline-hints">Inline and No-Inline Hints</a></h2>
+<pre><code>@inline fn fast_path(x: i32) -&gt; i32 { ret x * 2 }
+@noinline fn slow_path(x: i32) -&gt; i32 { ... }
+</code></pre>
+<h2 id="recursion"><a class="header" href="#recursion">Recursion</a></h2>
+<p>Recursion works as expected:</p>
+<pre><code>fn fib(n: i32) -&gt; i32 {
+    if n &lt;= 1 { ret n }
+    ret fib(n - 1) + fib(n - 2)
+}
+</code></pre>
+<p>Mutual recursion is supported because <code>przp</code> does a two-pass compilation — all top-level names are visible regardless of source order.</p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="declaration"><a class="header" href="#declaration">Declaration</a></h1>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="failable-return-"><a class="header" href="#failable-return-">Failable Return (!)</a></h1>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="inline--variadic"><a class="header" href="#inline--variadic">Inline &amp; Variadic</a></h1>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="function-pointers"><a class="header" href="#function-pointers">Function Pointers</a></h1>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="extern--ffi"><a class="header" href="#extern--ffi">Extern / FFI</a></h1>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="control-flow"><a class="header" href="#control-flow">Control Flow</a></h1>
+<h2 id="if--elif--else"><a class="header" href="#if--elif--else-1"><code>if</code> / <code>elif</code> / <code>else</code></a></h2>
+<pre><code>x: i32 = 42
+
+if x &gt; 100 {
+    @pf("big\n")
+} elif x &gt; 10 {
+    @pf("medium\n")
+} else {
+    @pf("small\n")
+}
+</code></pre>
+<p>Braces are required. Conditions do not need parentheses.</p>
+<h2 id="loop"><a class="header" href="#loop"><code>loop</code></a></h2>
+<p>Infinite loop:</p>
+<pre><code>i: i32 = 0
+loop {
+    if i &gt;= 10 { break }
+    @pf("{i}\n")
+    i += 1
+}
+</code></pre>
+<h2 id="while"><a class="header" href="#while"><code>while</code></a></h2>
+<pre><code>i: i32 = 0
+while i &lt; 10 {
+    @pf("{i}\n")
+    i += 1
+}
+</code></pre>
+<h2 id="for--range"><a class="header" href="#for--range"><code>for</code> — Range</a></h2>
+<pre><code>for i in 0..10 {      # 0, 1, ..., 9
+    @pf("{i}\n")
+}
+
+for i in 0..=10 {     # 0, 1, ..., 10
+    @pf("{i}\n")
+}
+</code></pre>
+<h2 id="for--iterator-slice--array"><a class="header" href="#for--iterator-slice--array"><code>for</code> — Iterator (slice / array)</a></h2>
+<pre><code>nums: [5]i32 = [10, 20, 30, 40, 50]
+
+for v =&gt; nums {
+    @pf("{v}\n")
+}
+</code></pre>
+<p>With index:</p>
+<pre><code>for i, v =&gt; nums {
+    @pf("[{i}] = {v}\n")
+}
+</code></pre>
+<h2 id="break-and-continue"><a class="header" href="#break-and-continue"><code>break</code> and <code>continue</code></a></h2>
+<pre><code>for i in 0..100 {
+    if i == 5  { continue }   # skip 5
+    if i == 10 { break }      # stop at 10
+    @pf("{i}\n")
+}
+</code></pre>
+<h2 id="when--pattern-match"><a class="header" href="#when--pattern-match"><code>when</code> — Pattern Match</a></h2>
+<p><code>when</code> is exhaustive — the compiler enforces all cases are covered.</p>
+<pre><code>x: i32 = 3
+
+when x {
+    1 =&gt; @pf("one\n"),
+    2 =&gt; @pf("two\n"),
+    3 =&gt; @pf("three\n"),
+    _ =&gt; @pf("other\n"),
+}
+</code></pre>
+<p>Multi-value cases:</p>
+<pre><code>when x {
+    1, 2, 3 =&gt; @pf("small\n"),
+    _        =&gt; @pf("large\n"),
+}
+</code></pre>
+<p>Range cases:</p>
+<pre><code>when x {
+    0..=9   =&gt; @pf("single digit\n"),
+    10..=99 =&gt; @pf("double digit\n"),
+    _       =&gt; @pf("big\n"),
+}
+</code></pre>
+<p>Matching enums:</p>
+<pre><code>enum Shape { Circle(f64), Rect(f64, f64) }
+
+s: Shape = Shape.Circle(3.0)
+
+when s {
+    Shape.Circle(r)    =&gt; @pf("circle r={r}\n"),
+    Shape.Rect(w, h)   =&gt; @pf("rect {w}x{h}\n"),
+}
+</code></pre>
+<h2 id="when-as-expression"><a class="header" href="#when-as-expression"><code>when</code> as Expression</a></h2>
+<pre><code>label: str = when x {
+    1 =&gt; "one",
+    2 =&gt; "two",
+    _ =&gt; "other",
+}
+</code></pre>
+<h2 id="ret"><a class="header" href="#ret"><code>ret</code></a></h2>
+<p>Return from the current function:</p>
+<pre><code>fn abs(x: i32) -&gt; i32 {
+    if x &lt; 0 { ret -x }
+    ret x
+}
+</code></pre>
+<p>Early return without a value:</p>
+<pre><code>fn check(x: i32) {
+    if x &lt; 0 { ret }
+    @pf("ok\n")
+}
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="if--elif--else-1"><a class="header" href="#if--elif--else-1">if / elif / else</a></h1>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="when-pattern-match"><a class="header" href="#when-pattern-match">when (Pattern Match)</a></h1>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="loops"><a class="header" href="#loops">Loops</a></h1>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="defer"><a class="header" href="#defer">Defer</a></h1>
+<p><code>defer</code> pushes a statement onto a LIFO stack that runs when the enclosing scope exits — whether by <code>ret</code>, <code>break</code>, <code>continue</code>, or falling off the end.</p>
+<h2 id="basic-usage"><a class="header" href="#basic-usage">Basic Usage</a></h2>
+<pre><code>fn read_file(path: str) -&gt; !str {
+    fd: i32 = open(path)?
+    defer close(fd)           # runs when the function returns
+
+    buf: [4096]u8 = undef
+    n: isize = read(fd, &amp;buf[0], @sizeof(buf))
+    ret str{.data=&amp;buf[0], .len=@usize(n)}
+}
+</code></pre>
+<p><code>close(fd)</code> runs after the <code>ret</code> — the file is always closed.</p>
+<h2 id="ordering"><a class="header" href="#ordering">Ordering</a></h2>
+<p>Multiple defers run in <strong>reverse</strong> (last-in, first-out) order:</p>
+<pre><code>defer @pf("1\n")
+defer @pf("2\n")
+defer @pf("3\n")
+# prints: 3, 2, 1
+</code></pre>
+<h2 id="defer-in-loops"><a class="header" href="#defer-in-loops">Defer in Loops</a></h2>
+<p>Each loop iteration has its own defer stack:</p>
+<pre><code>for i in 0..3 {
+    defer @pf("end {i}\n")
+    @pf("start {i}\n")
+}
+# start 0, end 0, start 1, end 1, start 2, end 2
+</code></pre>
+<h2 id="resource-cleanup-pattern"><a class="header" href="#resource-cleanup-pattern">Resource Cleanup Pattern</a></h2>
+<pre><code>fn process() -&gt; !void {
+    conn: *Conn = db_connect("...")?
+    defer db_close(conn)
+
+    tx: *Tx = db_begin(conn)?
+    defer db_rollback(tx)      # safety net
+
+    do_work(tx)?
+    db_commit(tx)              # commit first; rollback defer still runs but is a no-op on committed tx
+}
+</code></pre>
+<h2 id="defer-with-blocks"><a class="header" href="#defer-with-blocks">Defer with Blocks</a></h2>
+<pre><code>defer {
+    cleanup_a()
+    cleanup_b()
+}
+</code></pre>
+<h2 id="notes"><a class="header" href="#notes">Notes</a></h2>
+<ul>
+<li>The expression in <code>defer</code> is evaluated <strong>when the defer is reached</strong> (except for function calls whose arguments are evaluated immediately)</li>
+<li><code>defer</code> cannot appear at the top level — only inside function bodies</li>
+<li>The deferred statements run <em>before</em> any stack variables are released, so pointers to local variables in deferred calls are safe</li>
+</ul>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="structs--impl"><a class="header" href="#structs--impl">Structs &amp; Impl</a></h1>
+<h2 id="defining-a-struct"><a class="header" href="#defining-a-struct">Defining a Struct</a></h2>
+<pre><code>struct Vec2 {
+    x: f64,
+    y: f64,
+}
+</code></pre>
+<h2 id="instantiation"><a class="header" href="#instantiation">Instantiation</a></h2>
+<p>Field names must be specified with <code>.name=</code>:</p>
+<pre><code>v: Vec2 = Vec2{.x=1.0, .y=2.0}
+</code></pre>
+<p>Partial initialization (remaining fields are <code>undef</code>):</p>
+<pre><code>v: Vec2 = Vec2{.x=1.0}
+</code></pre>
+<h2 id="field-access"><a class="header" href="#field-access">Field Access</a></h2>
+<pre><code>@pf("{v.x} {v.y}\n")
+v.x = 5.0
+</code></pre>
+<h2 id="nested-structs"><a class="header" href="#nested-structs">Nested Structs</a></h2>
+<pre><code>struct Line {
+    start: Vec2,
+    end:   Vec2,
+}
+
+l: Line = Line{
+    .start = Vec2{.x=0.0, .y=0.0},
+    .end   = Vec2{.x=1.0, .y=1.0},
+}
+
+dx: f64 = l.end.x - l.start.x
+</code></pre>
+<h2 id="impl-blocks"><a class="header" href="#impl-blocks-1"><code>impl</code> Blocks</a></h2>
+<p><code>impl</code> attaches functions to a struct. They are called with dot syntax. The first parameter conventionally named <code>self</code> receives the struct by value; use <code>*Self</code> for mutation.</p>
+<pre><code>impl Vec2 {
+    fn len(self: Vec2) -&gt; f64 {
+        ret @sqrt(self.x * self.x + self.y * self.y)
+    }
+
+    fn scale(self: *Vec2, factor: f64) {
+        self.*.x *= factor
+        self.*.y *= factor
+    }
+
+    fn add(a: Vec2, b: Vec2) -&gt; Vec2 {
+        ret Vec2{.x=a.x+b.x, .y=a.y+b.y}
+    }
+}
+
+v: Vec2 = Vec2{.x=3.0, .y=4.0}
+@pf("{v.len()}\n")     # 5.0
+
+v.scale(2.0)
+@pf("{v.x}\n")         # 6.0
+
+sum: Vec2 = Vec2.add(v, Vec2{.x=1.0, .y=0.0})
+</code></pre>
+<p><code>impl</code> methods without a <code>self</code> parameter are called on the type directly: <code>Vec2.add(...)</code>.</p>
+<h2 id="anonymous-structs-tuples"><a class="header" href="#anonymous-structs-tuples">Anonymous Structs (Tuples)</a></h2>
+<pre><code>pair: {i32, str} = {42, "hello"}
+n: i32  = pair.0
+s: str  = pair.1
+</code></pre>
+<h2 id="struct-embedding"><a class="header" href="#struct-embedding">Struct Embedding</a></h2>
+<pre><code>struct ColorVec {
+    using base: Vec2,    # embeds Vec2 fields and impls
+    r: u8,
+    g: u8,
+    b: u8,
+}
+
+cv: ColorVec = ColorVec{.x=1.0, .y=0.0, .r=255, .g=0, .b=0}
+d: f64 = cv.len()      # inherited from Vec2 impl
+</code></pre>
+<h2 id="packed-structs"><a class="header" href="#packed-structs">Packed Structs</a></h2>
+<pre><code>@packed
+struct Flags {
+    active:  bool,
+    count:   u8,
+    value:   u16,
+}
+</code></pre>
+<p><code>@packed</code> removes padding — useful for binary protocols.</p>
+<h2 id="memory-layout"><a class="header" href="#memory-layout">Memory Layout</a></h2>
+<p>By default structs follow C ABI alignment rules. Use <code>@packed</code> for tight packing or <code>@align(N)</code> for explicit alignment:</p>
+<pre><code>@align(64)
+struct CacheLine {
+    data: [64]u8,
+}
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="structs"><a class="header" href="#structs">Structs</a></h1>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="impl-blocks-1"><a class="header" href="#impl-blocks-1">Impl Blocks</a></h1>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="static-methods"><a class="header" href="#static-methods">Static Methods</a></h1>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="enums--unions"><a class="header" href="#enums--unions">Enums &amp; Unions</a></h1>
+<h2 id="basic-enum"><a class="header" href="#basic-enum">Basic Enum</a></h2>
+<pre><code>enum Direction {
+    North,
+    South,
+    East,
+    West,
+}
+
+d: Direction = Direction.North
+
+when d {
+    Direction.North =&gt; @pf("going north\n"),
+    Direction.South =&gt; @pf("going south\n"),
+    Direction.East  =&gt; @pf("going east\n"),
+    Direction.West  =&gt; @pf("going west\n"),
+}
+</code></pre>
+<h2 id="enum-with-data-tagged-union"><a class="header" href="#enum-with-data-tagged-union">Enum with Data (Tagged Union)</a></h2>
+<p>Each variant can carry a value:</p>
+<pre><code>enum Shape {
+    Circle(f64),
+    Rect(f64, f64),
+    Point,
+}
+
+s: Shape = Shape.Circle(5.0)
+
+area: f64 = when s {
+    Shape.Circle(r)  =&gt; 3.14159 * r * r,
+    Shape.Rect(w, h) =&gt; w * h,
+    Shape.Point      =&gt; 0.0,
+}
+</code></pre>
+<p>Multiple fields per variant use a struct-like syntax:</p>
+<pre><code>enum Event {
+    KeyPress  { key: u32, mods: u8 },
+    MouseMove { x: f32, y: f32 },
+    Quit,
+}
+
+e: Event = Event.MouseMove{.x=10.0, .y=20.0}
+
+when e {
+    Event.KeyPress{key, mods} =&gt; @pf("key {key} mods {mods}\n"),
+    Event.MouseMove{x, y}     =&gt; @pf("mouse {x},{y}\n"),
+    Event.Quit                =&gt; @pf("quit\n"),
+}
+</code></pre>
+<h2 id="impl-on-enums"><a class="header" href="#impl-on-enums"><code>impl</code> on Enums</a></h2>
+<pre><code>impl Shape {
+    fn area(self: Shape) -&gt; f64 {
+        ret when self {
+            Shape.Circle(r)  =&gt; 3.14159 * r * r,
+            Shape.Rect(w, h) =&gt; w * h,
+            Shape.Point      =&gt; 0.0,
+        }
+    }
+}
+
+s: Shape = Shape.Rect(3.0, 4.0)
+@pf("{s.area()}\n")   # 12.0
+</code></pre>
+<h2 id="integer-backed-enum"><a class="header" href="#integer-backed-enum">Integer-Backed Enum</a></h2>
+<p>Add <code>: TYPE</code> to specify a backing integer:</p>
+<pre><code>enum Color: u8 {
+    Red   = 0,
+    Green = 1,
+    Blue  = 2,
+}
+
+c: Color = Color.Red
+n: u8    = @u8(c)       # 0
+c2: Color = @Color(2)   # Color.Blue
+</code></pre>
+<h2 id="c-compatible-enum"><a class="header" href="#c-compatible-enum">C-Compatible Enum</a></h2>
+<p>For FFI, use <code>: c_int</code>:</p>
+<pre><code>extern enum errno_t: i32 {
+    EPERM  = 1,
+    ENOENT = 2,
+    EIO    = 5,
+}
+</code></pre>
+<h2 id="raw-unions"><a class="header" href="#raw-unions">Raw Unions</a></h2>
+<p><code>union</code> overlays all fields at the same memory address (unsafe):</p>
+<pre><code>union FloatBits {
+    f: f32,
+    u: u32,
+}
+
+x: FloatBits = FloatBits{.f=1.0}
+@pf("{x.u:#x}\n")   # 3f800000
+</code></pre>
+<p>Reading the field that wasn’t most recently written is defined bit-level behavior in Perzephxne.</p>
+<h2 id="option-and-result-patterns"><a class="header" href="#option-and-result-patterns">Option and Result Patterns</a></h2>
+<p>The standard library provides:</p>
+<pre><code># generic Option
+enum Option[T] { Some(T), None }
+
+# generic Result
+enum Result[T, E] { Ok(T), Err(E) }
+</code></pre>
+<p>These interact with the <code>?</code> propagation operator and <code>!T</code> failable return syntax.</p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="enums"><a class="header" href="#enums">Enums</a></h1>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="unions"><a class="header" href="#unions">Unions</a></h1>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="tagged-unions"><a class="header" href="#tagged-unions">Tagged Unions</a></h1>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="pointers--memory"><a class="header" href="#pointers--memory">Pointers &amp; Memory</a></h1>
+<p>Perzephxne has no garbage collector. Memory is managed manually or with smart pointers from the standard library.</p>
+<h2 id="raw-pointers"><a class="header" href="#raw-pointers">Raw Pointers</a></h2>
+<pre><code>x: i32  = 42
+p: *i32 = &amp;x      # address-of
+v: i32  = p.*     # dereference
+p.* = 100         # write through pointer
+</code></pre>
+<p>Pointer arithmetic:</p>
+<pre><code>arr: [5]i32 = [1, 2, 3, 4, 5]
+p: *i32 = &amp;arr[0]
+q: *i32 = p + 2    # points to arr[2]
+@pf("{q.*}\n")     # 3
+</code></pre>
+<h2 id="nullable-pointers"><a class="header" href="#nullable-pointers">Nullable Pointers</a></h2>
+<p>Raw pointers can be <code>null</code>:</p>
+<pre><code>p: *i32 = null
+if p != null {
+    @pf("{p.*}\n")
+}
+</code></pre>
+<h2 id="allocation"><a class="header" href="#allocation">Allocation</a></h2>
+<pre><code>import "std/mem"
+
+p: *i32  = mem.alloc(i32)
+p.* = 42
+# ...
+mem.free(p)
+</code></pre>
+<p>Array allocation:</p>
+<pre><code>buf: *u8 = mem.alloc_n(u8, 1024)
+defer mem.free(buf)
+</code></pre>
+<h2 id="smart-pointers"><a class="header" href="#smart-pointers">Smart Pointers</a></h2>
+<p>The standard library provides smart pointers that free automatically:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Type</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>Box[T]</code></td><td>unique ownership — frees on scope exit</td></tr>
+<tr><td><code>Rc[T]</code></td><td>shared ownership — frees when last reference drops</td></tr>
+<tr><td><code>Weak[T]</code></td><td>non-owning reference to <code>Rc[T]</code></td></tr>
+</tbody>
+</table>
+</div>
+<pre><code>import "std/box"
+
+b: Box[i32] = Box.new(42)
+@pf("{b.get().*}\n")
+# freed at end of scope
+</code></pre>
+<h2 id="stack-allocation"><a class="header" href="#stack-allocation">Stack Allocation</a></h2>
+<p>Prefer stack allocation when the lifetime is bounded to a scope:</p>
+<pre><code>buf: [1024]u8 = undef      # on stack
+p: *u8 = &amp;buf[0]
+</code></pre>
+<h2 id="pointer-types-summary"><a class="header" href="#pointer-types-summary">Pointer Types Summary</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Syntax</th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>*T</code></td><td>raw single pointer</td></tr>
+<tr><td><code>**T</code></td><td>pointer to pointer</td></tr>
+<tr><td><code>*u8</code></td><td>typical byte pointer / C <code>char *</code></td></tr>
+<tr><td><code>[]T</code></td><td>slice (fat pointer: <code>{*T, usize}</code>)</td></tr>
+<tr><td><code>*[N]T</code></td><td>pointer to fixed array</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="pointer-casts"><a class="header" href="#pointer-casts">Pointer Casts</a></h2>
+<pre><code>p: *i32 = &amp;x
+pb: *u8 = @bitcast(*u8, p)   # reinterpret pointer type
+</code></pre>
+<h2 id="sizeof-and-alignof"><a class="header" href="#sizeof-and-alignof"><code>@sizeof</code> and <code>@alignof</code></a></h2>
+<pre><code>sz: usize  = @sizeof(i32)    # 4
+al: usize  = @alignof(f64)   # 8
+</code></pre>
+<h2 id="ptrof-and-addrof"><a class="header" href="#ptrof-and-addrof"><code>@ptrof</code> and <code>@addrof</code></a></h2>
+<pre><code>fn my_fn() {}
+fp: fn() = @ptrof(my_fn)    # function pointer from name
+addr: usize = @addrof(my_fn)
+</code></pre>
+<h2 id="common-patterns"><a class="header" href="#common-patterns">Common Patterns</a></h2>
+<p><strong>Out-parameter:</strong></p>
+<pre><code>fn parse(s: str, out: *i32) -&gt; bool {
+    # write result into *out, return success
+}
+
+n: i32  = undef
+ok: bool = parse("42", &amp;n)
+</code></pre>
+<p><strong>Linked list node:</strong></p>
+<pre><code>struct Node {
+    value: i32,
+    next:  *Node,     # pointer to next (or null)
+}
+</code></pre>
+<p><strong>Opaque handle (C FFI):</strong></p>
+<pre><code>extern struct SDL_Window   # declared but not defined
+type WindowHandle = *SDL_Window
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="raw-pointers-"><a class="header" href="#raw-pointers-">Raw Pointers (*)</a></h1>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="smart-pointers-"><a class="header" href="#smart-pointers-">Smart Pointers (^)</a></h1>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="pointer-arithmetic"><a class="header" href="#pointer-arithmetic">Pointer Arithmetic</a></h1>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="error-handling"><a class="header" href="#error-handling">Error Handling</a></h1>
+<p>Errors in Perzephxne are values — not exceptions. There are no <code>try/catch</code> blocks.</p>
+<h2 id="failable-return-type-t"><a class="header" href="#failable-return-type-t">Failable Return Type <code>!T</code></a></h2>
+<p>A function that can fail returns <code>!T</code>. The <code>!</code> wrapper holds either a success value of type <code>T</code> or an error.</p>
+<pre><code>fn open_file(path: str) -&gt; !str { ... }
+</code></pre>
+<h2 id="checking-for-errors"><a class="header" href="#checking-for-errors">Checking for Errors</a></h2>
+<pre><code>result: !str = open_file("data.txt")
+
+if result == @err {
+    @pf("failed: {result.err_msg}\n")
+} else {
+    @pf("{result}\n")
+}
+</code></pre>
+<h2 id="the--propagation-operator"><a class="header" href="#the--propagation-operator">The <code>?</code> Propagation Operator</a></h2>
+<p><code>?</code> unwraps a <code>!T</code> result — on error it immediately returns the error to the caller.</p>
+<pre><code>fn load() -&gt; !Config {
+    text: str    = read_file("cfg.toml")?
+    cfg:  Config = parse_toml(text)?
+    ret cfg
+}
+</code></pre>
+<p>Equivalent to:</p>
+<pre><code>fn load() -&gt; !Config {
+    text_r: !str = read_file("cfg.toml")
+    if text_r == @err { ret text_r.err }
+    text: str = text_r
+
+    cfg_r: !Config = parse_toml(text)
+    if cfg_r == @err { ret cfg_r.err }
+    ret cfg_r
+}
+</code></pre>
+<h2 id="returning-an-error"><a class="header" href="#returning-an-error">Returning an Error</a></h2>
+<pre><code>fn divide(a: i32, b: i32) -&gt; !i32 {
+    if b == 0 { ret @err("division by zero") }
+    ret a / b
+}
+</code></pre>
+<h2 id="custom-error-types"><a class="header" href="#custom-error-types">Custom Error Types</a></h2>
+<p>Define your own error enum and use it as the payload:</p>
+<pre><code>enum IoError {
+    NotFound,
+    PermissionDenied,
+    UnexpectedEof,
+}
+
+fn read(path: str) -&gt; !str | IoError { ... }
+</code></pre>
+<h2 id="panics"><a class="header" href="#panics">Panics</a></h2>
+<p>For unrecoverable situations, use <code>@panic</code>:</p>
+<pre><code>fn get(s: []i32, i: usize) -&gt; i32 {
+    if i &gt;= @len(s) { @panic("index out of bounds") }
+    ret s[i]
+}
+</code></pre>
+<p><code>@panic</code> prints the message and the call stack, then terminates the process immediately.</p>
+<p>Panics are <strong>not</strong> for expected error conditions — use <code>!T</code> for those.</p>
+<h2 id="assert"><a class="header" href="#assert"><code>@assert</code></a></h2>
+<pre><code>@assert(x &gt; 0, "x must be positive")
+</code></pre>
+<p>Active in debug builds; stripped in release builds. Use for invariants you know hold but want verified during development.</p>
+<h2 id="unreachable"><a class="header" href="#unreachable"><code>@unreachable</code></a></h2>
+<p>Mark code paths that should never execute:</p>
+<pre><code>when color {
+    Color.Red   =&gt; ret 0,
+    Color.Green =&gt; ret 1,
+    Color.Blue  =&gt; ret 2,
+    _           =&gt; @unreachable(),
+}
+</code></pre>
+<p>In debug builds <code>@unreachable()</code> panics if reached. In release it is a hint to the optimizer (undefined behavior if reached).</p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="modules"><a class="header" href="#modules">Modules</a></h1>
+<p>A module is a source file. There are no header files and no separate declaration step.</p>
+<h2 id="importing"><a class="header" href="#importing">Importing</a></h2>
+<pre><code>import "std/io"
+import "std/mem"
+import "mylib/math"
+</code></pre>
+<p>Imports are resolved relative to the project root, or to the standard library path for <code>"std/*"</code> imports.</p>
+<h2 id="using-symbols"><a class="header" href="#using-symbols">Using Symbols</a></h2>
+<p>After importing, use the module’s name as a namespace prefix:</p>
+<pre><code>import "std/io"
+
+io.print("hello\n")
+fd: io.File = io.open("data.txt")
+</code></pre>
+<h2 id="aliasing-an-import"><a class="header" href="#aliasing-an-import">Aliasing an Import</a></h2>
+<pre><code>import "mylib/very_long_name" as vln
+
+vln.do_thing()
+</code></pre>
+<h2 id="selective-import"><a class="header" href="#selective-import">Selective Import</a></h2>
+<pre><code>import "std/math" { sqrt, PI }
+
+r: f64 = sqrt(9.0)
+@pf("{PI}\n")
+</code></pre>
+<h2 id="module-layout"><a class="header" href="#module-layout">Module Layout</a></h2>
+<pre><code>MyProject/
+  src/
+    main.przp       # import "src/util" resolves to this file
+    util.przp
+    net/
+      http.przp     # import "src/net/http"
+</code></pre>
+<h2 id="visibility"><a class="header" href="#visibility">Visibility</a></h2>
+<p>All top-level declarations are visible within a project by default.</p>
+<p>Mark symbols <code>private</code> to restrict access to the declaring file:</p>
+<pre><code>private fn internal_helper() { ... }
+</code></pre>
+<p>Private symbols are not accessible from other files.</p>
+<h2 id="external-libraries"><a class="header" href="#external-libraries">External Libraries</a></h2>
+<pre><code>@link("mylib")        # links libmylib.a / libmylib.so
+import "mylib/core"
+</code></pre>
+<p>Or in <code>przp.toml</code>:</p>
+<pre><code class="language-toml">[dependencies]
+mylib = { path = "../mylib" }
+</code></pre>
+<h2 id="standard-library-modules"><a class="header" href="#standard-library-modules">Standard Library Modules</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Module</th><th>Contents</th></tr>
+</thead>
+<tbody>
+<tr><td><code>std/io</code></td><td>print, file I/O, stdin</td></tr>
+<tr><td><code>std/mem</code></td><td>alloc, free, memcpy, memset</td></tr>
+<tr><td><code>std/str</code></td><td>string operations</td></tr>
+<tr><td><code>std/math</code></td><td>sqrt, sin, cos, etc.</td></tr>
+<tr><td><code>std/os</code></td><td>env, args, exit, paths</td></tr>
+<tr><td><code>std/box</code></td><td><code>Box[T]</code>, <code>Rc[T]</code>, <code>Weak[T]</code></td></tr>
+<tr><td><code>std/fmt</code></td><td>string formatting</td></tr>
+</tbody>
+</table>
+</div>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="platform-detection"><a class="header" href="#platform-detection">Platform Detection</a></h1>
+<p>Perzephxne provides compile-time builtins for conditional compilation based on the target platform.</p>
+<h2 id="os-detection"><a class="header" href="#os-detection">OS Detection</a></h2>
+<pre><code>if @os.linux   { @pf("linux\n") }
+if @os.macos   { @pf("macos\n") }
+if @os.windows { @pf("windows\n") }
+if @os.freebsd { @pf("freebsd\n") }
+</code></pre>
+<p>These are compile-time constants (<code>bool</code>). The dead branch is removed by the compiler — no runtime overhead.</p>
+<h2 id="architecture-detection"><a class="header" href="#architecture-detection">Architecture Detection</a></h2>
+<pre><code>if @arch.x86_64  { @pf("64-bit x86\n") }
+if @arch.aarch64 { @pf("arm64\n") }
+if @arch.riscv64 { @pf("riscv64\n") }
+if @arch.wasm32  { @pf("wasm\n") }
+</code></pre>
+<h2 id="platform-specific-code-blocks"><a class="header" href="#platform-specific-code-blocks">Platform-Specific Code Blocks</a></h2>
+<p>Large blocks of platform-specific code can use <code>when</code> for clarity:</p>
+<pre><code>when @os {
+    .linux   =&gt; { use_epoll() },
+    .macos   =&gt; { use_kqueue() },
+    .windows =&gt; { use_iocp() },
+    _        =&gt; { use_select() },
+}
+</code></pre>
+<h2 id="build-mode"><a class="header" href="#build-mode">Build Mode</a></h2>
+<pre><code>if @debug   { validate_all() }
+if @release { fast_path() }
+</code></pre>
+<h2 id="endianness"><a class="header" href="#endianness">Endianness</a></h2>
+<pre><code>if @endian.little { @pf("little-endian\n") }
+if @endian.big    { @pf("big-endian\n") }
+</code></pre>
+<h2 id="pointer-width"><a class="header" href="#pointer-width">Pointer Width</a></h2>
+<pre><code>sz: usize = @ptr_width   # 4 or 8
+</code></pre>
+<h2 id="conditional-import"><a class="header" href="#conditional-import">Conditional Import</a></h2>
+<pre><code>if @os.linux {
+    import "std/linux/epoll"
+} else {
+    import "std/posix/select"
+}
+</code></pre>
+<h2 id="feature-flags"><a class="header" href="#feature-flags">Feature Flags</a></h2>
+<p>Define custom feature flags in <code>przp.toml</code> and query them at compile time:</p>
+<pre><code class="language-toml">[features]
+logging = true
+</code></pre>
+<pre><code>if @feature.logging {
+    log("request received")
+}
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="inline-assembly"><a class="header" href="#inline-assembly">Inline Assembly</a></h1>
+<p>Inline assembly lets you embed target-specific instructions directly in a function body. The syntax mirrors LLVM’s inline assembly format.</p>
+<h2 id="basic-syntax-1"><a class="header" href="#basic-syntax-1">Basic Syntax</a></h2>
+<pre><code>@asm("instruction", constraints, operands)
+</code></pre>
+<h2 id="example--read-the-cycle-counter"><a class="header" href="#example--read-the-cycle-counter">Example — Read the Cycle Counter</a></h2>
+<pre><code>fn rdtsc() -&gt; u64 {
+    lo: u32 = undef
+    hi: u32 = undef
+    @asm("rdtsc", "=a,=d", &amp;lo, &amp;hi)
+    ret @u64(lo) | (@u64(hi) &lt;&lt; 32)
+}
+</code></pre>
+<h2 id="example--atomic-fence"><a class="header" href="#example--atomic-fence">Example — Atomic Fence</a></h2>
+<pre><code>fn memory_fence() {
+    @asm("mfence", "", )
+}
+</code></pre>
+<h2 id="constraints-1"><a class="header" href="#constraints-1">Constraints</a></h2>
+<p>Constraints follow AT&amp;T/GCC notation:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Constraint</th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>=r</code></td><td>write-only register output</td></tr>
+<tr><td><code>=m</code></td><td>write-only memory output</td></tr>
+<tr><td><code>r</code></td><td>register input</td></tr>
+<tr><td><code>m</code></td><td>memory input</td></tr>
+<tr><td><code>i</code></td><td>immediate integer</td></tr>
+<tr><td><code>a</code></td><td><code>eax</code>/<code>rax</code></td></tr>
+<tr><td><code>d</code></td><td><code>edx</code>/<code>rdx</code></td></tr>
+</tbody>
+</table>
+</div>
+<p>Separate multiple constraints with <code>,</code>.</p>
+<h2 id="volatile-assembly"><a class="header" href="#volatile-assembly">Volatile Assembly</a></h2>
+<p>Mark assembly that has side effects (memory, I/O) as volatile so the compiler doesn’t move or remove it:</p>
+<pre><code>@asm_volatile("out %0, %1", "r,r", port, value)
+</code></pre>
+<h2 id="clobbers"><a class="header" href="#clobbers">Clobbers</a></h2>
+<p>Specify registers the assembly modifies beyond the outputs:</p>
+<pre><code>@asm("cpuid", "=a,=b,=c,=d:a:~{rbx},~{rcx},~{rdx}", &amp;eax, &amp;ebx, &amp;ecx, &amp;edx, leaf)
+</code></pre>
+<h2 id="use-in-platform-blocks"><a class="header" href="#use-in-platform-blocks">Use in Platform Blocks</a></h2>
+<pre><code>fn yield_cpu() {
+    when @arch {
+        .x86_64  =&gt; @asm("pause", "", ),
+        .aarch64 =&gt; @asm("yield", "", ),
+        _        =&gt; {},   # no-op
+    }
+}
+</code></pre>
+<h2 id="safety"><a class="header" href="#safety">Safety</a></h2>
+<p>Inline assembly is inherently unsafe. The compiler:</p>
+<ul>
+<li>Does not validate the instruction string</li>
+<li>Does not verify that constraint/operand counts match</li>
+<li>Cannot reason about side effects unless they are declared</li>
+</ul>
+<p>Use sparingly, prefer intrinsics from <code>std/simd</code> or <code>std/atomic</code> when available.</p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="global-variables"><a class="header" href="#global-variables">Global Variables</a></h1>
+<p>Global variables are declared at the top level of a file (outside any function).</p>
+<h2 id="syntax"><a class="header" href="#syntax">Syntax</a></h2>
+<pre><code># mutable global — zero-initialized
+count: i32 = 0
+
+# immutable global (constant)
+MAX_SIZE: usize : 1024
+
+# initialized with an expression
+PI: f64 : 3.14159265358979
+</code></pre>
+<p>The same mutability rules apply as for locals: <code>:</code> is immutable, <code>=</code> is mutable.</p>
+<h2 id="zero-initialization"><a class="header" href="#zero-initialization">Zero Initialization</a></h2>
+<p>Mutable globals not explicitly initialized are zero-initialized:</p>
+<pre><code>flag: bool    # false
+ptr: *i32     # null
+buf: [256]u8  # all zeros
+</code></pre>
+<h2 id="immutable-globals-constants"><a class="header" href="#immutable-globals-constants">Immutable Globals (Constants)</a></h2>
+<p>Immutable globals must have a compile-time-constant initializer:</p>
+<pre><code>BUFSIZE: usize : 4096
+MASK:    u32   : 0xFF00FF00
+PREFIX:  str   : "api/v2/"
+</code></pre>
+<h2 id="mutable-globals"><a class="header" href="#mutable-globals">Mutable Globals</a></h2>
+<p>Mutable globals persist for the lifetime of the process:</p>
+<pre><code>request_count: u64 = 0
+
+fn handle_request() {
+    request_count += 1
+    @pf("request #{request_count}\n")
+}
+</code></pre>
+<h2 id="thread-safety"><a class="header" href="#thread-safety">Thread Safety</a></h2>
+<p>Global variables are <strong>not</strong> automatically thread-safe. For shared mutable state across threads, use <code>std/atomic</code> or protect with a mutex from <code>std/sync</code>.</p>
+<pre><code>import "std/atomic"
+
+active_threads: atomic.U32 = atomic.U32.new(0)
+</code></pre>
+<h2 id="extern-globals"><a class="header" href="#extern-globals">Extern Globals</a></h2>
+<p>To reference a global defined in C or another object file:</p>
+<pre><code>extern count: i32
+extern name:  *u8
+</code></pre>
+<h2 id="args-and-argc"><a class="header" href="#args-and-argc"><code>@args</code> and <code>@argc</code></a></h2>
+<p>The program’s command-line arguments are available via builtins — no global declaration needed:</p>
+<pre><code>fn main() {
+    args: []str = @args      # slice of all arguments including argv[0]
+    n: usize    = @argc      # argument count
+    @pf("program: {args[0]}\n")
+}
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="builtins"><a class="header" href="#builtins">Builtins</a></h1>
+<p>Builtins are compiler-provided functions and constants. They are always in scope and begin with <code>@</code>.</p>
+<h2 id="io"><a class="header" href="#io">I/O</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Builtin</th><th>Signature</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>@pf(fmt, ...)</code></td><td><code>fn(str, ...) -&gt; void</code></td><td>print formatted to stdout</td></tr>
+<tr><td><code>@epf(fmt, ...)</code></td><td><code>fn(str, ...) -&gt; void</code></td><td>print formatted to stderr</td></tr>
+<tr><td><code>@pf</code> uses <code>{expr}</code> inside strings for interpolation</td><td></td><td></td></tr>
+</tbody>
+</table>
+</div>
+<pre><code>name: str = "World"
+@pf("Hello, {name}!\n")
+@pf("sum = {1 + 2}\n")
+</code></pre>
+<h2 id="type-casts"><a class="header" href="#type-casts">Type Casts</a></h2>
+<p><code>@T(val)</code> where T is any primitive type:</p>
+<p><code>@i8</code> <code>@i16</code> <code>@i32</code> <code>@i64</code> <code>@u8</code> <code>@u16</code> <code>@u32</code> <code>@u64</code> <code>@f16</code> <code>@f32</code> <code>@f64</code> <code>@usize</code> <code>@bool</code> <code>@char</code> <code>@str</code></p>
+<pre><code>x: i32 = 300
+y: u8  = @u8(x)     # 44
+</code></pre>
+<h2 id="memory"><a class="header" href="#memory">Memory</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Builtin</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>@sizeof(T)</code></td><td>byte size of type <code>T</code> at compile time</td></tr>
+<tr><td><code>@alignof(T)</code></td><td>alignment of type <code>T</code> at compile time</td></tr>
+<tr><td><code>@bitcast(T, val)</code></td><td>reinterpret bits — same size required</td></tr>
+<tr><td><code>@ptrof(name)</code></td><td>function pointer from name</td></tr>
+<tr><td><code>@addrof(name)</code></td><td>address as <code>usize</code></td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="collections"><a class="header" href="#collections">Collections</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Builtin</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>@len(arr_or_slice)</code></td><td>length at compile time (arrays) or runtime (slices)</td></tr>
+<tr><td><code>@cap(slice)</code></td><td>allocated capacity of a slice</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="math"><a class="header" href="#math">Math</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Builtin</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>@sqrt(x)</code></td><td>square root</td></tr>
+<tr><td><code>@abs(x)</code></td><td>absolute value</td></tr>
+<tr><td><code>@min(a, b)</code></td><td>minimum</td></tr>
+<tr><td><code>@max(a, b)</code></td><td>maximum</td></tr>
+<tr><td><code>@clamp(v, lo, hi)</code></td><td>clamp to range</td></tr>
+<tr><td><code>@pow(base, exp)</code></td><td>power</td></tr>
+<tr><td><code>@log(x)</code></td><td>natural log</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="diagnostics"><a class="header" href="#diagnostics">Diagnostics</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Builtin</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>@assert(cond, msg)</code></td><td>panic if false (debug only)</td></tr>
+<tr><td><code>@panic(msg)</code></td><td>unconditional panic with message and stack trace</td></tr>
+<tr><td><code>@unreachable()</code></td><td>mark code path as unreachable</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="compile-time-info"><a class="header" href="#compile-time-info">Compile-Time Info</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Builtin</th><th>Type</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>@debug</code></td><td><code>bool</code></td><td>true in debug builds</td></tr>
+<tr><td><code>@release</code></td><td><code>bool</code></td><td>true in release builds</td></tr>
+<tr><td><code>@os.linux</code></td><td><code>bool</code></td><td>target is Linux</td></tr>
+<tr><td><code>@os.macos</code></td><td><code>bool</code></td><td>target is macOS</td></tr>
+<tr><td><code>@os.windows</code></td><td><code>bool</code></td><td>target is Windows</td></tr>
+<tr><td><code>@arch.x86_64</code></td><td><code>bool</code></td><td>target CPU</td></tr>
+<tr><td><code>@arch.aarch64</code></td><td><code>bool</code></td><td>target CPU</td></tr>
+<tr><td><code>@endian.little</code></td><td><code>bool</code></td><td>little-endian target</td></tr>
+<tr><td><code>@ptr_width</code></td><td><code>usize</code></td><td>pointer size in bits</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="process--args"><a class="header" href="#process--args">Process / Args</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Builtin</th><th>Signature</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>@args</code></td><td><code>-&gt; []str</code></td><td>command-line arguments</td></tr>
+<tr><td><code>@argc</code></td><td><code>-&gt; usize</code></td><td>argument count</td></tr>
+<tr><td><code>@exit(code)</code></td><td><code>fn(i32)</code></td><td>exit process immediately</td></tr>
+<tr><td><code>@env(name)</code></td><td><code>fn(str) -&gt; !str</code></td><td>read environment variable</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="checked-arithmetic"><a class="header" href="#checked-arithmetic">Checked Arithmetic</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Builtin</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>@checked_add(a, b)</code></td><td>returns <code>!T</code> — error on overflow</td></tr>
+<tr><td><code>@checked_sub(a, b)</code></td><td>returns <code>!T</code> — error on overflow</td></tr>
+<tr><td><code>@checked_mul(a, b)</code></td><td>returns <code>!T</code> — error on overflow</td></tr>
+<tr><td><code>@wrapping_add(a, b)</code></td><td>always wraps (no panic in debug)</td></tr>
+<tr><td><code>@saturating_add(a, b)</code></td><td>clamps to type max/min</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="assembly"><a class="header" href="#assembly">Assembly</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Builtin</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>@asm(inst, constr, ...)</code></td><td>inline assembly</td></tr>
+<tr><td><code>@asm_volatile(...)</code></td><td>inline assembly with volatile semantics</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="string-interpolation"><a class="header" href="#string-interpolation">String Interpolation</a></h2>
+<p><code>@pf</code> and <code>@epf</code> support <code>{expr}</code> inside the format string:</p>
+<pre><code>x: i32 = 42
+@pf("x is {x} and doubled is {x * 2}\n")
+</code></pre>
+<p>Use <code>{{</code> and <code>}}</code> to emit literal braces.</p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="standard-library"><a class="header" href="#standard-library">Standard Library</a></h1>
+<p>The standard library is organized into modules under the <code>std/</code> prefix.</p>
+<h2 id="stdio"><a class="header" href="#stdio"><code>std/io</code></a></h2>
+<p>File I/O and printing.</p>
+<pre><code>import "std/io"
+
+io.print("hello\n")
+
+f: !io.File = io.open("data.txt", io.READ)
+defer f.close()
+
+buf: [1024]u8 = undef
+n: usize = f.read(&amp;buf[0], @sizeof(buf))
+</code></pre>
+<p>Key types and functions:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Name</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>io.File</code></td><td>file handle</td></tr>
+<tr><td><code>io.open(path, mode)</code></td><td>open a file</td></tr>
+<tr><td><code>io.stdin</code></td><td>standard input</td></tr>
+<tr><td><code>io.stdout</code></td><td>standard output</td></tr>
+<tr><td><code>io.stderr</code></td><td>standard error</td></tr>
+<tr><td><code>io.print(s)</code></td><td>write string to stdout</td></tr>
+<tr><td><code>io.read_line()</code></td><td>read a line from stdin</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="stdmem"><a class="header" href="#stdmem"><code>std/mem</code></a></h2>
+<p>Memory allocation.</p>
+<pre><code>import "std/mem"
+
+p: *i32 = mem.alloc(i32)
+p.* = 42
+mem.free(p)
+
+buf: []u8 = mem.alloc_slice(u8, 1024)
+defer mem.free_slice(buf)
+
+mem.copy(dst, src, n)
+mem.set(dst, 0, n)
+</code></pre>
+<h2 id="stdstr"><a class="header" href="#stdstr"><code>std/str</code></a></h2>
+<p>String operations.</p>
+<pre><code>import "std/str"
+
+s: str = "hello world"
+upper: str    = str.upper(s)
+parts: []str  = str.split(s, " ")
+joined: str   = str.join(parts, ", ")
+idx: !usize   = str.find(s, "world")
+has: bool     = str.contains(s, "hello")
+trimmed: str  = str.trim(s)
+</code></pre>
+<h2 id="stdmath"><a class="header" href="#stdmath"><code>std/math</code></a></h2>
+<p>Mathematical functions.</p>
+<pre><code>import "std/math"
+
+y: f64 = math.sin(math.PI / 2.0)
+z: f64 = math.sqrt(2.0)
+r: f64 = math.pow(2.0, 10.0)
+n: i32 = math.abs(-5)
+</code></pre>
+<p>Constants: <code>math.PI</code>, <code>math.E</code>, <code>math.TAU</code>, <code>math.INF</code>, <code>math.NAN</code></p>
+<h2 id="stdos"><a class="header" href="#stdos"><code>std/os</code></a></h2>
+<p>Operating system interface.</p>
+<pre><code>import "std/os"
+
+home: !str = os.env("HOME")
+os.exit(0)
+
+cwd: str = os.getcwd()
+os.chdir("/tmp")
+
+files: ![]str = os.listdir(".")
+exists: bool  = os.path_exists("./data")
+</code></pre>
+<h2 id="stdbox"><a class="header" href="#stdbox"><code>std/box</code></a></h2>
+<p>Smart pointers.</p>
+<pre><code>import "std/box"
+
+b: box.Box[i32] = box.Box.new(42)
+@pf("{b.get().*}\n")
+# freed when b goes out of scope
+
+rc: box.Rc[str] = box.Rc.new("shared")
+rc2: box.Rc[str] = rc.clone()
+# freed when both rc and rc2 drop
+</code></pre>
+<h2 id="stdatomic"><a class="header" href="#stdatomic"><code>std/atomic</code></a></h2>
+<p>Atomic integer types for lock-free programming.</p>
+<pre><code>import "std/atomic"
+
+counter: atomic.I32 = atomic.I32.new(0)
+counter.fetch_add(1)
+v: i32 = counter.load()
+</code></pre>
+<h2 id="stdsync"><a class="header" href="#stdsync"><code>std/sync</code></a></h2>
+<p>Mutex, RwLock, and channels.</p>
+<pre><code>import "std/sync"
+
+mu: sync.Mutex = sync.Mutex.new()
+mu.lock()
+defer mu.unlock()
+# ... critical section ...
+</code></pre>
+<h2 id="stdfmt"><a class="header" href="#stdfmt"><code>std/fmt</code></a></h2>
+<p>String formatting without printing.</p>
+<pre><code>import "std/fmt"
+
+s: str = fmt.sprintf("x={} y={}", x, y)
+</code></pre>
+<h2 id="stdnet-planned"><a class="header" href="#stdnet-planned"><code>std/net</code> <em>(planned)</em></a></h2>
+<p>TCP/UDP sockets and HTTP client. Not yet implemented.</p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="operator-precedence"><a class="header" href="#operator-precedence">Operator Precedence</a></h1>
+<p>Operators are listed from highest to lowest precedence.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Precedence</th><th>Operators</th><th>Associativity</th><th>Notes</th></tr>
+</thead>
+<tbody>
+<tr><td>13</td><td><code>()</code> <code>[]</code> <code>.</code> <code>.*</code></td><td>left</td><td>call, index, field, deref</td></tr>
+<tr><td>12</td><td>unary <code>-</code> <code>!</code> <code>~</code> <code>&amp;</code> <code>*</code></td><td>right</td><td>negate, logical-not, bitwise-not, address-of, deref</td></tr>
+<tr><td>11</td><td><code>*</code> <code>/</code> <code>%</code></td><td>left</td><td>multiplication, division, modulo</td></tr>
+<tr><td>10</td><td><code>+</code> <code>-</code></td><td>left</td><td>addition, subtraction</td></tr>
+<tr><td>9</td><td><code>&lt;&lt;</code> <code>&gt;&gt;</code></td><td>left</td><td>bit shift</td></tr>
+<tr><td>8</td><td><code>&amp;</code></td><td>left</td><td>bitwise AND</td></tr>
+<tr><td>7</td><td><code>^</code></td><td>left</td><td>bitwise XOR</td></tr>
+<tr><td>6</td><td><code>|</code></td><td>left</td><td>bitwise OR</td></tr>
+<tr><td>5</td><td><code>==</code> <code>!=</code> <code>&lt;</code> <code>&gt;</code> <code>&lt;=</code> <code>&gt;=</code></td><td>left</td><td>comparison</td></tr>
+<tr><td>4</td><td><code>&amp;&amp;</code></td><td>left</td><td>logical AND</td></tr>
+<tr><td>3</td><td><code>||</code></td><td>left</td><td>logical OR</td></tr>
+<tr><td>2</td><td><code>..</code> <code>..=</code></td><td>left</td><td>range</td></tr>
+<tr><td>1</td><td><code>=</code> <code>+=</code> <code>-=</code> <code>*=</code> <code>/=</code> <code>%=</code> <code>&amp;=</code> <code>|=</code> <code>^=</code> <code>&lt;&lt;=</code> <code>&gt;&gt;=</code></td><td>right</td><td>assignment (statement only)</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="notes-1"><a class="header" href="#notes-1">Notes</a></h2>
+<ul>
+<li>Assignment operators are <strong>statements</strong> — they do not produce values and cannot appear in expressions.</li>
+<li>Dereference <code>.*</code> is postfix: <code>p.*</code> not <code>*p</code>.</li>
+<li>Address-of <code>&amp;</code> is prefix: <code>&amp;x</code>.</li>
+<li><code>!</code> is logical NOT for booleans; <code>~</code> is bitwise NOT for integers.</li>
+</ul>
+<h2 id="examples"><a class="header" href="#examples">Examples</a></h2>
+<pre><code># parsed as (a + b) * c
+x: i32 = (a + b) * c
+
+# parsed as a + (b * c)
+y: i32 = a + b * c
+
+# comparison before logical
+z: bool = a &lt; b &amp;&amp; c &gt; d
+
+# range
+r: range = 0..10
+
+# deref and field
+v: f64 = p.*.x        # deref p, then access field x
+</code></pre>
+<h2 id="no-operator-overloading"><a class="header" href="#no-operator-overloading">No Operator Overloading</a></h2>
+<p>Operators cannot be overloaded. Custom types use named methods instead:</p>
+<pre><code>impl Vec2 {
+    fn add(a: Vec2, b: Vec2) -&gt; Vec2 { ... }
+}
+
+c: Vec2 = Vec2.add(a, b)    # not: a + b
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="naming-conventions"><a class="header" href="#naming-conventions">Naming Conventions</a></h1>
+<p>These are conventions, not compiler-enforced rules. Following them makes code easier to read alongside the standard library.</p>
+<h2 id="summary-table"><a class="header" href="#summary-table">Summary Table</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Item</th><th>Convention</th><th>Example</th></tr>
+</thead>
+<tbody>
+<tr><td>Variables</td><td><code>snake_case</code></td><td><code>byte_count</code>, <code>is_valid</code></td></tr>
+<tr><td>Functions</td><td><code>snake_case</code></td><td><code>parse_int</code>, <code>read_line</code></td></tr>
+<tr><td>Constants</td><td><code>UPPER_SNAKE_CASE</code></td><td><code>MAX_SIZE</code>, <code>PI</code></td></tr>
+<tr><td>Struct types</td><td><code>PascalCase</code></td><td><code>Vec2</code>, <code>HttpRequest</code></td></tr>
+<tr><td>Enum types</td><td><code>PascalCase</code></td><td><code>Direction</code>, <code>IoError</code></td></tr>
+<tr><td>Enum variants</td><td><code>PascalCase</code></td><td><code>Direction.North</code></td></tr>
+<tr><td>Type aliases</td><td><code>PascalCase</code></td><td><code>type Byte = u8</code></td></tr>
+<tr><td>Type parameters</td><td>single uppercase letter or <code>PascalCase</code></td><td><code>T</code>, <code>Key</code>, <code>Val</code></td></tr>
+<tr><td>Module names</td><td><code>snake_case</code></td><td><code>import "std/io"</code></td></tr>
+<tr><td>File names</td><td><code>snake_case.przp</code></td><td><code>http_client.przp</code></td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="variables-and-functions"><a class="header" href="#variables-and-functions">Variables and Functions</a></h2>
+<pre><code>item_count: usize = 0
+is_running: bool  = true
+
+fn calculate_area(width: f64, height: f64) -&gt; f64 {
+    ret width * height
+}
+</code></pre>
+<h2 id="constants"><a class="header" href="#constants">Constants</a></h2>
+<p>Constants use <code>UPPER_SNAKE</code> to distinguish them from mutable state at a glance:</p>
+<pre><code>MAX_CONNECTIONS: usize : 1024
+DEFAULT_TIMEOUT: f64   : 30.0
+</code></pre>
+<h2 id="types"><a class="header" href="#types">Types</a></h2>
+<pre><code>struct RequestBody { ... }
+enum ParseError { ... }
+type Callback = fn(i32) -&gt; bool
+</code></pre>
+<h2 id="booleans"><a class="header" href="#booleans">Booleans</a></h2>
+<p>Boolean variables and functions returning <code>bool</code> should read as assertions:</p>
+<pre><code>is_valid: bool     = true
+has_error: bool    = false
+can_retry: bool    = true
+
+fn is_empty(s: str) -&gt; bool { ret s.len == 0 }
+fn has_prefix(s: str, p: str) -&gt; bool { ... }
+</code></pre>
+<h2 id="acronyms"><a class="header" href="#acronyms">Acronyms</a></h2>
+<p>Treat acronyms as single words — do not ALL-CAPS them inside names:</p>
+<pre><code># preferred
+http_client: HttpClient
+parse_url: fn(str) -&gt; Url
+
+# avoid
+http_client: HTTPClient
+parse_URL: fn(str) -&gt; URL
+</code></pre>
+<p>Exception: a name that <em>is</em> the acronym stands alone and uses UPPER:</p>
+<pre><code>PI: f64 : 3.14159
+URL: str = "..."
+</code></pre>
+<h2 id="module-aliases"><a class="header" href="#module-aliases">Module Aliases</a></h2>
+<p>When a module name is long or conflicts with a local name, alias it with a short, obvious prefix:</p>
+<pre><code>import "mylib/geometry" as geo
+import "std/fmt" as fmt
+
+p: geo.Point = geo.Point{.x=0.0, .y=0.0}
+s: str = fmt.sprintf("{p.x}, {p.y}")
+</code></pre>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+
+            </nav>
+
+        </div>
+
+        <template id=fa-eye><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M288 32c-80.8 0-145.5 36.8-192.6 80.6C48.6 156 17.3 208 2.5 243.7c-3.3 7.9-3.3 16.7 0 24.6C17.3 304 48.6 356 95.4 399.4C142.5 443.2 207.2 480 288 480s145.5-36.8 192.6-80.6c46.8-43.5 78.1-95.4 93-131.1c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C433.5 68.8 368.8 32 288 32zM432 256c0 79.5-64.5 144-144 144s-144-64.5-144-144s64.5-144 144-144s144 64.5 144 144zM288 192c0 35.3-28.7 64-64 64c-11.5 0-22.3-3-31.6-8.4c-.2 2.8-.4 5.5-.4 8.4c0 53 43 96 96 96s96-43 96-96s-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6z"/></svg></span></template>
+        <template id=fa-eye-slash><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M38.8 5.1C28.4-3.1 13.3-1.2 5.1 9.2S-1.2 34.7 9.2 42.9l592 464c10.4 8.2 25.5 6.3 33.7-4.1s6.3-25.5-4.1-33.7L525.6 386.7c39.6-40.6 66.4-86.1 79.9-118.4c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C465.5 68.8 400.8 32 320 32c-68.2 0-125 26.3-169.3 60.8L38.8 5.1zM223.1 149.5C248.6 126.2 282.7 112 320 112c79.5 0 144 64.5 144 144c0 24.9-6.3 48.3-17.4 68.7L408 294.5c5.2-11.8 8-24.8 8-38.5c0-53-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6c0 10.2-2.4 19.8-6.6 28.3l-90.3-70.8zm223.1 298L373 389.9c-16.4 6.5-34.3 10.1-53 10.1c-79.5 0-144-64.5-144-144c0-6.9 .5-13.6 1.4-20.2L83.1 161.5C60.3 191.2 44 220.8 34.5 243.7c-3.3 7.9-3.3 16.7 0 24.6c14.9 35.7 46.2 87.7 93 131.1C174.5 443.2 239.2 480 320 480c47.8 0 89.9-12.9 126.2-32.5z"/></svg></span></template>
+        <template id=fa-copy><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M502.6 70.63l-61.25-61.25C435.4 3.371 427.2 0 418.7 0H255.1c-35.35 0-64 28.66-64 64l.0195 256C192 355.4 220.7 384 256 384h192c35.2 0 64-28.8 64-64V93.25C512 84.77 508.6 76.63 502.6 70.63zM464 320c0 8.836-7.164 16-16 16H255.1c-8.838 0-16-7.164-16-16L239.1 64.13c0-8.836 7.164-16 16-16h128L384 96c0 17.67 14.33 32 32 32h47.1V320zM272 448c0 8.836-7.164 16-16 16H63.1c-8.838 0-16-7.164-16-16L47.98 192.1c0-8.836 7.164-16 16-16H160V128H63.99c-35.35 0-64 28.65-64 64l.0098 256C.002 483.3 28.66 512 64 512h192c35.2 0 64-28.8 64-64v-32h-47.1L272 448z"/></svg></span></template>
+        <template id=fa-play><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M73 39c-14.8-9.1-33.4-9.4-48.5-.9S0 62.6 0 80V432c0 17.4 9.4 33.4 24.5 41.9s33.7 8.1 48.5-.9L361 297c14.3-8.7 23-24.2 23-41s-8.7-32.2-23-41L73 39z"/></svg></span></template>
+        <template id=fa-clock-rotate-left><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M75 75L41 41C25.9 25.9 0 36.6 0 57.9V168c0 13.3 10.7 24 24 24H134.1c21.4 0 32.1-25.9 17-41l-30.8-30.8C155 85.5 203 64 256 64c106 0 192 86 192 192s-86 192-192 192c-40.8 0-78.6-12.7-109.7-34.4c-14.5-10.1-34.4-6.6-44.6 7.9s-6.6 34.4 7.9 44.6C151.2 495 201.7 512 256 512c141.4 0 256-114.6 256-256S397.4 0 256 0C185.3 0 121.3 28.7 75 75zm181 53c-13.3 0-24 10.7-24 24V256c0 6.4 2.5 12.5 7 17l72 72c9.4 9.4 24.6 9.4 33.9 0s9.4-24.6 0-33.9l-65-65V152c0-13.3-10.7-24-24-24z"/></svg></span></template>
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="elasticlunr-ef4e11c1.min.js"></script>
+        <script src="mark-09e88c2c.min.js"></script>
+        <script src="searcher-09f2665d.js"></script>
+
+        <script src="clipboard-1626706a.min.js"></script>
+        <script src="highlight-abc7f01d.js"></script>
+        <script src="book-c22b7243.js"></script>
+
+        <!-- Custom JS scripts -->
+
+        <script>
+        window.addEventListener('load', function() {
+            window.setTimeout(window.print, 100);
+        });
+        </script>
+
+
+    </div>
+    </body>
+</html>
