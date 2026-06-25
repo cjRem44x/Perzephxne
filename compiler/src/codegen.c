@@ -1062,6 +1062,49 @@ static void cg_stmt(CG *cg, Stmt *s) {
                         emit(cg, "  store %s %s, ptr %%t%d\n", llt, rhs.buf, fp);
                     }
                 }
+            } else if (s->assign.target->kind == EXPR_INDEX) {
+                /* xs[i] = val  (or xs[i] op= val) */
+                Type *arr_ty = NULL;
+                Val arr = cg_expr(cg, s->assign.target->index.arr, &arr_ty);
+                Val idx = cg_expr(cg, s->assign.target->index.idx, NULL);
+
+                /* element type from sema annotation */
+                Type *elem_ty = s->assign.target->ty;
+                const char *elem_llt = elem_ty ? llvm_type(elem_ty) : "i32";
+
+                /* compute pointer to element */
+                const char *data_buf = arr.buf;
+                if (arr_ty && arr_ty->kind == TY_SLICE) {
+                    int dp = new_tmp(cg);
+                    emit(cg, "  %%t%d = extractvalue { ptr, i64 } %s, 0\n", dp, arr.buf);
+                    char tmp[32];
+                    snprintf(tmp, sizeof(tmp), "%%t%d", dp);
+                    data_buf = arena_strdup(cg->arena, tmp);
+                }
+                int ep = new_tmp(cg);
+                emit(cg, "  %%t%d = getelementptr %s, ptr %s, i64 %s\n",
+                     ep, elem_llt, data_buf, idx.buf);
+
+                Type *vty = NULL;
+                Val rhs = cg_expr(cg, s->assign.val, &vty);
+
+                if (s->assign.op == ASSIGN_EQ) {
+                    emit(cg, "  store %s %s, ptr %%t%d\n", elem_llt, rhs.buf, ep);
+                } else {
+                    /* compound op: load current, operate, store */
+                    int cur = new_tmp(cg);
+                    emit(cg, "  %%t%d = load %s, ptr %%t%d\n", cur, elem_llt, ep);
+                    int res = new_tmp(cg);
+                    switch (s->assign.op) {
+                        case ASSIGN_ADD: emit(cg, "  %%t%d = add %s %%t%d, %s\n",  res, elem_llt, cur, rhs.buf); break;
+                        case ASSIGN_SUB: emit(cg, "  %%t%d = sub %s %%t%d, %s\n",  res, elem_llt, cur, rhs.buf); break;
+                        case ASSIGN_MUL: emit(cg, "  %%t%d = mul %s %%t%d, %s\n",  res, elem_llt, cur, rhs.buf); break;
+                        case ASSIGN_DIV: emit(cg, "  %%t%d = sdiv %s %%t%d, %s\n", res, elem_llt, cur, rhs.buf); break;
+                        case ASSIGN_MOD: emit(cg, "  %%t%d = srem %s %%t%d, %s\n", res, elem_llt, cur, rhs.buf); break;
+                        default:         emit(cg, "  %%t%d = add %s %%t%d, 0\n",   res, elem_llt, cur); break;
+                    }
+                    emit(cg, "  store %s %%t%d, ptr %%t%d\n", elem_llt, res, ep);
+                }
             } else if (s->assign.target->kind == EXPR_DEREF) {
                 Val ptr = cg_expr(cg, s->assign.target->deref.operand, NULL);
                 Type *vty = NULL;
