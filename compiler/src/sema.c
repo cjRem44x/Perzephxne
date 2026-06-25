@@ -28,6 +28,18 @@ typedef struct StructEntry {
     FieldList          *fields; /* points into the Item's field list */
 } StructEntry;
 
+/* ── Enum variant table ───────────────────────────────────────────────────── */
+
+typedef struct { const char *name; int64_t value; } EnumVariantVal;
+
+typedef struct EnumInfo {
+    struct EnumInfo *next;
+    const char      *name;
+    Type            *backing_ty;
+    size_t           n_variants;
+    EnumVariantVal  *variants;
+} EnumInfo;
+
 /* ── Sema context ─────────────────────────────────────────────────────────── */
 
 typedef struct {
@@ -36,6 +48,7 @@ typedef struct {
     Type        *cur_ret;   /* return type of the function being checked */
     int          errors;
     StructEntry *structs;   /* name → field list for struct lookup */
+    EnumInfo    *enums;     /* name → variant values for enum lookup */
     /* built-in types — interned once */
     Type   *ty_void, *ty_bool, *ty_i8, *ty_i16, *ty_i32, *ty_i64;
     Type   *ty_u8,   *ty_u16,  *ty_u32, *ty_u64, *ty_usize;
@@ -198,6 +211,10 @@ static int ty_coerces(Type *from, Type *to) {
     if (from->kind == TY_F64 && ty_is_float(to)) return 1;
     /* null coerces to any pointer */
     if (from->kind == TY_PTR && !from->ptr.inner && ty_is_ptr(to)) return 1;
+    /* enum ↔ integer: integer types coerce into enum named types and vice versa */
+    if (ty_is_int(from) && to->kind   == TY_NAMED) return 1;
+    if (from->kind == TY_NAMED && ty_is_int(to))   return 1;
+    /* enum ↔ enum (same name already caught by ty_eq) */
     return 0;
 }
 
@@ -434,6 +451,21 @@ static Type *check_expr(Sema *s, Expr *e) {
             obj_ty = resolve_named(s, obj_ty);
             e->ty = NULL;
             if (obj_ty && obj_ty->kind == TY_NAMED) {
+                /* enum variant access: EnumName.Variant */
+                for (EnumInfo *ei = s->enums; ei; ei = ei->next) {
+                    if (!strcmp(ei->name, obj_ty->named.name)) {
+                        for (size_t i = 0; i < ei->n_variants; i++) {
+                            if (!strcmp(ei->variants[i].name, e->field.field)) {
+                                e->ty = ei->backing_ty;
+                                return e->ty;
+                            }
+                        }
+                        sema_error(s, e->span, "enum '%s' has no variant '%s'",
+                                   ei->name, e->field.field);
+                        return e->ty;
+                    }
+                }
+                /* struct field access */
                 for (StructEntry *se = s->structs; se; se = se->next) {
                     if (!strcmp(se->name, obj_ty->named.name)) {
                         for (size_t i = 0; i < se->fields->len; i++) {
@@ -446,7 +478,7 @@ static Type *check_expr(Sema *s, Expr *e) {
                     }
                 }
                 if (!e->ty)
-                    sema_error(s, e->span, "struct '%s' has no field '%s'",
+                    sema_error(s, e->span, "type '%s' has no field '%s'",
                                obj_ty->named.name, e->field.field);
             } else if (obj_ty) {
                 sema_error(s, e->span, "field access on non-struct type '%s'", ty_str(obj_ty));
@@ -739,21 +771,11 @@ static void check_struct(Sema *s, Item *item) {
 }
 
 static void check_enum(Sema *s, Item *item) {
-    Type *backing = item->enum_.backing
-        ? check_type(s, item->enum_.backing)
-        : s->ty_i32;
-
-    /* register the enum type */
-    Type *ty = make_ty(s, TY_NAMED);
-    ty->named.name = item->name;
-    define(s, item->span, item->name, ty, 0, 1);
-
-    /* register each variant as an immutable global of the backing type */
+    /* type and variant table already registered in register_item;
+       validate explicit variant value expressions here */
     for (size_t i = 0; i < item->enum_.variants.len; i++) {
         EnumVariant *v = &item->enum_.variants.data[i];
         if (v->val) check_expr(s, v->val);
-        /* Variant names are accessed as EnumName.Variant — skip defining here */
-        (void)backing;
     }
 }
 
@@ -824,6 +846,24 @@ static void register_item(Sema *s, Item *item) {
             Type *ty = make_ty(s, TY_NAMED);
             ty->named.name = item->name;
             define(s, item->span, item->name, ty, 0, 1);
+            /* build variant value table */
+            size_t n = item->enum_.variants.len;
+            EnumVariantVal *vals = ARENA_ALLOC(s->arena, EnumVariantVal, n);
+            int64_t next_val = 0;
+            for (size_t i = 0; i < n; i++) {
+                EnumVariant *v = &item->enum_.variants.data[i];
+                if (v->val && v->val->kind == EXPR_INT)
+                    next_val = (int64_t)v->val->ival;
+                vals[i].name  = v->name;
+                vals[i].value = next_val++;
+            }
+            EnumInfo *ei = ARENA_NEW(s->arena, EnumInfo);
+            ei->name        = item->name;
+            ei->backing_ty  = item->enum_.backing ? item->enum_.backing : s->ty_i32;
+            ei->n_variants  = n;
+            ei->variants    = vals;
+            ei->next        = s->enums;
+            s->enums        = ei;
             break;
         }
         case ITEM_TYPE_ALIAS: {

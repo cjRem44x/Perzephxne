@@ -21,6 +21,16 @@ typedef struct StructInfo {
     FieldList          fields; /* copy of ITEM_STRUCT's field list */
 } StructInfo;
 
+typedef struct { const char *name; int64_t value; } EnumVariantVal;
+
+typedef struct EnumInfo {
+    struct EnumInfo *next;
+    const char      *name;
+    Type            *backing_ty;
+    size_t           n_variants;
+    EnumVariantVal  *variants;
+} EnumInfo;
+
 typedef struct Symbol {
     struct Symbol *next;
     const char    *name;
@@ -48,6 +58,7 @@ typedef struct {
     Arena       *arena;
     StrConst    *str_consts;
     StructInfo  *structs;    /* name → field list for struct layout */
+    EnumInfo    *enums;      /* name → variant values for enum access */
     int          str_id;
     int          tmp_id;      /* next %t<n> temporary */
     int          label_id;    /* next label suffix     */
@@ -179,6 +190,22 @@ static StructInfo *find_struct(CG *cg, const char *name) {
     for (StructInfo *si = cg->structs; si; si = si->next)
         if (!strcmp(si->name, name)) return si;
     return NULL;
+}
+
+static EnumInfo *find_enum(CG *cg, const char *name) {
+    for (EnumInfo *ei = cg->enums; ei; ei = ei->next)
+        if (!strcmp(ei->name, name)) return ei;
+    return NULL;
+}
+
+/* For named types: enums use their backing integer type; structs use %Name. */
+static const char *effective_llvm_type(CG *cg, Type *ty) {
+    if (!ty) return "i32";
+    if (ty->kind == TY_NAMED) {
+        EnumInfo *ei = find_enum(cg, ty->named.name);
+        if (ei) return llvm_type(ei->backing_ty);
+    }
+    return llvm_type(ty);
 }
 
 static int struct_field_index(StructInfo *si, const char *field) {
@@ -313,11 +340,11 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
             if (!sym)
                 fatal_at(e->span, "undefined identifier '%s'", e->ident.name);
             if (out_ty) *out_ty = sym->ty;
-            /* Struct values are represented as alloca ptrs — return ptr directly */
-            if (sym->ty && sym->ty->kind == TY_NAMED)
+            /* Struct values: return alloca ptr (no load). Enums/scalars: load. */
+            if (sym->ty && sym->ty->kind == TY_NAMED && !find_enum(cg, sym->ty->named.name))
                 return val_str(sym->llvm_name);
             int t = new_tmp(cg);
-            const char *llt = sym->ty ? llvm_type(sym->ty) : "i32";
+            const char *llt = effective_llvm_type(cg, sym->ty);
             emit(cg, "  %%t%d = load %s, ptr %s\n", t, llt, sym->llvm_name);
             return val_tmp(t);
         }
@@ -670,9 +697,9 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
             }
 
             if (callee_ty && callee_ty->kind == TY_FN && callee_ty->fn.ret)
-                ret_llt = llvm_type(callee_ty->fn.ret);
+                ret_llt = effective_llvm_type(cg, callee_ty->fn.ret);
             else if (callee_ty)
-                ret_llt = llvm_type(callee_ty);
+                ret_llt = effective_llvm_type(cg, callee_ty);
 
             /* evaluate all args before emitting the call instruction */
             size_t nargs = e->call.args.len;
@@ -686,7 +713,7 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
             int t = new_tmp(cg);
             emit(cg, "  %%t%d = call %s %s(", t, ret_llt, fn_name);
             for (size_t i = 0; i < nargs; i++) {
-                const char *llt = arg_tys[i] ? llvm_type(arg_tys[i]) : "i32";
+                const char *llt = effective_llvm_type(cg, arg_tys[i]);
                 if (i) emit(cg, ", ");
                 emit(cg, "%s %s", llt, arg_vals[i].buf);
             }
@@ -697,6 +724,23 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
         }
 
         case EXPR_FIELD: {
+            /* Enum variant access: EnumName.Variant — peek before calling cg_expr */
+            if (e->field.obj->kind == EXPR_IDENT) {
+                EnumInfo *ei = find_enum(cg, e->field.obj->ident.name);
+                if (ei) {
+                    for (size_t i = 0; i < ei->n_variants; i++) {
+                        if (!strcmp(ei->variants[i].name, e->field.field)) {
+                            if (out_ty) *out_ty = ei->backing_ty;
+                            Val v;
+                            snprintf(v.buf, sizeof(v.buf), "%" PRId64, ei->variants[i].value);
+                            return v;
+                        }
+                    }
+                    fatal_at(e->span, "enum '%s' has no variant '%s'",
+                             ei->name, e->field.field);
+                }
+            }
+            /* Struct field access */
             Type *obj_ty = NULL;
             Val obj = cg_expr(cg, e->field.obj, &obj_ty);
             if (!obj_ty || obj_ty->kind != TY_NAMED)
@@ -831,7 +875,7 @@ static void cg_stmt(CG *cg, Stmt *s) {
         case STMT_LET: {
             /* allocate storage */
             int alloca = new_tmp(cg);
-            const char *llt = s->let.ty ? llvm_type(s->let.ty) : "i32";
+            const char *llt = s->let.ty ? effective_llvm_type(cg, s->let.ty) : "i32";
             if (s->let.ty && s->let.ty->kind == TY_FAILABLE)
                 llt = llvm_type(s->let.ty->ptr.inner);
             emit(cg, "  %%t%d = alloca %s\n", alloca, llt);
@@ -839,13 +883,15 @@ static void cg_stmt(CG *cg, Stmt *s) {
             if (s->let.init) {
                 Type *init_ty = NULL;
                 Val init = cg_expr(cg, s->let.init, &init_ty);
-                if (init_ty && init_ty->kind == TY_NAMED) {
+                int is_struct = init_ty && init_ty->kind == TY_NAMED
+                                && !find_enum(cg, init_ty->named.name);
+                if (is_struct) {
                     /* struct init returns a ptr — copy via load+store */
                     int loaded = new_tmp(cg);
                     emit(cg, "  %%t%d = load %s, ptr %s\n", loaded, llvm_type(init_ty), init.buf);
                     emit(cg, "  store %s %%t%d, ptr %%t%d\n", llvm_type(init_ty), loaded, alloca);
                 } else {
-                    const char *store_ty = init_ty ? llvm_type(init_ty) : llt;
+                    const char *store_ty = init_ty ? effective_llvm_type(cg, init_ty) : llt;
                     if (init_ty && init_ty->kind == TY_FAILABLE)
                         store_ty = llvm_type(init_ty->ptr.inner);
                     emit(cg, "  store %s %s, ptr %%t%d\n", store_ty, init.buf, alloca);
@@ -869,7 +915,10 @@ static void cg_stmt(CG *cg, Stmt *s) {
                 Type *vty = NULL;
                 Val rhs = cg_expr(cg, s->assign.val, &vty);
                 const char *llt = sym->ty ? llvm_type(sym->ty) : "i32";
-                if (s->assign.op == ASSIGN_EQ && sym->ty && sym->ty->kind == TY_NAMED) {
+                int is_struct_assign = s->assign.op == ASSIGN_EQ && sym->ty
+                                       && sym->ty->kind == TY_NAMED
+                                       && !find_enum(cg, sym->ty->named.name);
+                if (is_struct_assign) {
                     /* struct copy: rhs is a ptr, load then store */
                     int loaded = new_tmp(cg);
                     emit(cg, "  %%t%d = load %s, ptr %s\n", loaded, llt, rhs.buf);
@@ -1129,7 +1178,7 @@ static void cg_stmt(CG *cg, Stmt *s) {
             int end_l = new_label(cg);
             Type *val_ty = NULL;
             Val val = cg_expr(cg, s->when.val, &val_ty);
-            const char *llt = val_ty ? llvm_type(val_ty) : "i32";
+            const char *llt = effective_llvm_type(cg, val_ty);
             for (size_t i = 0; i < s->when.arms.len; i++) {
                 WhenArm *arm = &s->when.arms.data[i];
                 int body_l = new_label(cg);
@@ -1222,7 +1271,7 @@ static void cg_stmt(CG *cg, Stmt *s) {
 static void cg_fn(CG *cg, Item *item) {
     const char *name = item->name;
     int is_void = (item->fn.ret == NULL);
-    const char *ret_llt = is_void ? "void" : llvm_type(item->fn.ret);
+    const char *ret_llt = is_void ? "void" : effective_llvm_type(cg, item->fn.ret);
 
     if (item->fn.is_inline)
         emit(cg, "define internal ");
@@ -1233,7 +1282,7 @@ static void cg_fn(CG *cg, Item *item) {
     for (size_t i = 0; i < item->fn.params.len; i++) {
         Param *par = &item->fn.params.data[i];
         if (i) emit(cg, ", ");
-        emit(cg, "%s %%%s", llvm_type(par->ty), par->name);
+        emit(cg, "%s %%%s", effective_llvm_type(cg, par->ty), par->name);
     }
     if (item->fn.variadic) {
         if (item->fn.params.len) emit(cg, ", ");
@@ -1247,7 +1296,7 @@ static void cg_fn(CG *cg, Item *item) {
     /* spill parameters to allocas so they're addressable */
     for (size_t i = 0; i < item->fn.params.len; i++) {
         Param *par = &item->fn.params.data[i];
-        const char *llt = llvm_type(par->ty);
+        const char *llt = effective_llvm_type(cg, par->ty);
         int alloca = new_tmp(cg);
         emit(cg, "  %%t%d = alloca %s\n", alloca, llt);
         emit(cg, "  store %s %%%s, ptr %%t%d\n", llt, par->name, alloca);
@@ -1339,6 +1388,35 @@ int codegen(Module *mod, FILE *out) {
 
     /* format string constants */
     emit(&cg, "@.fmt.d = private constant [3 x i8] c\"%%d\\00\"\n\n");
+
+    /* enum variant tables (no IR to emit — enums are integer constants) */
+    for (size_t i = 0; i < mod->items.len; i++) {
+        Item *item = mod->items.data[i];
+        if (item->kind != ITEM_ENUM) continue;
+        size_t n = item->enum_.variants.len;
+        EnumVariantVal *vals = ARENA_ALLOC(cg.arena, EnumVariantVal, n);
+        int64_t next_val = 0;
+        for (size_t j = 0; j < n; j++) {
+            EnumVariant *v = &item->enum_.variants.data[j];
+            if (v->val && v->val->kind == EXPR_INT)
+                next_val = (int64_t)v->val->ival;
+            vals[j].name  = v->name;
+            vals[j].value = next_val++;
+        }
+        EnumInfo *ei = ARENA_NEW(cg.arena, EnumInfo);
+        ei->name       = item->name;
+        ei->backing_ty = item->enum_.backing ? item->enum_.backing
+                                             : (Type*)NULL; /* resolved below */
+        ei->n_variants = n;
+        ei->variants   = vals;
+        ei->next       = cg.enums;
+        cg.enums       = ei;
+        /* resolve backing type — default i32 */
+        if (!ei->backing_ty) {
+            ei->backing_ty = ARENA_NEW(cg.arena, Type);
+            ei->backing_ty->kind = TY_I32;
+        }
+    }
 
     /* struct type declarations and layout table */
     for (size_t i = 0; i < mod->items.len; i++) {
