@@ -449,6 +449,10 @@ static Type *check_expr(Sema *s, Expr *e) {
         case EXPR_FIELD: {
             Type *obj_ty = check_expr(s, e->field.obj);
             obj_ty = resolve_named(s, obj_ty);
+            /* auto-deref: *Struct.field transparently accesses the struct's field */
+            if (obj_ty && obj_ty->kind == TY_PTR && obj_ty->ptr.inner
+                    && obj_ty->ptr.inner->kind == TY_NAMED)
+                obj_ty = obj_ty->ptr.inner;
             e->ty = NULL;
             if (obj_ty && obj_ty->kind == TY_NAMED) {
                 /* enum variant access: EnumName.Variant */
@@ -477,9 +481,32 @@ static Type *check_expr(Sema *s, Expr *e) {
                         break;
                     }
                 }
-                if (!e->ty)
-                    sema_error(s, e->span, "type '%s' has no field '%s'",
-                               obj_ty->named.name, e->field.field);
+                if (!e->ty) {
+                    /* impl method lookup: try "StructName__field" */
+                    char mangled[256];
+                    snprintf(mangled, sizeof(mangled), "%s__%s",
+                             obj_ty->named.name, e->field.field);
+                    Sym *method_sym = lookup(s, mangled);
+                    if (method_sym && method_sym->ty && method_sym->ty->kind == TY_FN) {
+                        /* build a reduced TY_FN without the self param for arity checking */
+                        Type *full = method_sym->ty;
+                        size_t np = full->fn.params.len;
+                        Type *reduced = make_ty(s, TY_FN);
+                        reduced->fn.ret = full->fn.ret;
+                        if (np > 1) {
+                            reduced->fn.params.len  = np - 1;
+                            reduced->fn.params.data = ARENA_ALLOC(s->arena, Type *, np - 1);
+                            for (size_t k = 1; k < np; k++)
+                                reduced->fn.params.data[k - 1] = full->fn.params.data[k];
+                        }
+                        e->ty = reduced;
+                        e->field.is_method    = 1;
+                        e->field.mangled_name = arena_strdup(s->arena, mangled);
+                    } else {
+                        sema_error(s, e->span, "type '%s' has no field or method '%s'",
+                                   obj_ty->named.name, e->field.field);
+                    }
+                }
             } else if (obj_ty) {
                 sema_error(s, e->span, "field access on non-struct type '%s'", ty_str(obj_ty));
             }
@@ -875,6 +902,27 @@ static void register_item(Sema *s, Item *item) {
             Type *ty = make_ty(s, TY_FN);
             ty->fn.ret = item->extern_fn.ret;
             define(s, item->span, item->name, ty, 0, 0);
+            break;
+        }
+        case ITEM_IMPL: {
+            for (size_t i = 0; i < item->impl.methods.len; i++) {
+                Item *m = item->impl.methods.data[i];
+                if (m->kind != ITEM_FN) continue;
+                /* mangle: "method" → "StructName__method" */
+                char buf[256];
+                snprintf(buf, sizeof(buf), "%s__%s", item->impl.ty_name, m->name);
+                m->name = arena_strdup(s->arena, buf);
+                /* register TY_FN with all params (including self) */
+                Type *ty = make_ty(s, TY_FN);
+                ty->fn.ret = m->fn.ret;
+                if (m->fn.params.len > 0) {
+                    ty->fn.params.data = ARENA_ALLOC(s->arena, Type *, m->fn.params.len);
+                    ty->fn.params.len  = m->fn.params.len;
+                    for (size_t j = 0; j < m->fn.params.len; j++)
+                        ty->fn.params.data[j] = m->fn.params.data[j].ty;
+                }
+                define(s, m->span, m->name, ty, 0, 0);
+            }
             break;
         }
         case ITEM_GLOBAL:

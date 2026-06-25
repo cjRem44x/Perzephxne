@@ -68,7 +68,7 @@ static int compile_file(const char *src_path, const char *out_path, int release)
     const char *opt = release ? "-O2" : "-O0 -g";
     snprintf(cmd, sizeof(cmd), "clang %s %s -o %s", opt, ll_path, out_path);
     int ret = system(cmd);
-    remove(ll_path);
+    if (!getenv("PRZP_KEEP_IR")) remove(ll_path);
     return (ret == 0) ? 0 : 1;
 }
 

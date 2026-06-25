@@ -120,7 +120,10 @@ struct Expr {
         struct { UnOp op; Expr *operand; }           unop;
         struct { Expr *callee; ExprList args; }      call;
         struct { Expr *arr; Expr *idx; }             index;
-        struct { Expr *obj; const char *field; }     field;
+        struct { Expr *obj; const char *field;
+                 int         is_method;     /* set by sema: field is a method, not a struct field */
+                 const char *mangled_name;  /* "StructName__method" — valid when is_method=1 */
+               }                                      field;
         struct { Expr *operand; }                    deref;
         struct { Expr *cond; WhenArmList arms; }     when;
         struct { Expr *cond; Stmt *then_; Stmt *else_; } if_expr;

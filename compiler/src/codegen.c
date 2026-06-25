@@ -679,6 +679,44 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
         }
 
         case EXPR_CALL: {
+            /* Method call: callee is EXPR_FIELD with is_method flag set by sema */
+            if (e->call.callee->kind == EXPR_FIELD && e->call.callee->field.is_method) {
+                const char *mangled = e->call.callee->field.mangled_name;
+                Type *ret_ty = e->ty;
+                int is_void = (ret_ty == NULL || ret_ty->kind == TY_VOID);
+                const char *ret_llt = is_void ? "void" : effective_llvm_type(cg, ret_ty);
+
+                /* evaluate self:
+                   - struct p (TY_NAMED): EXPR_IDENT returns the alloca ptr directly
+                   - ptr *p (TY_PTR):     EXPR_IDENT loads the ptr from its alloca
+                   in both cases the result is already the ptr to the struct */
+                Type *obj_ty = NULL;
+                Val self_val = cg_expr(cg, e->call.callee->field.obj, &obj_ty);
+
+                size_t nargs = e->call.args.len;
+                Val   *arg_vals = nargs ? malloc(sizeof(Val)   * nargs) : NULL;
+                Type **arg_tys  = nargs ? malloc(sizeof(Type*) * nargs) : NULL;
+                for (size_t i = 0; i < nargs; i++) {
+                    arg_tys[i]  = NULL;
+                    arg_vals[i] = cg_expr(cg, e->call.args.data[i], &arg_tys[i]);
+                }
+
+                int t = new_tmp(cg);
+                if (is_void)
+                    emit(cg, "  call void @%s(ptr %s", mangled, self_val.buf);
+                else
+                    emit(cg, "  %%t%d = call %s @%s(ptr %s", t, ret_llt, mangled, self_val.buf);
+                for (size_t i = 0; i < nargs; i++) {
+                    const char *llt = effective_llvm_type(cg, arg_tys[i]);
+                    emit(cg, ", %s %s", llt, arg_vals[i].buf);
+                }
+                emit(cg, ")\n");
+                free(arg_vals);
+                free(arg_tys);
+                if (out_ty) *out_ty = ret_ty;
+                return val_tmp(t);
+            }
+
             /* Resolve callee: for a direct ident, use @name; for indirect, cg_expr */
             char fn_name_buf[128];
             const char *fn_name;
@@ -743,6 +781,11 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
             /* Struct field access */
             Type *obj_ty = NULL;
             Val obj = cg_expr(cg, e->field.obj, &obj_ty);
+            /* auto-deref: *Struct.field — EXPR_IDENT already loaded the ptr value;
+               just use it directly as the struct pointer for GEP */
+            if (obj_ty && obj_ty->kind == TY_PTR && obj_ty->ptr.inner
+                    && obj_ty->ptr.inner->kind == TY_NAMED)
+                obj_ty = obj_ty->ptr.inner;
             if (!obj_ty || obj_ty->kind != TY_NAMED)
                 fatal_at(e->span, "field access on non-struct value");
             StructInfo *si = find_struct(cg, obj_ty->named.name);
@@ -941,9 +984,13 @@ static void cg_stmt(CG *cg, Stmt *s) {
                     emit(cg, "  store %s %%t%d, ptr %s\n", llt, res_t, sym->llvm_name);
                 }
             } else if (s->assign.target->kind == EXPR_FIELD) {
-                /* p.field = val */
+                /* p.field = val (or self.field = val via auto-deref) */
                 Type *obj_ty = NULL;
                 Val obj = cg_expr(cg, s->assign.target->field.obj, &obj_ty);
+                /* auto-deref: *Struct.field — ptr value already loaded by cg_expr */
+                if (obj_ty && obj_ty->kind == TY_PTR && obj_ty->ptr.inner
+                        && obj_ty->ptr.inner->kind == TY_NAMED)
+                    obj_ty = obj_ty->ptr.inner;
                 if (obj_ty && obj_ty->kind == TY_NAMED) {
                     StructInfo *si = find_struct(cg, obj_ty->named.name);
                     const char *fname = s->assign.target->field.field;
@@ -1454,6 +1501,16 @@ int codegen(Module *mod, FILE *out) {
             if (!strcmp(item->name, "main")) { has_main = 1; item->name = "__przp_main"; }
             cg_fn(&cg, item);
             if (!strcmp(item->name, "__przp_main")) item->name = "main"; /* restore */
+        }
+    }
+
+    /* impl methods — names already mangled by sema's register_item pass */
+    for (size_t i = 0; i < mod->items.len; i++) {
+        Item *item = mod->items.data[i];
+        if (item->kind != ITEM_IMPL) continue;
+        for (size_t j = 0; j < item->impl.methods.len; j++) {
+            Item *m = item->impl.methods.data[j];
+            if (m->kind == ITEM_FN) cg_fn(&cg, m);
         }
     }
 
