@@ -7,17 +7,20 @@
 /* ── Parser state ─────────────────────────────────────────────────────────── */
 
 typedef struct {
-    Lexer  lexer;
-    Token  cur;
-    Token  peek;
-    Arena *arena;
+    Lexer       lexer;
+    Token       cur;
+    Token       peek;
+    Token       peek2;     /* 3-token lookahead for generic disambiguation */
+    Arena      *arena;
+    GenInstList gen_insts; /* generic instantiations seen during parse */
 } Parser;
 
 /* ── helpers ──────────────────────────────────────────────────────────────── */
 
 static void advance(Parser *p) {
-    p->cur  = p->peek;
-    p->peek = lexer_next(&p->lexer);
+    p->cur   = p->peek;
+    p->peek  = p->peek2;
+    p->peek2 = lexer_next(&p->lexer);
 }
 
 static Token cur(Parser *p)  { return p->cur; }
@@ -58,14 +61,75 @@ static int eat(Parser *p, TokenKind k) {
     (lst)->data = _d; (lst)->len = _n;                                  \
 } while (0)
 
+/* ── Generic helpers ──────────────────────────────────────────────────────── */
+
+/* Produce a mangling-safe string for a type (used to form mangled names). */
+static const char *type_to_str(Type *ty, Arena *a) {
+    if (!ty) return "void";
+    switch (ty->kind) {
+        case TY_I8:    return "i8";
+        case TY_I16:   return "i16";
+        case TY_I32:   return "i32";
+        case TY_I64:   return "i64";
+        case TY_U8:    return "u8";
+        case TY_U16:   return "u16";
+        case TY_U32:   return "u32";
+        case TY_U64:   return "u64";
+        case TY_F16:   return "f16";
+        case TY_F32:   return "f32";
+        case TY_F64:   return "f64";
+        case TY_USIZE: return "usize";
+        case TY_BOOL:  return "bool";
+        case TY_CHAR:  return "char";
+        case TY_STR:   return "str";
+        case TY_VOID:  return "void";
+        case TY_NAMED: case TY_GENERIC: return ty->named.name;
+        case TY_PTR: {
+            const char *inner = type_to_str(ty->ptr.inner, a);
+            char *buf = arena_alloc(a, 4 + strlen(inner) + 1);
+            sprintf(buf, "ptr_%s", inner);
+            return buf;
+        }
+        case TY_SMART_PTR: {
+            const char *inner = type_to_str(ty->ptr.inner, a);
+            char *buf = arena_alloc(a, 3 + strlen(inner) + 1);
+            sprintf(buf, "rc_%s", inner);
+            return buf;
+        }
+        case TY_SLICE: {
+            const char *inner = type_to_str(ty->ptr.inner, a);
+            char *buf = arena_alloc(a, 3 + strlen(inner) + 1);
+            sprintf(buf, "sl_%s", inner);
+            return buf;
+        }
+        case TY_ARRAY: {
+            const char *inner = type_to_str(ty->array.inner, a);
+            char *buf = arena_alloc(a, 4 + strlen(inner) + 1);
+            sprintf(buf, "arr_%s", inner);
+            return buf;
+        }
+        default: return "T";
+    }
+}
+
+static void record_gen_inst(Parser *p, const char *mangled, const char *base,
+                             Type **args, size_t n_args) {
+    /* skip duplicates */
+    for (size_t i = 0; i < p->gen_insts.len; i++)
+        if (!strcmp(p->gen_insts.data[i].mangled, mangled)) return;
+    GenInst gi = { .mangled = mangled, .base = base, .args = args, .n_args = n_args };
+    SLICE_PUSH(p->arena, &p->gen_insts, GenInst, gi);
+}
+
 /* ── forward declarations ─────────────────────────────────────────────────── */
 
-static Type  *parse_type(Parser *p);
-static Expr  *parse_expr(Parser *p);
-static Expr  *parse_expr_bp(Parser *p, int min_bp);
-static Stmt  *parse_stmt(Parser *p);
+static Type    *parse_type(Parser *p);
+static Expr    *parse_expr(Parser *p);
+static Expr    *parse_expr_bp(Parser *p, int min_bp);
+static Expr    *parse_postfix(Parser *p, Expr *e);
+static Stmt    *parse_stmt(Parser *p);
 static StmtList parse_block(Parser *p);
-static Item  *parse_item(Parser *p);
+static Item    *parse_item(Parser *p);
 
 /* ── Types ────────────────────────────────────────────────────────────────── */
 
@@ -190,6 +254,29 @@ static Type *parse_type(Parser *p) {
             ty->named.name = buf;
         } else {
             ty->named.name = t.sval;
+        }
+        /* generic type args: Name<T, U> → Name__T__U */
+        if (cur(p).kind == TOK_LT) {
+            advance(p); /* consume '<' */
+            char mangled[512];
+            snprintf(mangled, sizeof(mangled), "%s", ty->named.name);
+            const char *base = ty->named.name;
+            Type **args = NULL;
+            size_t n_args = 0;
+            while (!check(p, TOK_GT) && !check(p, TOK_EOF)) {
+                Type *arg = parse_type(p);
+                const char *arg_str = type_to_str(arg, p->arena);
+                size_t curlen = strlen(mangled);
+                snprintf(mangled + curlen, sizeof(mangled) - curlen, "__%s", arg_str);
+                Type **new_args = arena_alloc(p->arena, (n_args + 1) * sizeof(Type *));
+                if (n_args) memcpy(new_args, args, n_args * sizeof(Type *));
+                new_args[n_args++] = arg;
+                args = new_args;
+                eat(p, TOK_COMMA);
+            }
+            expect(p, TOK_GT);
+            ty->named.name = arena_strdup(p->arena, mangled);
+            record_gen_inst(p, ty->named.name, base, args, n_args);
         }
         return ty;
     }
@@ -383,6 +470,7 @@ static ExprList desugar_pf_interp(Parser *p, ExprList orig) {
             sub.arena = p->arena;
             sub.cur   = lexer_next(&sub.lexer);
             sub.peek  = lexer_next(&sub.lexer);
+            sub.peek2 = lexer_next(&sub.lexer);
             Expr *inner = parse_expr(&sub);
             LIST_PUSH(p->arena, &interp, Expr, inner);
         } else {
@@ -499,6 +587,46 @@ static Expr *parse_primary(Parser *p) {
         case TOK_IDENT: {
             advance(p);
             const char *name = t.sval;
+            /* generic struct literal / call: Name<T>{ ... } or Name<T>(...)
+               Heuristic: cur='<', peek2='>' → single-token type arg generic.
+               This catches Name<Prim>, Name<UserType> but not Name<*T>, Name<[]T>. */
+            if (check(p, TOK_LT) && p->peek2.kind == TOK_GT) {
+                advance(p); /* consume '<' */
+                Type *arg = parse_type(p);
+                expect(p, TOK_GT);
+                const char *arg_str = type_to_str(arg, p->arena);
+                char mangled_buf[512];
+                snprintf(mangled_buf, sizeof(mangled_buf), "%s__%s", name, arg_str);
+                const char *mangled = arena_strdup(p->arena, mangled_buf);
+                Type **args = arena_alloc(p->arena, sizeof(Type *));
+                args[0] = arg;
+                record_gen_inst(p, mangled, name, args, 1);
+                if (check(p, TOK_LBRACE) && peek(p).kind == TOK_DOT) {
+                    /* generic struct literal */
+                    advance(p); /* consume '{' */
+                    FieldInitList fields = {0};
+                    while (!check(p, TOK_RBRACE) && !check(p, TOK_EOF)) {
+                        expect(p, TOK_DOT);
+                        Token fn = expect(p, TOK_IDENT);
+                        expect(p, TOK_EQ);
+                        Expr *val = parse_expr(p);
+                        FieldInit fi = { .name = fn.sval, .val = val };
+                        SLICE_PUSH(p->arena, &fields, FieldInit, fi);
+                        eat(p, TOK_COMMA);
+                    }
+                    Span end = cur(p).span;
+                    expect(p, TOK_RBRACE);
+                    Expr *e = mkexpr(p, EXPR_STRUCT_LIT, span_merge(span, end));
+                    e->struct_lit.ty_name = mangled;
+                    e->struct_lit.fields  = fields;
+                    return parse_postfix(p, e);
+                } else {
+                    /* generic call or bare ident — emit mangled name and let postfix handle it */
+                    Expr *e = mkexpr(p, EXPR_IDENT, span);
+                    e->ident.name = mangled;
+                    return parse_postfix(p, e);
+                }
+            }
             /* struct literal: Foo{.x=1, ...} */
             if (check(p, TOK_LBRACE) && !check2(p, TOK_RBRACE)) {
                 /* peek for .field = to distinguish from block */
@@ -1148,6 +1276,21 @@ static Item *parse_item(Parser *p) {
     if (check(p, TOK_FN)) {
         advance(p);
         const char *name = expect(p, TOK_IDENT).sval;
+        /* optional generic type params: fn foo<T, U>(...) */
+        const char **type_params = NULL;
+        size_t n_type_params = 0;
+        if (check(p, TOK_LT)) {
+            advance(p); /* consume '<' */
+            while (!check(p, TOK_GT) && !check(p, TOK_EOF)) {
+                const char *tp = expect(p, TOK_IDENT).sval;
+                const char **new_tp = arena_alloc(p->arena, (n_type_params + 1) * sizeof(const char *));
+                if (n_type_params) memcpy(new_tp, type_params, n_type_params * sizeof(const char *));
+                new_tp[n_type_params++] = tp;
+                type_params = new_tp;
+                eat(p, TOK_COMMA);
+            }
+            expect(p, TOK_GT);
+        }
         expect(p, TOK_LPAREN);
         ParamList params = {0};
         int variadic = 0;
@@ -1165,14 +1308,16 @@ static Item *parse_item(Parser *p) {
         if (eat(p, TOK_ARROW)) ret = parse_type(p);
         StmtList body = parse_block(p);
         Item *item = ARENA_NEW(p->arena, Item);
-        item->kind          = ITEM_FN;
-        item->name          = name;
-        item->span          = span_merge(span, cur(p).span);
-        item->fn.params     = params;
-        item->fn.ret        = ret;
-        item->fn.body       = body;
-        item->fn.is_inline  = is_inline;
-        item->fn.variadic   = variadic;
+        item->kind               = ITEM_FN;
+        item->name               = name;
+        item->span               = span_merge(span, cur(p).span);
+        item->fn.params          = params;
+        item->fn.ret             = ret;
+        item->fn.body            = body;
+        item->fn.is_inline       = is_inline;
+        item->fn.variadic        = variadic;
+        item->fn.type_params     = type_params;
+        item->fn.n_type_params   = n_type_params;
         return item;
     }
 
@@ -1183,6 +1328,21 @@ static Item *parse_item(Parser *p) {
     if (check(p, TOK_STRUCT)) {
         advance(p);
         const char *name = expect(p, TOK_IDENT).sval;
+        /* optional generic type params: struct Box<T> { ... } */
+        const char **type_params = NULL;
+        size_t n_type_params = 0;
+        if (check(p, TOK_LT)) {
+            advance(p); /* consume '<' */
+            while (!check(p, TOK_GT) && !check(p, TOK_EOF)) {
+                const char *tp = expect(p, TOK_IDENT).sval;
+                const char **new_tp = arena_alloc(p->arena, (n_type_params + 1) * sizeof(const char *));
+                if (n_type_params) memcpy(new_tp, type_params, n_type_params * sizeof(const char *));
+                new_tp[n_type_params++] = tp;
+                type_params = new_tp;
+                eat(p, TOK_COMMA);
+            }
+            expect(p, TOK_GT);
+        }
         expect(p, TOK_LBRACE);
         FieldList fields = {0};
         while (!check(p, TOK_RBRACE) && !check(p, TOK_EOF)) {
@@ -1195,11 +1355,13 @@ static Item *parse_item(Parser *p) {
         }
         expect(p, TOK_RBRACE);
         Item *item = ARENA_NEW(p->arena, Item);
-        item->kind            = ITEM_STRUCT;
-        item->name            = name;
-        item->span            = span_merge(span, cur(p).span);
-        item->struct_.fields  = fields;
-        item->struct_.attrs   = attrs;
+        item->kind                   = ITEM_STRUCT;
+        item->name                   = name;
+        item->span                   = span_merge(span, cur(p).span);
+        item->struct_.fields         = fields;
+        item->struct_.attrs          = attrs;
+        item->struct_.type_params    = type_params;
+        item->struct_.n_type_params  = n_type_params;
         return item;
     }
 
@@ -1321,9 +1483,10 @@ Module *parse(const char *src, uint32_t file_id, Arena *arena) {
     Parser p = {0};
     lexer_init(&p.lexer, src, file_id, arena);
     p.arena = arena;
-    /* prime the two-token lookahead */
-    p.cur  = lexer_next(&p.lexer);
-    p.peek = lexer_next(&p.lexer);
+    /* prime the three-token lookahead */
+    p.cur   = lexer_next(&p.lexer);
+    p.peek  = lexer_next(&p.lexer);
+    p.peek2 = lexer_next(&p.lexer);
 
     Module *mod = ARENA_NEW(arena, Module);
     mod->arena  = arena;
@@ -1333,5 +1496,6 @@ Module *parse(const char *src, uint32_t file_id, Arena *arena) {
         LIST_PUSH(arena, &mod->items, Item, item);
     }
 
+    mod->gen_insts = p.gen_insts;
     return mod;
 }

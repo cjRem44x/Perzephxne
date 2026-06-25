@@ -40,15 +40,24 @@ typedef struct EnumInfo {
     EnumVariantVal  *variants;
 } EnumInfo;
 
+/* ── Generic template table ───────────────────────────────────────────────── */
+
+typedef struct GenericTemplate {
+    struct GenericTemplate *next;
+    Item       *item;
+    const char *name;
+} GenericTemplate;
+
 /* ── Sema context ─────────────────────────────────────────────────────────── */
 
 typedef struct {
-    Arena       *arena;
-    Scope       *scope;
-    Type        *cur_ret;   /* return type of the function being checked */
-    int          errors;
-    StructEntry *structs;   /* name → field list for struct lookup */
-    EnumInfo    *enums;     /* name → variant values for enum lookup */
+    Arena            *arena;
+    Scope            *scope;
+    Type             *cur_ret;   /* return type of the function being checked */
+    int               errors;
+    StructEntry      *structs;   /* name → field list for struct lookup */
+    EnumInfo         *enums;     /* name → variant values for enum lookup */
+    GenericTemplate  *generics;  /* uninstantiated generic templates */
     /* built-in types — interned once */
     Type   *ty_void, *ty_bool, *ty_i8, *ty_i16, *ty_i32, *ty_i64;
     Type   *ty_u8,   *ty_u16,  *ty_u32, *ty_u64, *ty_usize;
@@ -847,11 +856,250 @@ static void check_type_alias(Sema *s, Item *item) {
     define(s, item->span, item->name, ty, 0, 1);
 }
 
+/* ── Generics: substitution and instantiation ─────────────────────────────── */
+
+/* Produce a mangling-safe string for a type (duplicated from parser.c for sema use) */
+static const char *gen_type_str(Type *ty, Arena *a) {
+    if (!ty) return "void";
+    switch (ty->kind) {
+        case TY_I8:    return "i8";
+        case TY_I16:   return "i16";
+        case TY_I32:   return "i32";
+        case TY_I64:   return "i64";
+        case TY_U8:    return "u8";
+        case TY_U16:   return "u16";
+        case TY_U32:   return "u32";
+        case TY_U64:   return "u64";
+        case TY_F16:   return "f16";
+        case TY_F32:   return "f32";
+        case TY_F64:   return "f64";
+        case TY_USIZE: return "usize";
+        case TY_BOOL:  return "bool";
+        case TY_CHAR:  return "char";
+        case TY_STR:   return "str";
+        case TY_VOID:  return "void";
+        case TY_NAMED: case TY_GENERIC: return ty->named.name;
+        default: return "T";
+    }
+}
+
+/* Substitute type-param strings inside a mangled name like "Box__T" → "Box__i32". */
+static const char *subst_mangled(const char *name, const char **params,
+                                  Type **concretes, size_t n, Arena *a) {
+    const char *result = name;
+    for (size_t i = 0; i < n; i++) {
+        const char *concrete_str = gen_type_str(concretes[i], a);
+        size_t plen = strlen(params[i]);
+        /* find "__<param>" in the name */
+        char search[256];
+        snprintf(search, sizeof(search), "__%s", params[i]);
+        const char *pos = strstr(result, search);
+        if (!pos) continue;
+        const char *after = pos + 2 + plen;
+        /* must be at word boundary: end of string or followed by "__" */
+        if (*after != '\0' && strncmp(after, "__", 2) != 0) continue;
+        size_t prefix_len = (size_t)(pos - result);
+        size_t new_len = prefix_len + 2 + strlen(concrete_str) + strlen(after) + 1;
+        char *new_name = arena_alloc(a, new_len);
+        memcpy(new_name, result, prefix_len);
+        snprintf(new_name + prefix_len, new_len - prefix_len, "__%s%s", concrete_str, after);
+        result = new_name;
+    }
+    return result;
+}
+
+static void subst_expr(Expr *e, const char **params, Type **concretes, size_t n, Arena *a);
+
+static Type *subst_type(Type *ty, const char **params, Type **concretes,
+                         size_t n, Arena *a) {
+    if (!ty) return NULL;
+    if (ty->kind == TY_NAMED || ty->kind == TY_GENERIC) {
+        /* exact match: "T" → i32 */
+        for (size_t i = 0; i < n; i++)
+            if (!strcmp(ty->named.name, params[i])) return concretes[i];
+        /* compound match: "Box__T" → "Box__i32" */
+        const char *new_name = subst_mangled(ty->named.name, params, concretes, n, a);
+        if (new_name != ty->named.name) {
+            Type *copy = ARENA_NEW(a, Type);
+            *copy = *ty;
+            copy->named.name = new_name;
+            return copy;
+        }
+        return ty;
+    }
+    Type *copy = ARENA_NEW(a, Type);
+    *copy = *ty;
+    switch (ty->kind) {
+        case TY_PTR: case TY_SMART_PTR: case TY_SLICE: case TY_FAILABLE:
+            copy->ptr.inner = subst_type(ty->ptr.inner, params, concretes, n, a);
+            break;
+        case TY_ARRAY:
+            copy->array.inner = subst_type(ty->array.inner, params, concretes, n, a);
+            break;
+        case TY_FN: {
+            if (ty->fn.params.len) {
+                Type **np = ARENA_ALLOC(a, Type *, ty->fn.params.len);
+                for (size_t i = 0; i < ty->fn.params.len; i++)
+                    np[i] = subst_type(ty->fn.params.data[i], params, concretes, n, a);
+                copy->fn.params.data = np;
+            }
+            copy->fn.ret = subst_type(ty->fn.ret, params, concretes, n, a);
+            break;
+        }
+        default: break;
+    }
+    return copy;
+}
+
+static void subst_expr(Expr *e, const char **params, Type **concretes, size_t n, Arena *a) {
+    if (!e) return;
+    switch (e->kind) {
+        case EXPR_STRUCT_LIT:
+            e->struct_lit.ty_name = subst_mangled(e->struct_lit.ty_name, params, concretes, n, a);
+            for (size_t i = 0; i < e->struct_lit.fields.len; i++)
+                subst_expr(e->struct_lit.fields.data[i].val, params, concretes, n, a);
+            break;
+        case EXPR_IDENT:
+            e->ident.name = subst_mangled(e->ident.name, params, concretes, n, a);
+            break;
+        case EXPR_BINOP:
+            subst_expr(e->binop.l, params, concretes, n, a);
+            subst_expr(e->binop.r, params, concretes, n, a);
+            break;
+        case EXPR_UNOP:
+            subst_expr(e->unop.operand, params, concretes, n, a);
+            break;
+        case EXPR_CALL:
+            subst_expr(e->call.callee, params, concretes, n, a);
+            for (size_t i = 0; i < e->call.args.len; i++)
+                subst_expr(e->call.args.data[i], params, concretes, n, a);
+            break;
+        case EXPR_FIELD:
+            subst_expr(e->field.obj, params, concretes, n, a);
+            break;
+        case EXPR_INDEX:
+            subst_expr(e->index.arr, params, concretes, n, a);
+            subst_expr(e->index.idx, params, concretes, n, a);
+            break;
+        case EXPR_DEREF: case EXPR_SMARTDEREF:
+            subst_expr(e->deref.operand, params, concretes, n, a);
+            break;
+        case EXPR_BUILTIN:
+            for (size_t i = 0; i < e->builtin.args.len; i++)
+                subst_expr(e->builtin.args.data[i], params, concretes, n, a);
+            break;
+        case EXPR_IF:
+            subst_expr(e->if_expr.cond, params, concretes, n, a);
+            break;
+        case EXPR_CAST:
+            subst_expr(e->cast.val, params, concretes, n, a);
+            break;
+        default: break;
+    }
+}
+
+static void subst_stmts(StmtList sl, const char **params, Type **concretes,
+                         size_t n, Arena *a) {
+    for (size_t i = 0; i < sl.len; i++) {
+        Stmt *st = sl.data[i];
+        if (!st) continue;
+        switch (st->kind) {
+            case STMT_LET:
+                st->let.ty = subst_type(st->let.ty, params, concretes, n, a);
+                subst_expr(st->let.init, params, concretes, n, a);
+                break;
+            case STMT_ASSIGN:
+                subst_expr(st->assign.target, params, concretes, n, a);
+                subst_expr(st->assign.val, params, concretes, n, a);
+                break;
+            case STMT_EXPR:
+                subst_expr(st->expr, params, concretes, n, a);
+                break;
+            case STMT_RET:
+                subst_expr(st->ret.val, params, concretes, n, a);
+                break;
+            case STMT_IF:
+                for (size_t j = 0; j < st->if_.branches.len; j++) {
+                    subst_expr(st->if_.branches.data[j].cond, params, concretes, n, a);
+                    subst_stmts(st->if_.branches.data[j].body, params, concretes, n, a);
+                }
+                subst_stmts(st->if_.else_body, params, concretes, n, a);
+                break;
+            case STMT_WHILE:
+                subst_expr(st->while_.cond, params, concretes, n, a);
+                subst_stmts(st->while_.body, params, concretes, n, a);
+                break;
+            case STMT_FOR:
+                subst_stmts(st->for_.body, params, concretes, n, a);
+                break;
+            case STMT_BLOCK:
+                subst_stmts(st->block, params, concretes, n, a);
+                break;
+            case STMT_DEFER:
+                subst_stmts(st->defer, params, concretes, n, a);
+                break;
+            default: break;
+        }
+    }
+}
+
+static Item *instantiate(Item *tmpl, const char *mangled_name,
+                          Type **concretes, size_t n_concretes, Arena *a) {
+    const char **params = NULL;
+    size_t n_params = 0;
+    if (tmpl->kind == ITEM_FN) {
+        params   = tmpl->fn.type_params;
+        n_params = tmpl->fn.n_type_params;
+    } else if (tmpl->kind == ITEM_STRUCT) {
+        params   = tmpl->struct_.type_params;
+        n_params = tmpl->struct_.n_type_params;
+    }
+    if (n_params != n_concretes) return tmpl;
+
+    Item *inst = ARENA_NEW(a, Item);
+    *inst = *tmpl;
+    inst->name = mangled_name;
+
+    if (tmpl->kind == ITEM_STRUCT) {
+        inst->struct_.type_params   = NULL;
+        inst->struct_.n_type_params = 0;
+        Field *nf = ARENA_ALLOC(a, Field, tmpl->struct_.fields.len);
+        for (size_t i = 0; i < tmpl->struct_.fields.len; i++) {
+            nf[i]    = tmpl->struct_.fields.data[i];
+            nf[i].ty = subst_type(tmpl->struct_.fields.data[i].ty,
+                                   params, concretes, n_concretes, a);
+        }
+        inst->struct_.fields.data = nf;
+    } else if (tmpl->kind == ITEM_FN) {
+        inst->fn.type_params   = NULL;
+        inst->fn.n_type_params = 0;
+        Param *np = ARENA_ALLOC(a, Param, tmpl->fn.params.len);
+        for (size_t i = 0; i < tmpl->fn.params.len; i++) {
+            np[i]    = tmpl->fn.params.data[i];
+            np[i].ty = subst_type(tmpl->fn.params.data[i].ty,
+                                   params, concretes, n_concretes, a);
+        }
+        inst->fn.params.data = np;
+        inst->fn.ret = subst_type(tmpl->fn.ret, params, concretes, n_concretes, a);
+        subst_stmts(inst->fn.body, params, concretes, n_concretes, a);
+    }
+    return inst;
+}
+
 /* ── First-pass: register all top-level names ─────────────────────────────── */
 
 static void register_item(Sema *s, Item *item) {
     switch (item->kind) {
         case ITEM_FN: {
+            if (item->fn.n_type_params > 0) {
+                /* generic template: store for later instantiation */
+                GenericTemplate *gt = ARENA_NEW(s->arena, GenericTemplate);
+                gt->item = item;
+                gt->name = item->name;
+                gt->next = s->generics;
+                s->generics = gt;
+                break;
+            }
             Type *ty = make_ty(s, TY_FN);
             ty->fn.ret = item->fn.ret;
             /* build params list so call-site arity checking works */
@@ -865,6 +1113,15 @@ static void register_item(Sema *s, Item *item) {
             break;
         }
         case ITEM_STRUCT: {
+            if (item->struct_.n_type_params > 0) {
+                /* generic template: store for later instantiation */
+                GenericTemplate *gt = ARENA_NEW(s->arena, GenericTemplate);
+                gt->item = item;
+                gt->name = item->name;
+                gt->next = s->generics;
+                s->generics = gt;
+                break;
+            }
             Type *ty = make_ty(s, TY_NAMED);
             ty->named.name = item->name;
             define(s, item->span, item->name, ty, 0, 1);
@@ -977,12 +1234,37 @@ int sema_check(Module *mod) {
     for (size_t i = 0; i < mod->items.len; i++)
         register_item(&s, mod->items.data[i]);
 
-    /* pass 2: full check */
+    /* pass 1.5: instantiate generics recorded during parsing */
+    for (size_t i = 0; i < mod->gen_insts.len; i++) {
+        GenInst *gi = &mod->gen_insts.data[i];
+        if (lookup(&s, gi->mangled)) continue; /* already instantiated or concrete */
+        GenericTemplate *gt = NULL;
+        for (GenericTemplate *g = s.generics; g; g = g->next)
+            if (!strcmp(g->name, gi->base)) { gt = g; break; }
+        if (!gt) continue; /* not a known generic — pass 2 will report the error */
+        Item *inst = instantiate(gt->item, gi->mangled, gi->args, gi->n_args, s.arena);
+        /* append to module so pass 2 checks it */
+        size_t new_len = mod->items.len + 1;
+        Item **new_data = ARENA_ALLOC(s.arena, Item *, new_len);
+        memcpy(new_data, mod->items.data, mod->items.len * sizeof(Item *));
+        new_data[mod->items.len] = inst;
+        mod->items.data = new_data;
+        mod->items.len  = new_len;
+        register_item(&s, inst);
+    }
+
+    /* pass 2: full check — skip uninstantiated generic templates */
     for (size_t i = 0; i < mod->items.len; i++) {
         Item *item = mod->items.data[i];
         switch (item->kind) {
-            case ITEM_FN:         check_fn(&s, item);         break;
-            case ITEM_STRUCT:     check_struct(&s, item);     break;
+            case ITEM_FN:
+                if (item->fn.n_type_params > 0) break; /* skip generic template */
+                check_fn(&s, item);
+                break;
+            case ITEM_STRUCT:
+                if (item->struct_.n_type_params > 0) break; /* skip generic template */
+                check_struct(&s, item);
+                break;
             case ITEM_ENUM:       check_enum(&s, item);       break;
             case ITEM_IMPL:       check_impl(&s, item);       break;
             case ITEM_GLOBAL:     check_global(&s, item);     break;

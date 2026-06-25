@@ -248,11 +248,13 @@ struct Item {
     const char *name;     /* NULL for ITEM_IMPORT */
     union {
         struct {
-            ParamList   params;
-            Type       *ret;       /* NULL = void */
-            StmtList    body;
-            int         is_inline;
-            int         variadic;
+            ParamList    params;
+            Type        *ret;       /* NULL = void */
+            StmtList     body;
+            int          is_inline;
+            int          variadic;
+            const char **type_params;
+            size_t       n_type_params;
         } fn;
 
         struct {
@@ -298,9 +300,21 @@ struct Item {
     };
 };
 
+/* ── Generic instantiation record ───────────────────────────────────────── */
+
+typedef struct {
+    const char *mangled;  /* e.g. "Box__i32"  */
+    const char *base;     /* e.g. "Box"        */
+    Type      **args;     /* concrete type args */
+    size_t      n_args;
+} GenInst;
+
+typedef struct { GenInst *data; size_t len; } GenInstList;
+
 /* ── Module (parse result) ───────────────────────────────────────────────── */
 
 typedef struct {
-    ItemList items;
-    Arena   *arena;
+    ItemList    items;
+    GenInstList gen_insts; /* generic instantiations recorded during parsing */
+    Arena      *arena;
 } Module;

@@ -1084,7 +1084,21 @@ static void cg_stmt(CG *cg, Stmt *s) {
                 llt = llvm_type(s->let.ty->ptr.inner);
             emit(cg, "  %%t%d = alloca %s\n", alloca, llt);
 
-            if (s->let.init) {
+            if (s->let.init && s->let.init->kind == EXPR_UNDEF) {
+                /* undef: zero-initialize based on declared type */
+                const char *zero = "0";
+                if (s->let.ty) {
+                    switch (s->let.ty->kind) {
+                        case TY_BOOL: zero = "false"; break;
+                        case TY_F16: case TY_F32: case TY_F64: zero = "0.0"; break;
+                        case TY_PTR: case TY_SMART_PTR: zero = "null"; break;
+                        case TY_STR: case TY_SLICE: case TY_NAMED:
+                            zero = "zeroinitializer"; break;
+                        default: zero = "0"; break;
+                    }
+                }
+                emit(cg, "  store %s %s, ptr %%t%d\n", llt, zero, alloca);
+            } else if (s->let.init) {
                 Type *init_ty = NULL;
                 Val init = cg_expr(cg, s->let.init, &init_ty);
                 int is_struct = init_ty && init_ty->kind == TY_NAMED
@@ -1723,6 +1737,7 @@ int codegen(Module *mod, FILE *out) {
     for (size_t i = 0; i < mod->items.len; i++) {
         Item *item = mod->items.data[i];
         if (item->kind != ITEM_STRUCT) continue;
+        if (item->struct_.n_type_params > 0) continue; /* skip generic template */
         /* register layout */
         StructInfo *si = ARENA_NEW(cg.arena, StructInfo);
         si->name   = item->name;
@@ -1752,6 +1767,7 @@ int codegen(Module *mod, FILE *out) {
     for (size_t i = 0; i < mod->items.len; i++) {
         Item *item = mod->items.data[i];
         if (item->kind == ITEM_FN) {
+            if (item->fn.n_type_params > 0) continue; /* skip generic template */
             if (!strcmp(item->name, "main")) { has_main = 1; item->name = "__przp_main"; }
             cg_fn(&cg, item);
             if (!strcmp(item->name, "__przp_main")) item->name = "main"; /* restore */
