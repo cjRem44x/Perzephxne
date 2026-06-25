@@ -1,0 +1,303 @@
+#pragma once
+#include "span.h"
+#include "arena.h"
+#include <stdint.h>
+#include <stddef.h>
+
+/* ── forward declarations ─────────────────────────────────────────────────── */
+typedef struct Type   Type;
+typedef struct Expr   Expr;
+typedef struct Stmt   Stmt;
+typedef struct Item   Item;
+
+/* ── dynamic arrays (arena-backed) ──────────────────────────────────────────
+   All list types below follow the same pattern: a pointer + a count.
+   The parser fills them using arena_alloc.                                   */
+
+typedef struct { Type **data; size_t len; } TypeList;
+typedef struct { Expr **data; size_t len; } ExprList;
+typedef struct { Stmt **data; size_t len; } StmtList;
+typedef struct { Item **data; size_t len; } ItemList;
+
+/* ── Types ───────────────────────────────────────────────────────────────── */
+
+typedef enum {
+    TY_I8, TY_I16, TY_I32, TY_I64,
+    TY_U8, TY_U16, TY_U32, TY_U64,
+    TY_F16, TY_F32, TY_F64,
+    TY_USIZE,
+    TY_BOOL, TY_CHAR, TY_STR, TY_ANY, TY_VOID,
+    TY_PTR,          /* *T      */
+    TY_SMART_PTR,    /* ^T      */
+    TY_ARRAY,        /* [N]T    */
+    TY_SLICE,        /* []T     */
+    TY_FN,           /* fn(...) -> T */
+    TY_NAMED,        /* user type */
+    TY_FAILABLE,     /* !T      */
+    TY_GENERIC,      /* T (type param) */
+} TypeKind;
+
+struct Type {
+    TypeKind kind;
+    Span     span;
+    union {
+        struct { Type *inner; }                       ptr;       /* PTR, SMART_PTR, SLICE, FAILABLE */
+        struct { Type *inner; Expr *size; }           array;     /* ARRAY */
+        struct { TypeList params; Type *ret; }        fn;        /* FN */
+        struct { const char *name; }                  named;     /* NAMED, GENERIC */
+    };
+};
+
+/* ── Expressions ─────────────────────────────────────────────────────────── */
+
+typedef enum {
+    BINOP_ADD, BINOP_SUB, BINOP_MUL, BINOP_DIV, BINOP_MOD,
+    BINOP_AMP, BINOP_PIPE, BINOP_XOR, BINOP_SHL, BINOP_SHR,
+    BINOP_AND, BINOP_OR,
+    BINOP_EQ, BINOP_NE, BINOP_LT, BINOP_GT, BINOP_LE, BINOP_GE,
+    BINOP_RANGE, BINOP_RANGE_INC,
+} BinOp;
+
+typedef enum {
+    UNOP_NEG, UNOP_NOT, UNOP_BITNOT, UNOP_ADDROF,
+} UnOp;
+
+typedef enum {
+    ASSIGN_EQ,
+    ASSIGN_ADD, ASSIGN_SUB, ASSIGN_MUL, ASSIGN_DIV, ASSIGN_MOD,
+    ASSIGN_AMP, ASSIGN_PIPE, ASSIGN_XOR, ASSIGN_SHL, ASSIGN_SHR,
+} AssignOp;
+
+/* field name + value pair used in struct literals and when arms */
+typedef struct { const char *name; Expr *val; } FieldInit;
+typedef struct { FieldInit *data; size_t len; } FieldInitList;
+
+/* when arm: patterns => body */
+typedef struct {
+    ExprList   pats;     /* one or more patterns (multi-pattern uses | in source) */
+    const char *bind;    /* optional binding name for `any` / tagged union */
+    Stmt       *body;    /* single stmt or block */
+    Span        span;
+} WhenArm;
+typedef struct { WhenArm *data; size_t len; } WhenArmList;
+
+typedef enum {
+    EXPR_INT, EXPR_FLOAT, EXPR_STR, EXPR_CHAR, EXPR_BOOL,
+    EXPR_IDENT,
+    EXPR_BUILTIN,        /* @name(args)   */
+    EXPR_CAST,           /* @T(val)       */
+    EXPR_BINOP,
+    EXPR_UNOP,
+    EXPR_CALL,
+    EXPR_INDEX,          /* arr[i]        */
+    EXPR_FIELD,          /* expr.name     */
+    EXPR_DEREF,          /* expr.*        */
+    EXPR_SMARTDEREF,     /* expr.^        */
+    EXPR_WHEN,
+    EXPR_IF,             /* if as expr    */
+    EXPR_STRUCT_LIT,     /* Foo{.x=1}     */
+    EXPR_ARRAY_LIT,      /* [1,2,3]       */
+    EXPR_UNDEF,
+    EXPR_NULL,
+    EXPR_DISCARD,        /* _             */
+} ExprKind;
+
+struct Expr {
+    ExprKind kind;
+    Span     span;
+    Type    *ty;         /* filled by sema */
+    union {
+        uint64_t       ival;
+        double         fval;
+        const char    *sval;
+        uint8_t        cval;
+        int            bval;
+
+        struct { const char *name; }                ident;
+        struct { const char *name; ExprList args; } builtin;
+        struct { const char *ty_name; Expr *val; }  cast;
+        struct { Expr *l; BinOp op; Expr *r; }      binop;
+        struct { UnOp op; Expr *operand; }           unop;
+        struct { Expr *callee; ExprList args; }      call;
+        struct { Expr *arr; Expr *idx; }             index;
+        struct { Expr *obj; const char *field; }     field;
+        struct { Expr *operand; }                    deref;
+        struct { Expr *cond; WhenArmList arms; }     when;
+        struct { Expr *cond; Stmt *then_; Stmt *else_; } if_expr;
+        struct { const char *ty_name; FieldInitList fields; } struct_lit;
+        ExprList array_lit;
+    };
+};
+
+/* ── Statements ──────────────────────────────────────────────────────────── */
+
+typedef enum {
+    FOR_EACH,       /* for e => arr                    */
+    FOR_EACH_IDX,   /* for e, i => arr                 */
+    FOR_RANGE,      /* for 0..N                        */
+    FOR_C,          /* for i:=0, i<N, i++              */
+} ForKind;
+
+typedef struct {
+    ForKind     kind;
+    const char *elem;      /* element name      */
+    const char *idx;       /* index name (optional) */
+    Expr       *iter;      /* array / range start  */
+    Expr       *range_end; /* range end            */
+    int         inclusive; /* ..=                  */
+    /* C-style for */
+    Stmt       *init;
+    Expr       *cond;
+    Stmt       *step;
+} ForClause;
+
+typedef enum {
+    STMT_LET,
+    STMT_ASSIGN,
+    STMT_EXPR,
+    STMT_IF,
+    STMT_WHILE,
+    STMT_FOR,
+    STMT_WHEN,
+    STMT_DEFER,
+    STMT_RET,
+    STMT_BREAK,
+    STMT_CONTINUE,
+    STMT_BLOCK,
+} StmtKind;
+
+typedef struct { Expr *cond; StmtList body; } IfBranch;
+typedef struct { IfBranch *data; size_t len; } IfBranchList;
+
+struct Stmt {
+    StmtKind kind;
+    Span     span;
+    union {
+        struct {
+            const char *name;
+            Type       *ty;        /* may be NULL (inferred) */
+            int         mutable;   /* 1 = mutable (=), 0 = immutable (:) */
+            Expr       *init;      /* may be NULL */
+        } let;
+
+        struct { Expr *target; AssignOp op; Expr *val; } assign;
+
+        Expr *expr;
+
+        struct { IfBranchList branches; StmtList else_body; } if_;
+
+        struct {
+            Expr       *cond;
+            const char *do_fn;   /* while cond => fn_name {} */
+            StmtList    body;
+            const char *label;
+        } while_;
+
+        struct { ForClause clause; StmtList body; const char *label; } for_;
+
+        struct { Expr *val; WhenArmList arms; } when;
+
+        StmtList defer;
+
+        struct { Expr *val; } ret;   /* val may be NULL */
+
+        struct { const char *label; } break_;
+        struct { const char *label; } cont;
+
+        StmtList block;
+    };
+};
+
+/* ── Top-level Items ─────────────────────────────────────────────────────── */
+
+typedef struct { const char *name; Type *ty; } Param;
+typedef struct { Param *data; size_t len; } ParamList;
+typedef struct { const char *name; Expr *val; } EnumVariant;
+typedef struct { EnumVariant *data; size_t len; } EnumVariantList;
+typedef struct { const char *name; Type *ty; } Field;
+typedef struct { Field *data; size_t len; } FieldList;
+typedef struct { const char *alias; const char *path; } ImportEntry;
+typedef struct { ImportEntry *data; size_t len; } ImportList;
+
+typedef enum {
+    ATTR_PACKED,
+    ATTR_ALIGN,
+} AttrKind;
+
+typedef struct { AttrKind kind; Expr *arg; } Attr;
+typedef struct { Attr *data; size_t len; } AttrList;
+
+typedef enum {
+    ITEM_FN,
+    ITEM_STRUCT,
+    ITEM_IMPL,
+    ITEM_ENUM,
+    ITEM_UNION,
+    ITEM_TYPE_ALIAS,
+    ITEM_GLOBAL,
+    ITEM_IMPORT,
+    ITEM_EXTERN_FN,
+} ItemKind;
+
+struct Item {
+    ItemKind    kind;
+    Span        span;
+    const char *name;     /* NULL for ITEM_IMPORT */
+    union {
+        struct {
+            ParamList   params;
+            Type       *ret;       /* NULL = void */
+            StmtList    body;
+            int         is_inline;
+            int         variadic;
+        } fn;
+
+        struct {
+            FieldList   fields;
+            AttrList    attrs;
+            /* generic type params: stored as named strings */
+            const char **type_params;
+            size_t       n_type_params;
+        } struct_;
+
+        struct {
+            const char  *ty_name;
+            const char **type_params;
+            size_t       n_type_params;
+            ItemList     methods;
+        } impl;
+
+        struct {
+            Type            *backing;  /* NULL = no backing type */
+            EnumVariantList  variants;
+        } enum_;
+
+        struct {
+            FieldList fields;
+            int       tagged;    /* => enum */
+        } union_;
+
+        struct { Type *ty; } type_alias;
+
+        struct {
+            Type *ty;
+            int   mutable;
+            Expr *init;
+        } global;
+
+        ImportList imports;
+
+        struct {
+            ParamList params;
+            Type     *ret;
+            int       variadic;
+        } extern_fn;
+    };
+};
+
+/* ── Module (parse result) ───────────────────────────────────────────────── */
+
+typedef struct {
+    ItemList items;
+    Arena   *arena;
+} Module;
