@@ -562,11 +562,25 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                 return val_str("8");
             }
 
-            /* @len */
+            /* @len — always returns i64 */
             if (!strcmp(name, "len")) {
-                /* extract len field from fat pointer struct */
+                if (out_ty) {
+                    Type *i64_ty = ARENA_NEW(cg->arena, Type);
+                    i64_ty->kind = TY_I64;
+                    *out_ty = i64_ty;
+                }
                 Type *ta = NULL;
                 Val a = cg_expr(cg, e->builtin.args.data[0], &ta);
+                if (ta && ta->kind == TY_ARRAY) {
+                    /* compile-time constant from [N]T size expression */
+                    int64_t n = 0;
+                    if (ta->array.size && ta->array.size->kind == EXPR_INT)
+                        n = (int64_t)ta->array.size->ival;
+                    Val v;
+                    snprintf(v.buf, sizeof(v.buf), "%" PRId64, n);
+                    return v;
+                }
+                /* slice / str: extract len from fat pointer */
                 int t = new_tmp(cg);
                 emit(cg, "  %%t%d = extractvalue { ptr, i64 } %s, 1\n", t, a.buf);
                 return val_tmp(t);
@@ -827,14 +841,32 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
             Type *at = NULL;
             Val arr = cg_expr(cg, e->index.arr, &at);
             Val idx = cg_expr(cg, e->index.idx, NULL);
-            int ptr = new_tmp(cg);
+
             const char *elem_llt = "i8";
-            if (at && at->kind == TY_ARRAY && at->array.inner)
-                elem_llt = llvm_type(at->array.inner);
+            Type *elem_ty = NULL;
+            const char *data_buf = arr.buf;
+
+            if (at && at->kind == TY_SLICE) {
+                /* arr is a { ptr, i64 } value — extract data pointer first */
+                elem_ty  = at->ptr.inner;
+                elem_llt = elem_ty ? llvm_type(elem_ty) : "i8";
+                int dp = new_tmp(cg);
+                emit(cg, "  %%t%d = extractvalue { ptr, i64 } %s, 0\n", dp, arr.buf);
+                char buf[32];
+                snprintf(buf, sizeof(buf), "%%t%d", dp);
+                data_buf = arena_strdup(cg->arena, buf);
+            } else if (at && at->kind == TY_ARRAY && at->array.inner) {
+                elem_ty  = at->array.inner;
+                elem_llt = llvm_type(elem_ty);
+                /* arr is a raw alloca ptr — use directly */
+            }
+
+            int ptr = new_tmp(cg);
             emit(cg, "  %%t%d = getelementptr %s, ptr %s, i64 %s\n",
-                 ptr, elem_llt, arr.buf, idx.buf);
+                 ptr, elem_llt, data_buf, idx.buf);
             int t = new_tmp(cg);
             emit(cg, "  %%t%d = load %s, ptr %%t%d\n", t, elem_llt, ptr);
+            if (out_ty) *out_ty = elem_ty;
             return val_tmp(t);
         }
 
@@ -888,16 +920,40 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
         }
 
         case EXPR_ARRAY_LIT: {
+            size_t n = e->array_lit.len;
+            /* sema sets e->ty = TY_SLICE { inner = elem_ty } */
+            Type *elem_ty = (e->ty && e->ty->kind == TY_SLICE) ? e->ty->ptr.inner : NULL;
+            const char *elem_llt = elem_ty ? llvm_type(elem_ty) : "i64";
+
+            if (n == 0) {
+                /* empty slice constant */
+                if (out_ty) *out_ty = e->ty;
+                int s0 = new_tmp(cg);
+                emit(cg, "  %%t%d = insertvalue { ptr, i64 } { ptr null, i64 0 }, ptr null, 0\n", s0);
+                return val_tmp(s0);
+            }
+
+            /* allocate backing storage and fill elements */
             int arr = new_tmp(cg);
-            emit(cg, "  %%t%d = alloca [%zu x i64]\n", arr, e->array_lit.len);
-            for (size_t i = 0; i < e->array_lit.len; i++) {
+            emit(cg, "  %%t%d = alloca [%zu x %s]\n", arr, n, elem_llt);
+            for (size_t i = 0; i < n; i++) {
                 Val ev = cg_expr(cg, e->array_lit.data[i], NULL);
                 int ep = new_tmp(cg);
-                emit(cg, "  %%t%d = getelementptr [%zu x i64], ptr %%t%d, i32 0, i32 %zu\n",
-                     ep, e->array_lit.len, arr, i);
-                emit(cg, "  store i64 %s, ptr %%t%d\n", ev.buf, ep);
+                emit(cg, "  %%t%d = getelementptr [%zu x %s], ptr %%t%d, i32 0, i32 %zu\n",
+                     ep, n, elem_llt, arr, i);
+                emit(cg, "  store %s %s, ptr %%t%d\n", elem_llt, ev.buf, ep);
             }
-            return val_tmp(arr);
+
+            /* build { ptr, i64 } slice: data ptr + element count */
+            int dp = new_tmp(cg);
+            emit(cg, "  %%t%d = getelementptr [%zu x %s], ptr %%t%d, i32 0, i32 0\n",
+                 dp, n, elem_llt, arr);
+            int sl0 = new_tmp(cg);
+            emit(cg, "  %%t%d = insertvalue { ptr, i64 } undef, ptr %%t%d, 0\n", sl0, dp);
+            int sl1 = new_tmp(cg);
+            emit(cg, "  %%t%d = insertvalue { ptr, i64 } %%t%d, i64 %zu, 1\n", sl1, sl0, n);
+            if (out_ty) *out_ty = e->ty;
+            return val_tmp(sl1);
         }
 
         default:
@@ -1141,21 +1197,34 @@ static void cg_stmt(CG *cg, Stmt *s) {
                 emit_label(cg, end_l);
 
             } else if (fc->kind == FOR_EACH || fc->kind == FOR_EACH_IDX) {
-                /* for v => slice  /  for i, v => slice */
+                /* for v => collection  /  for i, v => collection */
                 Type *iter_ty = NULL;
                 Val iter = cg_expr(cg, fc->iter, &iter_ty);
 
-                /* extract data pointer and length from the fat pointer */
                 const char *elem_llt = "i8";
                 Type *elem_ty = NULL;
-                if (iter_ty && (iter_ty->kind == TY_SLICE || iter_ty->kind == TY_STR)) {
-                    elem_ty  = (iter_ty->kind == TY_SLICE) ? iter_ty->ptr.inner : NULL;
-                    elem_llt = elem_ty ? llvm_type(elem_ty) : "ptr";
-                }
                 int data_t = new_tmp(cg);
                 int len_t  = new_tmp(cg);
-                emit(cg, "  %%t%d = extractvalue { ptr, i64 } %s, 0\n", data_t, iter.buf);
-                emit(cg, "  %%t%d = extractvalue { ptr, i64 } %s, 1\n", len_t,  iter.buf);
+
+                if (iter_ty && iter_ty->kind == TY_ARRAY) {
+                    /* fixed array: data ptr = GEP to element 0; length = compile-time constant */
+                    elem_ty  = iter_ty->array.inner;
+                    elem_llt = elem_ty ? llvm_type(elem_ty) : "i8";
+                    int64_t arr_n = 0;
+                    if (iter_ty->array.size && iter_ty->array.size->kind == EXPR_INT)
+                        arr_n = (int64_t)iter_ty->array.size->ival;
+                    emit(cg, "  %%t%d = getelementptr [%" PRId64 " x %s], ptr %s, i32 0, i32 0\n",
+                         data_t, arr_n, elem_llt, iter.buf);
+                    emit(cg, "  %%t%d = add i64 0, %" PRId64 "\n", len_t, arr_n);
+                } else {
+                    /* slice / str: fat pointer { ptr, i64 } */
+                    if (iter_ty && (iter_ty->kind == TY_SLICE || iter_ty->kind == TY_STR)) {
+                        elem_ty  = (iter_ty->kind == TY_SLICE) ? iter_ty->ptr.inner : NULL;
+                        elem_llt = elem_ty ? llvm_type(elem_ty) : "ptr";
+                    }
+                    emit(cg, "  %%t%d = extractvalue { ptr, i64 } %s, 0\n", data_t, iter.buf);
+                    emit(cg, "  %%t%d = extractvalue { ptr, i64 } %s, 1\n", len_t, iter.buf);
+                }
 
                 /* loop index alloca */
                 int idx_alloca = new_tmp(cg);
