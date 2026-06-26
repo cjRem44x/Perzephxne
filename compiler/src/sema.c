@@ -287,6 +287,7 @@ static Type *builtin_ret_ty(Sema *s, const char *name) {
     if (!strcmp(name, "min") || !strcmp(name, "max")) return NULL; /* inferred from args */
     if (!strcmp(name, "abs"))                         return NULL;
     if (!strcmp(name, "sqrt"))                        return s->ty_f64;
+    if (!strcmp(name, "zeroed"))                      return NULL; /* inferred from arg */
     if (!strcmp(name, "memcpy") || !strcmp(name, "memset")) return s->ty_void;
     if (!strcmp(name, "os.linux") || !strcmp(name, "os.windows") ||
         !strcmp(name, "os.mac"))                      return s->ty_bool;
@@ -318,12 +319,29 @@ static Type *check_expr(Sema *s, Expr *e) {
         case EXPR_DISCARD:e->ty = NULL; break;
 
         case EXPR_IDENT: {
-            Sym *sym = lookup(s, e->ident.name);
-            if (!sym) {
-                sema_error(s, e->span, "undefined identifier '%s'", e->ident.name);
-                e->ty = s->ty_i32; /* recover */
-            } else {
-                e->ty = sym->ty;
+            /* primitive type names used as type arguments to builtins (@alo, @zeroed, etc.) */
+            static const struct { const char *name; TypeKind k; } type_names[] = {
+                {"i8",TY_I8},{"i16",TY_I16},{"i32",TY_I32},{"i64",TY_I64},
+                {"u8",TY_U8},{"u16",TY_U16},{"u32",TY_U32},{"u64",TY_U64},
+                {"f16",TY_F16},{"f32",TY_F32},{"f64",TY_F64},
+                {"usize",TY_USIZE},{"bool",TY_BOOL},{"char",TY_CHAR},{"str",TY_STR},{NULL,0}
+            };
+            int resolved = 0;
+            for (int i = 0; type_names[i].name; i++) {
+                if (!strcmp(e->ident.name, type_names[i].name)) {
+                    e->ty = make_ty(s, type_names[i].k);
+                    resolved = 1;
+                    break;
+                }
+            }
+            if (!resolved) {
+                Sym *sym = lookup(s, e->ident.name);
+                if (!sym) {
+                    sema_error(s, e->span, "undefined identifier '%s'", e->ident.name);
+                    e->ty = s->ty_i32; /* recover */
+                } else {
+                    e->ty = sym->ty;
+                }
             }
             break;
         }

@@ -369,6 +369,18 @@ typedef struct { char buf[64]; } Val;
 static Val val_tmp(int id)  { Val v; snprintf(v.buf, sizeof(v.buf), "%%t%d", id); return v; }
 static Val val_str(const char *s) { Val v; snprintf(v.buf, sizeof(v.buf), "%s", s); return v; }
 
+/* C ABI: float args to variadic functions must be widened to double */
+static Val promote_vararg(CG *cg, Val v, Type *ty, const char **llt_out) {
+    if (ty && ty->kind == TY_F32) {
+        int t = new_tmp(cg);
+        emit(cg, "  %%t%d = fpext float %s to double\n", t, v.buf);
+        if (llt_out) *llt_out = "double";
+        return val_tmp(t);
+    }
+    if (llt_out) *llt_out = ty ? llvm_type(ty) : "i32";
+    return v;
+}
+
 /* Increment RC given the smart ptr value buf (e.g. "%t5"). */
 static void emit_rc_inc(CG *cg, const char *smart_ptr_buf) {
     int rc  = new_tmp(cg);
@@ -522,35 +534,81 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                     emit(cg, "  %%t%d = getelementptr inbounds [%zu x i8],"
                              " ptr @.str.%d, i32 0, i32 0\n", ft, pff + 1, fmtid);
 
-                    int t = new_tmp(cg);
-                    emit(cg, "  %%t%d = call i32 (ptr, ...) @printf(ptr %%t%d", t, ft);
+                    /* pre-emit fpext for float args before starting the call */
+                    Val          *iprint_final = malloc(sizeof(Val)         * na);
+                    const char  **iprint_llts  = malloc(sizeof(const char*) * na);
                     for (size_t i = 1; i < na; i++) {
-                        const char *llt = (itys[i] && itys[i]->kind == TY_STR)
-                                          ? "ptr" : (itys[i] ? llvm_type(itys[i]) : "i32");
-                        emit(cg, ", %s %s", llt, printable[i].buf);
+                        if (itys[i] && itys[i]->kind == TY_STR) {
+                            iprint_final[i] = printable[i]; /* already ptr-extracted */
+                            iprint_llts[i]  = "ptr";
+                        } else {
+                            const char *llt;
+                            iprint_final[i] = promote_vararg(cg, printable[i], itys[i], &llt);
+                            iprint_llts[i]  = llt;
+                        }
+                    }
+
+                    int t = new_tmp(cg);
+                    int is_epf = !strcmp(name, "epf");
+                    if (is_epf) {
+                        int stde = new_tmp(cg);
+                        emit(cg, "  %%t%d = load ptr, ptr @stderr\n", stde);
+                        emit(cg, "  %%t%d = call i32 (ptr, ptr, ...) @fprintf(ptr %%t%d, ptr %%t%d",
+                             t, stde, ft);
+                    } else {
+                        emit(cg, "  %%t%d = call i32 (ptr, ...) @printf(ptr %%t%d", t, ft);
+                    }
+                    for (size_t i = 1; i < na; i++) {
+                        emit(cg, ", %s %s", iprint_llts[i], iprint_final[i].buf);
                     }
                     emit(cg, ")\n");
+                    free(iprint_final);
+                    free(iprint_llts);
 
                     free(ivals); free(itys); free(printable);
                     return val_tmp(t);
                 }
 
-                /* Non-interpolated path: pass args directly to printf */
-                Val   *pf_vals = malloc(sizeof(Val)   * na);
-                Type **pf_tys  = malloc(sizeof(Type*) * na);
+                /* Non-interpolated path: pass args directly to printf/fprintf */
+                Val   *pf_vals  = malloc(sizeof(Val)    * na);
+                Val   *pf_final = malloc(sizeof(Val)    * na);
+                const char **pf_llts = malloc(sizeof(const char*) * na);
+                Type **pf_tys   = malloc(sizeof(Type*) * na);
                 for (size_t i = 0; i < na; i++) {
                     pf_tys[i]  = NULL;
                     pf_vals[i] = cg_expr(cg, e->builtin.args.data[i], &pf_tys[i]);
                 }
-                int t = new_tmp(cg);
-                emit(cg, "  %%t%d = call i32 (ptr, ...) @printf(ptr %s",
-                     t, pf_vals[0].buf);
+                /* pre-emit coercions (extractvalue / fpext) before the call */
                 for (size_t i = 1; i < na; i++) {
-                    const char *llt = pf_tys[i] ? llvm_type(pf_tys[i]) : "i32";
-                    emit(cg, ", %s %s", llt, pf_vals[i].buf);
+                    if (pf_tys[i] && pf_tys[i]->kind == TY_STR) {
+                        int sp = new_tmp(cg);
+                        emit(cg, "  %%t%d = extractvalue { ptr, i64 } %s, 0\n", sp, pf_vals[i].buf);
+                        pf_final[i] = val_tmp(sp);
+                        pf_llts[i]  = "ptr";
+                    } else {
+                        const char *llt;
+                        pf_final[i] = promote_vararg(cg, pf_vals[i], pf_tys[i], &llt);
+                        pf_llts[i]  = llt;
+                    }
+                }
+                int t = new_tmp(cg);
+                int is_epf2 = !strcmp(name, "epf");
+                if (is_epf2) {
+                    int stde2 = new_tmp(cg);
+                    emit(cg, "  %%t%d = load ptr, ptr @stderr\n", stde2);
+                    emit(cg, "  %%t%d = call i32 (ptr, ptr, ...) @fprintf(ptr %%t%d, ptr %s",
+                         t, stde2, pf_vals[0].buf);
+                } else {
+                    emit(cg, "  %%t%d = call i32 (ptr, ...) @printf(ptr %s",
+                         t, pf_vals[0].buf);
+                }
+                for (size_t i = 1; i < na; i++) {
+                    emit(cg, ", %s %s", pf_llts[i], pf_final[i].buf);
                 }
                 emit(cg, ")\n");
                 free(pf_vals);
+                free(pf_final);
+                free(pf_llts);
                 free(pf_tys);
                 return val_tmp(t);
             }
@@ -643,11 +701,160 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                 return ptr;
             }
 
+            /* @fmt — format to heap-allocated str */
+            if (!strcmp(name, "fmt")) {
+                if (e->builtin.args.len == 0)
+                    fatal_at(e->span, "@fmt requires a format string");
+                size_t na2 = e->builtin.args.len;
+                Expr *fmt_arg2 = e->builtin.args.data[0];
+                /* build the same format string as @pf */
+                Val   *fv  = malloc(sizeof(Val)   * na2);
+                Type **fty = malloc(sizeof(Type*) * na2);
+                for (size_t i = 1; i < na2; i++) {
+                    fty[i] = NULL;
+                    fv[i]  = cg_expr(cg, e->builtin.args.data[i], &fty[i]);
+                    if (fty[i] && fty[i]->kind == TY_STR) {
+                        int sv = new_tmp(cg);
+                        emit(cg, "  %%t%d = extractvalue { ptr, i64 } %s, 0\n", sv, fv[i].buf);
+                        fv[i] = val_tmp(sv);
+                    }
+                }
+                char pf2[4096]; size_t pf2n = 0; size_t ai2 = 1;
+                if (fmt_arg2->kind == EXPR_STR && strchr(fmt_arg2->sval, '\x01')) {
+                    for (const char *fs = fmt_arg2->sval; *fs && pf2n < sizeof(pf2)-32; fs++) {
+                        if ((unsigned char)*fs == '\x01') {
+                            fs++;
+                            char spec_buf2[64]; size_t sl2 = 0;
+                            while (*fs && (unsigned char)*fs != '\x02' && sl2 < 63)
+                                spec_buf2[sl2++] = *fs++;
+                            spec_buf2[sl2] = '\0';
+                            pf2[pf2n++] = '%';
+                            if (sl2 > 0) { for (size_t j=0;j<sl2;j++) pf2[pf2n++]=spec_buf2[j]; }
+                            else { const char *as=pf_specifier(fty[ai2]); for(const char*sp=as+1;*sp;sp++) pf2[pf2n++]=*sp; }
+                            ai2++;
+                        } else { pf2[pf2n++] = *fs; }
+                    }
+                } else {
+                    const char *s2 = fmt_arg2->sval ? fmt_arg2->sval : "";
+                    while (*s2 && pf2n < sizeof(pf2)-2) pf2[pf2n++] = *s2++;
+                }
+                pf2[pf2n] = '\0';
+                int fmtid2 = intern_str(cg, arena_strndup(cg->arena, pf2, pf2n));
+                int ft2 = new_tmp(cg);
+                emit(cg, "  %%t%d = getelementptr inbounds [%zu x i8],"
+                     " ptr @.str.%d, i32 0, i32 0\n", ft2, pf2n+1, fmtid2);
+                int buf2 = new_tmp(cg);
+                emit(cg, "  %%t%d = call ptr @malloc(i64 4096)\n", buf2);
+                int sp2 = new_tmp(cg);
+                /* pre-emit fpext coercions before the sprintf call */
+                Val         *fmt_final = malloc(sizeof(Val)        * na2);
+                const char **fmt_llts  = malloc(sizeof(const char*)* na2);
+                for (size_t i = 1; i < na2; i++) {
+                    const char *llt2;
+                    fmt_final[i] = promote_vararg(cg, fv[i], fty[i], &llt2);
+                    fmt_llts[i]  = llt2;
+                }
+                emit(cg, "  %%t%d = call i32 (ptr, ptr, ...) @sprintf(ptr %%t%d, ptr %%t%d", sp2, buf2, ft2);
+                for (size_t i = 1; i < na2; i++) {
+                    emit(cg, ", %s %s", fmt_llts[i], fmt_final[i].buf);
+                }
+                emit(cg, ")\n");
+                free(fmt_final);
+                free(fmt_llts);
+                int slen = new_tmp(cg);
+                emit(cg, "  %%t%d = call i64 @strlen(ptr %%t%d)\n", slen, buf2);
+                int sa = new_tmp(cg);
+                emit(cg, "  %%t%d = alloca { ptr, i64 }\n", sa);
+                int p0 = new_tmp(cg);
+                emit(cg, "  %%t%d = getelementptr { ptr, i64 }, ptr %%t%d, i32 0, i32 0\n", p0, sa);
+                emit(cg, "  store ptr %%t%d, ptr %%t%d\n", buf2, p0);
+                int p1 = new_tmp(cg);
+                emit(cg, "  %%t%d = getelementptr { ptr, i64 }, ptr %%t%d, i32 0, i32 1\n", p1, sa);
+                emit(cg, "  store i64 %%t%d, ptr %%t%d\n", slen, p1);
+                int res2 = new_tmp(cg);
+                emit(cg, "  %%t%d = load { ptr, i64 }, ptr %%t%d\n", res2, sa);
+                free(fv); free(fty);
+                if (out_ty) { Type *st = ARENA_NEW(cg->arena, Type); st->kind = TY_STR; *out_ty = st; }
+                return val_tmp(res2);
+            }
+
+            /* @cin — print optional prompt, read line from stdin, return str */
+            if (!strcmp(name, "cin")) {
+                if (e->builtin.args.len > 0) {
+                    /* print prompt */
+                    Type *pty = NULL;
+                    Val pv = cg_expr(cg, e->builtin.args.data[0], &pty);
+                    int pt = new_tmp(cg);
+                    emit(cg, "  %%t%d = call i32 (ptr, ...) @printf(ptr %s)\n", pt, pv.buf);
+                }
+                int cbuf = new_tmp(cg);
+                emit(cg, "  %%t%d = call ptr @malloc(i64 4096)\n", cbuf);
+                int sin_ptr = new_tmp(cg);
+                emit(cg, "  %%t%d = load ptr, ptr @stdin\n", sin_ptr);
+                int fg = new_tmp(cg);
+                emit(cg, "  %%t%d = call ptr @fgets(ptr %%t%d, i32 4096, ptr %%t%d)\n",
+                     fg, cbuf, sin_ptr);
+                /* strip trailing newline */
+                int clen = new_tmp(cg);
+                emit(cg, "  %%t%d = call i64 @strlen(ptr %%t%d)\n", clen, cbuf);
+                int clast = new_tmp(cg);
+                emit(cg, "  %%t%d = sub i64 %%t%d, 1\n", clast, clen);
+                int clp = new_tmp(cg);
+                emit(cg, "  %%t%d = getelementptr i8, ptr %%t%d, i64 %%t%d\n", clp, cbuf, clast);
+                int clc = new_tmp(cg);
+                emit(cg, "  %%t%d = load i8, ptr %%t%d\n", clc, clp);
+                int clnl = new_tmp(cg);
+                emit(cg, "  %%t%d = icmp eq i8 %%t%d, 10\n", clnl, clc);
+                int cl_strip = new_label(cg), cl_done = new_label(cg);
+                emit_br(cg, "  br i1 %%t%d, label %%l%d, label %%l%d\n", clnl, cl_strip, cl_done);
+                emit_label(cg, cl_strip);
+                emit(cg, "  store i8 0, ptr %%t%d\n", clp);
+                int clen2 = new_tmp(cg);
+                emit(cg, "  %%t%d = sub i64 %%t%d, 1\n", clen2, clen);
+                emit_br(cg, "  br label %%l%d\n", cl_done);
+                emit_label(cg, cl_done);
+                /* phi to pick length */
+                int clen_f = new_tmp(cg);
+                emit(cg, "  %%t%d = phi i64 [ %%t%d, %%l%d ], [ %%t%d, %%l%d ]\n",
+                     clen_f, clen2, cl_strip, clen, cl_done - 1);
+                int csa = new_tmp(cg);
+                emit(cg, "  %%t%d = alloca { ptr, i64 }\n", csa);
+                int cp0 = new_tmp(cg);
+                emit(cg, "  %%t%d = getelementptr { ptr, i64 }, ptr %%t%d, i32 0, i32 0\n", cp0, csa);
+                emit(cg, "  store ptr %%t%d, ptr %%t%d\n", cbuf, cp0);
+                int cp1 = new_tmp(cg);
+                emit(cg, "  %%t%d = getelementptr { ptr, i64 }, ptr %%t%d, i32 0, i32 1\n", cp1, csa);
+                emit(cg, "  store i64 %%t%d, ptr %%t%d\n", clen_f, cp1);
+                int cres = new_tmp(cg);
+                emit(cg, "  %%t%d = load { ptr, i64 }, ptr %%t%d\n", cres, csa);
+                if (out_ty) { Type *st = ARENA_NEW(cg->arena, Type); st->kind = TY_STR; *out_ty = st; }
+                return val_tmp(cres);
+            }
+
+            /* @unreachable / @todo */
+            if (!strcmp(name, "unreachable") || !strcmp(name, "todo")) {
+                emit(cg, "  call void @exit(i32 1)\n");
+                emit_br(cg, "  unreachable\n");
+                return val_str("0");
+            }
+
             /* @alo */
             if (!strcmp(name, "alo")) {
-                /* @alo(T) or @alo(T, N) — emit malloc call */
+                /* @alo(T) or @alo(T, N) — malloc with proper sizeof via GEP trick */
                 int t = new_tmp(cg);
-                emit(cg, "  %%t%d = call ptr @malloc(i64 8)\n", t); /* placeholder size */
+                /* If no type arg available at LLVM level, default to 8 bytes */
+                if (e->builtin.args.len >= 1 && e->builtin.args.data[0]->ty) {
+                    const char *inner_llt = llvm_type(e->builtin.args.data[0]->ty);
+                    int count = 1;
+                    if (e->builtin.args.len >= 2 && e->builtin.args.data[1]->kind == EXPR_INT)
+                        count = (int)e->builtin.args.data[1]->ival;
+                    int sz = new_tmp(cg);
+                    emit(cg, "  %%t%d = mul i64 %d, ptrtoint (ptr getelementptr (%s, ptr null, i32 1) to i64)\n",
+                         sz, count, inner_llt);
+                    emit(cg, "  %%t%d = call ptr @malloc(i64 %%t%d)\n", t, sz);
+                } else {
+                    emit(cg, "  %%t%d = call ptr @malloc(i64 8)\n", t);
+                }
                 return val_tmp(t);
             }
 
@@ -691,6 +898,129 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                 return val_tmp(sel);
             }
 
+            /* @realo */
+            if (!strcmp(name, "realo")) {
+                Val ptr = cg_expr(cg, e->builtin.args.data[0], NULL);
+                Type *ety = NULL;
+                if (e->builtin.args.len >= 2)
+                    cg_expr(cg, e->builtin.args.data[1], &ety);
+                int nsz = new_tmp(cg);
+                if (ety) {
+                    const char *inner = llvm_type(ety);
+                    emit(cg, "  %%t%d = ptrtoint (ptr getelementptr (%s, ptr null, i32 1) to i64)\n",
+                         nsz, inner);
+                } else {
+                    emit(cg, "  %%t%d = add i64 0, 8\n", nsz);
+                }
+                int t = new_tmp(cg);
+                emit(cg, "  %%t%d = call ptr @realloc(ptr %s, i64 %%t%d)\n", t, ptr.buf, nsz);
+                return val_tmp(t);
+            }
+
+            /* @memcpy / @memmove / @memset */
+            if (!strcmp(name, "memcpy")) {
+                Val dst = cg_expr(cg, e->builtin.args.data[0], NULL);
+                Val src = cg_expr(cg, e->builtin.args.data[1], NULL);
+                Val n   = cg_expr(cg, e->builtin.args.data[2], NULL);
+                emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %s, ptr %s, i64 %s, i1 false)\n",
+                     dst.buf, src.buf, n.buf);
+                return val_str("0");
+            }
+            if (!strcmp(name, "memmove")) {
+                Val dst = cg_expr(cg, e->builtin.args.data[0], NULL);
+                Val src = cg_expr(cg, e->builtin.args.data[1], NULL);
+                Val n   = cg_expr(cg, e->builtin.args.data[2], NULL);
+                emit(cg, "  call void @llvm.memmove.p0.p0.i64(ptr %s, ptr %s, i64 %s, i1 false)\n",
+                     dst.buf, src.buf, n.buf);
+                return val_str("0");
+            }
+            if (!strcmp(name, "memset")) {
+                Val dst = cg_expr(cg, e->builtin.args.data[0], NULL);
+                Val val = cg_expr(cg, e->builtin.args.data[1], NULL);
+                Val n   = cg_expr(cg, e->builtin.args.data[2], NULL);
+                emit(cg, "  call void @llvm.memset.p0.i64(ptr %s, i8 %s, i64 %s, i1 false)\n",
+                     dst.buf, val.buf, n.buf);
+                return val_str("0");
+            }
+
+            /* @zeroed — return a zero-initialized value */
+            if (!strcmp(name, "zeroed")) {
+                int t = new_tmp(cg);
+                const char *llt = "i64";
+                Type *zt = (e->builtin.args.len > 0) ? e->builtin.args.data[0]->ty : e->ty;
+                if (zt) llt = llvm_type(zt);
+                emit(cg, "  %%t%d = alloca %s\n", t, llt);
+                emit(cg, "  call void @llvm.memset.p0.i64(ptr %%t%d, i8 0,"
+                         " i64 ptrtoint (ptr getelementptr (%s, ptr null, i32 1) to i64),"
+                         " i1 false)\n", t, llt);
+                int v = new_tmp(cg);
+                emit(cg, "  %%t%d = load %s, ptr %%t%d\n", v, llt, t);
+                return val_tmp(v);
+            }
+
+            /* @sqrt */
+            if (!strcmp(name, "sqrt")) {
+                Type *ta = NULL;
+                Val a = cg_expr(cg, e->builtin.args.data[0], &ta);
+                int t = new_tmp(cg);
+                if (ta && ta->kind == TY_F32) {
+                    int p = new_tmp(cg);
+                    emit(cg, "  %%t%d = fpext float %s to double\n", p, a.buf);
+                    emit(cg, "  %%t%d = call double @llvm.sqrt.f64(double %%t%d)\n", t, p);
+                } else {
+                    emit(cg, "  %%t%d = call double @llvm.sqrt.f64(double %s)\n", t, a.buf);
+                }
+                if (out_ty) { Type *ft = ARENA_NEW(cg->arena, Type); ft->kind = TY_F64; *out_ty = ft; }
+                return val_tmp(t);
+            }
+
+            /* @clz / @ctz / @popcount / @bswap */
+            if (!strcmp(name, "clz") || !strcmp(name, "ctz") || !strcmp(name, "popcount")) {
+                Type *ta = NULL;
+                Val a = cg_expr(cg, e->builtin.args.data[0], &ta);
+                const char *llt = ta ? llvm_type(ta) : "i32";
+                int t = new_tmp(cg);
+                const char *intr = !strcmp(name,"clz") ? "ctlz"
+                                 : !strcmp(name,"ctz") ? "cttz" : "ctpop";
+                if (!strcmp(name,"clz") || !strcmp(name,"ctz"))
+                    emit(cg, "  %%t%d = call %s @llvm.%s.%s(%s %s, i1 false)\n",
+                         t, llt, intr, llt, llt, a.buf);
+                else
+                    emit(cg, "  %%t%d = call %s @llvm.%s.%s(%s %s)\n",
+                         t, llt, intr, llt, llt, a.buf);
+                if (out_ty) { Type *rt = ARENA_NEW(cg->arena, Type); rt->kind = TY_U32; *out_ty = rt; }
+                return val_tmp(t);
+            }
+            if (!strcmp(name, "bswap")) {
+                Type *ta = NULL;
+                Val a = cg_expr(cg, e->builtin.args.data[0], &ta);
+                const char *llt = ta ? llvm_type(ta) : "i32";
+                int t = new_tmp(cg);
+                emit(cg, "  %%t%d = call %s @llvm.bswap.%s(%s %s)\n", t, llt, llt, llt, a.buf);
+                if (out_ty) *out_ty = ta;
+                return val_tmp(t);
+            }
+
+            /* @checked_add / @checked_sub / @checked_mul */
+            if (!strcmp(name, "checked_add") || !strcmp(name, "checked_sub") || !strcmp(name, "checked_mul")) {
+                Type *ta = NULL;
+                Val a = cg_expr(cg, e->builtin.args.data[0], &ta);
+                Val b = cg_expr(cg, e->builtin.args.data[1], NULL);
+                const char *llt = ta ? llvm_type(ta) : "i32";
+                const char *op = !strcmp(name,"checked_add") ? "sadd"
+                               : !strcmp(name,"checked_sub") ? "ssub" : "smul";
+                int res = new_tmp(cg);
+                emit(cg, "  %%t%d = call { %s, i1 } @llvm.%s.with.overflow.%s(%s %s, %s %s)\n",
+                     res, llt, op, llt, llt, a.buf, llt, b.buf);
+                int val = new_tmp(cg);
+                emit(cg, "  %%t%d = extractvalue { %s, i1 } %%t%d, 0\n", val, llt, res);
+                int ovf = new_tmp(cg);
+                emit(cg, "  %%t%d = extractvalue { %s, i1 } %%t%d, 1\n", ovf, llt, res);
+                /* return value; error code stored in the overflow check result (caller checks) */
+                if (out_ty) *out_ty = ta;
+                return val_tmp(val);
+            }
+
             /* @size */
             if (!strcmp(name, "size")) {
                 /* return placeholder 8 — sema will fill in real sizes */
@@ -719,6 +1049,28 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                 int t = new_tmp(cg);
                 emit(cg, "  %%t%d = extractvalue { ptr, i64 } %s, 1\n", t, a.buf);
                 return val_tmp(t);
+            }
+
+            /* @err.constant — error code integer constants */
+            if (!strncmp(name, "err.", 4)) {
+                static const struct { const char *n; int v; } ec[] = {
+                    {"ok",0},{"fail",1},{"div_zero",2},{"null_deref",3},
+                    {"out_of_bounds",4},{"overflow",5},{"invalid",6},
+                    {"not_found",7},{"io",8},{"oom",9},{NULL,0}
+                };
+                const char *errname = name + 4;
+                for (int i = 0; ec[i].n; i++) {
+                    if (!strcmp(errname, ec[i].n)) {
+                        if (out_ty) {
+                            Type *t32 = ARENA_NEW(cg->arena, Type);
+                            t32->kind = TY_I32;
+                            *out_ty = t32;
+                        }
+                        Val v; snprintf(v.buf, sizeof(v.buf), "%d", ec[i].v);
+                        return v;
+                    }
+                }
+                fatal_at(e->span, "unknown @err.%s", errname);
             }
 
             fatal_at(e->span, "unknown builtin '@%s'", name);
@@ -913,6 +1265,24 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
         }
 
         case EXPR_FIELD: {
+            /* @err.constant — error code integer */
+            if (e->field.obj->kind == EXPR_BUILTIN
+                    && !strcmp(e->field.obj->builtin.name, "err")) {
+                static const struct { const char *n; int v; } ec[] = {
+                    {"ok",0},{"fail",1},{"div_zero",2},{"null_deref",3},
+                    {"out_of_bounds",4},{"overflow",5},{"invalid",6},
+                    {"not_found",7},{"io",8},{"oom",9},{NULL,0}
+                };
+                for (int i = 0; ec[i].n; i++) {
+                    if (!strcmp(e->field.field, ec[i].n)) {
+                        if (out_ty) {
+                            Type *t32 = ARENA_NEW(cg->arena, Type); t32->kind = TY_I32; *out_ty = t32;
+                        }
+                        Val v; snprintf(v.buf, sizeof(v.buf), "%d", ec[i].v); return v;
+                    }
+                }
+                fatal_at(e->span, "unknown @err.%s", e->field.field);
+            }
             /* Enum variant access: EnumName.Variant — peek before calling cg_expr */
             if (e->field.obj->kind == EXPR_IDENT) {
                 EnumInfo *ei = find_enum(cg, e->field.obj->ident.name);
@@ -1890,11 +2260,21 @@ int codegen(Module *mod, FILE *out) {
 
     /* standard declarations always needed */
     emit(&cg, "declare i32 @printf(ptr noundef, ...)\n");
+    emit(&cg, "declare i32 @fprintf(ptr, ptr noundef, ...)\n");
     emit(&cg, "declare i32 @sprintf(ptr, ptr, ...)\n");
     emit(&cg, "declare i32 @atoi(ptr)\n");
+    emit(&cg, "declare i64 @strlen(ptr)\n");
     emit(&cg, "declare ptr @malloc(i64)\n");
+    emit(&cg, "declare ptr @realloc(ptr, i64)\n");
     emit(&cg, "declare void @free(ptr)\n");
-    emit(&cg, "declare void @exit(i32)\n\n");
+    emit(&cg, "declare void @exit(i32)\n");
+    emit(&cg, "declare ptr @fgets(ptr, i32, ptr)\n");
+    emit(&cg, "declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1)\n");
+    emit(&cg, "declare void @llvm.memmove.p0.p0.i64(ptr, ptr, i64, i1)\n");
+    emit(&cg, "declare void @llvm.memset.p0.i64(ptr, i8, i64, i1)\n");
+    emit(&cg, "declare double @llvm.sqrt.f64(double)\n");
+    emit(&cg, "@stdin  = external global ptr\n");
+    emit(&cg, "@stderr = external global ptr\n\n");
 
     /* globals for @args support */
     emit(&cg, "@__przp_argc = internal global i32 0\n");
