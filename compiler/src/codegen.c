@@ -439,13 +439,18 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
         }
 
         case EXPR_STR: {
-            /* Produce a ptr to the string constant */
+            /* Produce a str fat-pointer { ptr, i64 } */
             int id  = intern_str(cg, e->sval);
-            size_t len = strlen(e->sval) + 1;
-            int t = new_tmp(cg);
+            size_t slen = strlen(e->sval);
+            int raw = new_tmp(cg);
             emit(cg, "  %%t%d = getelementptr inbounds [%zu x i8],"
-                     " ptr @.str.%d, i32 0, i32 0\n", t, len, id);
-            return val_tmp(t);
+                     " ptr @.str.%d, i32 0, i32 0\n", raw, slen + 1, id);
+            int f1 = new_tmp(cg);
+            emit(cg, "  %%t%d = insertvalue { ptr, i64 } undef, ptr %%t%d, 0\n", f1, raw);
+            int f2 = new_tmp(cg);
+            emit(cg, "  %%t%d = insertvalue { ptr, i64 } %%t%d, i64 %zu, 1\n", f2, f1, slen);
+            if (out_ty) *out_ty = e->ty;
+            return val_tmp(f2);
         }
 
         case EXPR_IDENT: {
@@ -579,6 +584,13 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                     pf_tys[i]  = NULL;
                     pf_vals[i] = cg_expr(cg, e->builtin.args.data[i], &pf_tys[i]);
                 }
+                /* format string (args[0]) must be a raw ptr for printf */
+                Val fmt_ptr = pf_vals[0];
+                if (pf_tys[0] && pf_tys[0]->kind == TY_STR) {
+                    int sp0 = new_tmp(cg);
+                    emit(cg, "  %%t%d = extractvalue { ptr, i64 } %s, 0\n", sp0, pf_vals[0].buf);
+                    fmt_ptr = val_tmp(sp0);
+                }
                 /* pre-emit coercions (extractvalue / fpext) before the call */
                 for (size_t i = 1; i < na; i++) {
                     if (pf_tys[i] && pf_tys[i]->kind == TY_STR) {
@@ -598,10 +610,10 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                     int stde2 = new_tmp(cg);
                     emit(cg, "  %%t%d = load ptr, ptr @stderr\n", stde2);
                     emit(cg, "  %%t%d = call i32 (ptr, ptr, ...) @fprintf(ptr %%t%d, ptr %s",
-                         t, stde2, pf_vals[0].buf);
+                         t, stde2, fmt_ptr.buf);
                 } else {
                     emit(cg, "  %%t%d = call i32 (ptr, ...) @printf(ptr %s",
-                         t, pf_vals[0].buf);
+                         t, fmt_ptr.buf);
                 }
                 for (size_t i = 1; i < na; i++) {
                     emit(cg, ", %s %s", pf_llts[i], pf_final[i].buf);
@@ -782,11 +794,17 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
             /* @cin — print optional prompt, read line from stdin, return str */
             if (!strcmp(name, "cin")) {
                 if (e->builtin.args.len > 0) {
-                    /* print prompt */
+                    /* print prompt — extract raw ptr from str fat-pointer if needed */
                     Type *pty = NULL;
                     Val pv = cg_expr(cg, e->builtin.args.data[0], &pty);
+                    Val prompt_ptr = pv;
+                    if (pty && pty->kind == TY_STR) {
+                        int sp0 = new_tmp(cg);
+                        emit(cg, "  %%t%d = extractvalue { ptr, i64 } %s, 0\n", sp0, pv.buf);
+                        prompt_ptr = val_tmp(sp0);
+                    }
                     int pt = new_tmp(cg);
-                    emit(cg, "  %%t%d = call i32 (ptr, ...) @printf(ptr %s)\n", pt, pv.buf);
+                    emit(cg, "  %%t%d = call i32 (ptr, ...) @printf(ptr %s)\n", pt, prompt_ptr.buf);
                 }
                 int cbuf = new_tmp(cg);
                 emit(cg, "  %%t%d = call ptr @malloc(i64 4096)\n", cbuf);
@@ -1371,8 +1389,8 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                 fn_name = cv.buf;
             }
 
-            if (callee_ty && callee_ty->kind == TY_FN && callee_ty->fn.ret)
-                ret_llt = effective_llvm_type(cg, callee_ty->fn.ret);
+            if (callee_ty && callee_ty->kind == TY_FN)
+                ret_llt = callee_ty->fn.ret ? effective_llvm_type(cg, callee_ty->fn.ret) : "void";
             else if (callee_ty)
                 ret_llt = effective_llvm_type(cg, callee_ty);
 
@@ -1385,8 +1403,12 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                 arg_vals[i] = cg_expr(cg, e->call.args.data[i], &arg_tys[i]);
             }
 
+            int is_void_call = !strcmp(ret_llt, "void");
             int t = new_tmp(cg);
-            emit(cg, "  %%t%d = call %s %s(", t, ret_llt, fn_name);
+            if (is_void_call)
+                emit(cg, "  call void %s(", fn_name);
+            else
+                emit(cg, "  %%t%d = call %s %s(", t, ret_llt, fn_name);
             for (size_t i = 0; i < nargs; i++) {
                 const char *llt = effective_llvm_type(cg, arg_tys[i]);
                 if (i) emit(cg, ", ");
@@ -1395,6 +1417,7 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
             emit(cg, ")\n");
             free(arg_vals);
             free(arg_tys);
+            if (out_ty) *out_ty = e->ty;
             return val_tmp(t);
         }
 
@@ -1762,12 +1785,14 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
 
         case EXPR_ARRAY_LIT: {
             size_t n = e->array_lit.len;
-            /* sema sets e->ty = TY_SLICE { inner = elem_ty } */
-            Type *elem_ty = (e->ty && e->ty->kind == TY_SLICE) ? e->ty->ptr.inner : NULL;
+            /* sema sets e->ty = TY_ARRAY for fixed arrays, TY_SLICE for empty */
+            int is_fixed = e->ty && e->ty->kind == TY_ARRAY;
+            Type *elem_ty = is_fixed ? e->ty->array.inner
+                          : (e->ty && e->ty->kind == TY_SLICE) ? e->ty->ptr.inner : NULL;
             const char *elem_llt = elem_ty ? llvm_type(elem_ty) : "i64";
 
             if (n == 0) {
-                /* empty slice constant */
+                /* empty literal — return zero slice */
                 if (out_ty) *out_ty = e->ty;
                 int s0 = new_tmp(cg);
                 emit(cg, "  %%t%d = insertvalue { ptr, i64 } { ptr null, i64 0 }, ptr null, 0\n", s0);
@@ -1785,7 +1810,14 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                 emit(cg, "  store %s %s, ptr %%t%d\n", elem_llt, ev.buf, ep);
             }
 
-            /* build { ptr, i64 } slice: data ptr + element count */
+            if (out_ty) *out_ty = e->ty;
+
+            if (is_fixed) {
+                /* [N]T: return the alloca ptr — STMT_LET will load+store like a struct */
+                return val_tmp(arr);
+            }
+
+            /* []T slice: build { ptr, i64 } fat pointer */
             int dp = new_tmp(cg);
             emit(cg, "  %%t%d = getelementptr [%zu x %s], ptr %%t%d, i32 0, i32 0\n",
                  dp, n, elem_llt, arr);
@@ -1793,7 +1825,6 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
             emit(cg, "  %%t%d = insertvalue { ptr, i64 } undef, ptr %%t%d, 0\n", sl0, dp);
             int sl1 = new_tmp(cg);
             emit(cg, "  %%t%d = insertvalue { ptr, i64 } %%t%d, i64 %zu, 1\n", sl1, sl0, n);
-            if (out_ty) *out_ty = e->ty;
             return val_tmp(sl1);
         }
 
@@ -2659,11 +2690,18 @@ int codegen(Module *mod, FILE *out, int release) {
 
     /* functions — rename user's `main` to `__przp_main` */
     int has_main = 0;
+    int main_returns_i32 = 0;
     for (size_t i = 0; i < mod->items.len; i++) {
         Item *item = mod->items.data[i];
         if (item->kind == ITEM_FN) {
             if (item->fn.n_type_params > 0) continue; /* skip generic template */
-            if (!strcmp(item->name, "main")) { has_main = 1; item->name = "__przp_main"; }
+            if (!strcmp(item->name, "main")) {
+                has_main = 1;
+                item->name = "__przp_main";
+                /* check if user's main has an explicit i32 return */
+                Type *ret = item->fn.ret;
+                if (ret && ret->kind == TY_I32) main_returns_i32 = 1;
+            }
             cg_fn(&cg, item);
             if (!strcmp(item->name, "__przp_main")) item->name = "main"; /* restore */
         }
@@ -2681,14 +2719,25 @@ int codegen(Module *mod, FILE *out, int release) {
 
     /* emit a real C main that stores argc/argv then calls __przp_main */
     if (has_main) {
-        emit(&cg,
-            "define i32 @main(i32 %%argc, ptr %%argv) {\n"
-            "entry:\n"
-            "  store i32 %%argc, ptr @__przp_argc\n"
-            "  store ptr %%argv, ptr @__przp_argv\n"
-            "  %%r = call i32 @__przp_main()\n"
-            "  ret i32 %%r\n"
-            "}\n\n");
+        if (main_returns_i32) {
+            emit(&cg,
+                "define i32 @main(i32 %%argc, ptr %%argv) {\n"
+                "entry:\n"
+                "  store i32 %%argc, ptr @__przp_argc\n"
+                "  store ptr %%argv, ptr @__przp_argv\n"
+                "  %%r = call i32 @__przp_main()\n"
+                "  ret i32 %%r\n"
+                "}\n\n");
+        } else {
+            emit(&cg,
+                "define i32 @main(i32 %%argc, ptr %%argv) {\n"
+                "entry:\n"
+                "  store i32 %%argc, ptr @__przp_argc\n"
+                "  store ptr %%argv, ptr @__przp_argv\n"
+                "  call void @__przp_main()\n"
+                "  ret i32 0\n"
+                "}\n\n");
+        }
     }
 
     /* string constants */

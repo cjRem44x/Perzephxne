@@ -680,8 +680,12 @@ static Type *check_expr(Sema *s, Expr *e) {
                 else if (et && !ty_coerces(et, elem_ty))
                     sema_error(s, e->span, "inconsistent element types in array literal");
             }
-            Type *arr = make_ty(s, TY_SLICE);
-            arr->ptr.inner = elem_ty;
+            /* type as [N]T, not []T — length is known at compile time */
+            Type *arr = make_ty(s, TY_ARRAY);
+            arr->array.inner = elem_ty;
+            Expr *sz = ARENA_NEW(s->arena, Expr);
+            sz->kind = EXPR_INT; sz->ival = e->array_lit.len;
+            arr->array.size  = sz;
             e->ty = arr;
             break;
         }
@@ -973,12 +977,22 @@ static void check_global(Sema *s, Item *item) {
 }
 
 static void check_extern_fn(Sema *s, Item *item) {
-    /* build a fn type and register the name */
+    /* build a fn type with resolved param types */
     Type *ty = make_ty(s, TY_FN);
     ty->fn.ret = check_type(s, item->extern_fn.ret);
-    for (size_t i = 0; i < item->extern_fn.params.len; i++) {
-        Param *p = &item->extern_fn.params.data[i];
-        p->ty = check_type(s, p->ty);
+    size_t np = item->extern_fn.params.len;
+    if (np) {
+        ty->fn.params.data = ARENA_ALLOC(s->arena, Type *, np);
+        ty->fn.params.len  = np;
+        for (size_t i = 0; i < np; i++) {
+            Param *p = &item->extern_fn.params.data[i];
+            p->ty = check_type(s, p->ty);
+            ty->fn.params.data[i] = p->ty;
+        }
+    }
+    /* update existing sym from first pass rather than re-defining */
+    for (Sym *sym = s->scope->syms; sym; sym = sym->next) {
+        if (!strcmp(sym->name, item->name)) { sym->ty = ty; return; }
     }
     define(s, item->span, item->name, ty, 0, 0);
 }

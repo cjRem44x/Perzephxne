@@ -1142,8 +1142,8 @@ static Stmt *parse_stmt(Parser *p) {
                     clause.iter = rhs;
                 }
             } else {
-                /* anonymous range: for 0..N */
-                Expr *start = parse_expr_bp(p, 1);
+                /* anonymous range: for 0..N — parse start without consuming '..' (lbp=20) */
+                Expr *start = parse_expr_bp(p, 21);
                 if (check(p, TOK_DOTDOT) || check(p, TOK_DOTDOTEQ)) {
                     clause.kind      = FOR_RANGE;
                     clause.inclusive = check(p, TOK_DOTDOTEQ);
