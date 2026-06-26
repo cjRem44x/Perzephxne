@@ -583,17 +583,50 @@ static Type *check_expr(Sema *s, Expr *e) {
 
         case EXPR_WHEN: {
             Type *vt = check_expr(s, e->when.cond);
+            /* check if subject is a tagged union */
+            UnionInfo *wui = NULL;
+            if (vt && vt->kind == TY_NAMED) {
+                for (UnionInfo *u = s->unions; u; u = u->next)
+                    if (!strcmp(u->name, vt->named.name)) { wui = u; break; }
+            }
             for (size_t i = 0; i < e->when.arms.len; i++) {
                 WhenArm *arm = &e->when.arms.data[i];
-                for (size_t pi = 0; pi < arm->pats.len; pi++) {
-                    Type *pt = check_expr(s, arm->pats.data[pi]);
-                    if (vt && pt && !ty_coerces(pt, vt))
-                        sema_error(s, arm->span, "pattern type '%s' doesn't match value type '%s'",
-                                   ty_str(pt), ty_str(vt));
+                push_scope(s);
+                if (wui) {
+                    for (size_t pi = 0; pi < arm->pats.len; pi++) {
+                        Expr *pat = arm->pats.data[pi];
+                        if (pat->kind == EXPR_DISCARD) continue;
+                        if (pat->kind == EXPR_IDENT && pat->ident.name[0] == '.') {
+                            const char *vname = pat->ident.name + 1;
+                            int found = 0;
+                            for (size_t vi = 0; vi < wui->n_variants; vi++) {
+                                if (!strcmp(wui->variants[vi].name, vname)) {
+                                    found = 1;
+                                    if (arm->bind && wui->variants[vi].ty)
+                                        define(s, arm->span, arm->bind,
+                                               wui->variants[vi].ty, 0, 0);
+                                    break;
+                                }
+                            }
+                            if (!found)
+                                sema_error(s, arm->span, "union '%s' has no variant '%s'",
+                                           wui->name, vname);
+                            pat->ty = vt;
+                        } else {
+                            check_expr(s, pat);
+                        }
+                    }
+                } else {
+                    if (arm->bind && vt) define(s, arm->span, arm->bind, vt, 0, 0);
+                    for (size_t pi = 0; pi < arm->pats.len; pi++)
+                        check_expr(s, arm->pats.data[pi]);
                 }
                 check_stmt(s, arm->body);
+                /* infer result type from the first arm that is a bare expression */
+                if (!e->ty && arm->body && arm->body->kind == STMT_EXPR && arm->body->expr)
+                    e->ty = arm->body->expr->ty;
+                pop_scope(s);
             }
-            e->ty = NULL;
             break;
         }
 

@@ -1409,6 +1409,151 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
             return val_tmp(load);
         }
 
+        case EXPR_WHEN: {
+            /* when-as-expression: evaluate all arms, store result to a slot */
+            Type *res_ty = e->ty; /* set by sema from first STMT_EXPR arm */
+            const char *res_llt = res_ty ? effective_llvm_type(cg, res_ty) : "i64";
+            int res_slot = new_tmp(cg);
+            emit(cg, "  %%t%d = alloca %s\n", res_slot, res_llt);
+
+            int end_l = new_label(cg);
+            Type *val_ty = NULL;
+            Val val = cg_expr(cg, e->when.cond, &val_ty);
+
+            /* helper: emit arm body — store STMT_EXPR result to res_slot */
+            /* NOTE: arm bodies use STMT_EXPR for result-producing arms */
+            UnionInfoCG *ui = NULL;
+            if (val_ty && val_ty->kind == TY_NAMED)
+                ui = find_union(cg, val_ty->named.name);
+
+            if (ui) {
+                /* tagged union subject */
+                int tag_ptr = new_tmp(cg);
+                emit(cg, "  %%t%d = getelementptr %%%s, ptr %s, i32 0, i32 0\n",
+                     tag_ptr, ui->name, val.buf);
+                int tag_val = new_tmp(cg);
+                emit(cg, "  %%t%d = load i32, ptr %%t%d\n", tag_val, tag_ptr);
+
+                for (size_t i = 0; i < e->when.arms.len; i++) {
+                    WhenArm *arm = &e->when.arms.data[i];
+                    int body_l = new_label(cg);
+                    int next_l = (i + 1 < e->when.arms.len) ? new_label(cg) : end_l;
+
+                    int cond_t = -1;
+                    Type *matched_payload_ty = NULL;
+                    int   matched_disc       = -1;
+                    for (size_t pi = 0; pi < arm->pats.len; pi++) {
+                        Expr *pat = arm->pats.data[pi];
+                        if (pat->kind == EXPR_DISCARD) {
+                            int wc = new_tmp(cg); emit(cg, "  %%t%d = add i1 0, 1\n", wc);
+                            cond_t = wc; break;
+                        }
+                        if (pat->kind == EXPR_IDENT && pat->ident.name[0] == '.') {
+                            const char *vname = pat->ident.name + 1;
+                            int disc = 0; Type *pty = NULL;
+                            for (size_t vi = 0; vi < ui->n_variants; vi++) {
+                                if (!strcmp(ui->variants[vi].name, vname)) {
+                                    disc = (int)vi; pty = ui->variants[vi].ty; break;
+                                }
+                            }
+                            if (matched_disc < 0) { matched_disc = disc; matched_payload_ty = pty; }
+                            int cmp = new_tmp(cg);
+                            emit(cg, "  %%t%d = icmp eq i32 %%t%d, %d\n", cmp, tag_val, disc);
+                            if (cond_t < 0) { cond_t = cmp; } else {
+                                int or_t = new_tmp(cg);
+                                emit(cg, "  %%t%d = or i1 %%t%d, %%t%d\n", or_t, cond_t, cmp);
+                                cond_t = or_t;
+                            }
+                        }
+                    }
+                    if (cond_t < 0) { int wc = new_tmp(cg); emit(cg, "  %%t%d = add i1 0, 1\n", wc); cond_t = wc; }
+                    emit_br(cg, "  br i1 %%t%d, label %%l%d, label %%l%d\n", cond_t, body_l, next_l);
+                    emit_label(cg, body_l);
+                    push_scope(cg);
+
+                    if (arm->bind && matched_payload_ty && ui->payload_size > 0) {
+                        int pay_ptr = new_tmp(cg);
+                        emit(cg, "  %%t%d = getelementptr %%%s, ptr %s, i32 0, i32 1\n",
+                             pay_ptr, ui->name, val.buf);
+                        char pay_buf[32]; snprintf(pay_buf, sizeof(pay_buf), "%%t%d", pay_ptr);
+                        const char *bind_llvm;
+                        if (matched_payload_ty->kind == TY_NAMED && find_struct(cg, matched_payload_ty->named.name)) {
+                            bind_llvm = arena_strdup(cg->arena, pay_buf);
+                        } else {
+                            const char *pay_llt = llvm_type(matched_payload_ty);
+                            int ba = new_tmp(cg);
+                            emit(cg, "  %%t%d = alloca %s\n", ba, pay_llt);
+                            int pv = new_tmp(cg);
+                            emit(cg, "  %%t%d = load %s, ptr %%t%d\n", pv, pay_llt, pay_ptr);
+                            emit(cg, "  store %s %%t%d, ptr %%t%d\n", pay_llt, pv, ba);
+                            char bb[32]; snprintf(bb, sizeof(bb), "%%t%d", ba);
+                            bind_llvm = arena_strdup(cg->arena, bb);
+                        }
+                        define_sym(cg, arm->bind, bind_llvm, 0, matched_payload_ty);
+                    }
+
+                    /* body: if STMT_EXPR, store result; otherwise just execute */
+                    if (arm->body && arm->body->kind == STMT_EXPR && arm->body->expr) {
+                        Type *arm_ty = NULL;
+                        Val arm_val = cg_expr(cg, arm->body->expr, &arm_ty);
+                        const char *store_llt = arm_ty ? effective_llvm_type(cg, arm_ty) : res_llt;
+                        emit(cg, "  store %s %s, ptr %%t%d\n", store_llt, arm_val.buf, res_slot);
+                    } else if (arm->body) {
+                        cg_stmt(cg, arm->body);
+                    }
+                    pop_scope(cg);
+                    emit_br(cg, "  br label %%l%d\n", end_l);
+                    if (next_l != end_l) emit_label(cg, next_l);
+                }
+            } else {
+                /* scalar / enum subject */
+                const char *llt = effective_llvm_type(cg, val_ty);
+                for (size_t i = 0; i < e->when.arms.len; i++) {
+                    WhenArm *arm = &e->when.arms.data[i];
+                    int body_l = new_label(cg);
+                    int next_l = (i + 1 < e->when.arms.len) ? new_label(cg) : end_l;
+                    int cond_t = -1;
+                    for (size_t pi = 0; pi < arm->pats.len; pi++) {
+                        Expr *pat = arm->pats.data[pi];
+                        if (pat->kind == EXPR_DISCARD) {
+                            int wc = new_tmp(cg); emit(cg, "  %%t%d = add i1 0, 1\n", wc);
+                            cond_t = wc; break;
+                        }
+                        Val pv = cg_expr(cg, pat, NULL);
+                        int cmp = new_tmp(cg);
+                        emit(cg, "  %%t%d = icmp eq %s %s, %s\n", cmp, llt, val.buf, pv.buf);
+                        if (cond_t < 0) { cond_t = cmp; } else {
+                            int or_t = new_tmp(cg);
+                            emit(cg, "  %%t%d = or i1 %%t%d, %%t%d\n", or_t, cond_t, cmp);
+                            cond_t = or_t;
+                        }
+                    }
+                    if (cond_t < 0) { int wc = new_tmp(cg); emit(cg, "  %%t%d = add i1 0, 1\n", wc); cond_t = wc; }
+                    emit_br(cg, "  br i1 %%t%d, label %%l%d, label %%l%d\n", cond_t, body_l, next_l);
+                    emit_label(cg, body_l);
+                    push_scope(cg);
+
+                    if (arm->body && arm->body->kind == STMT_EXPR && arm->body->expr) {
+                        Type *arm_ty = NULL;
+                        Val arm_val = cg_expr(cg, arm->body->expr, &arm_ty);
+                        const char *store_llt = arm_ty ? effective_llvm_type(cg, arm_ty) : res_llt;
+                        emit(cg, "  store %s %s, ptr %%t%d\n", store_llt, arm_val.buf, res_slot);
+                    } else if (arm->body) {
+                        cg_stmt(cg, arm->body);
+                    }
+                    pop_scope(cg);
+                    emit_br(cg, "  br label %%l%d\n", end_l);
+                    if (next_l != end_l) emit_label(cg, next_l);
+                }
+            }
+
+            emit_label(cg, end_l);
+            if (out_ty) *out_ty = res_ty;
+            int load_res = new_tmp(cg);
+            emit(cg, "  %%t%d = load %s, ptr %%t%d\n", load_res, res_llt, res_slot);
+            return val_tmp(load_res);
+        }
+
         case EXPR_STRUCT_LIT: {
             /* out_ty = the named struct/union type */
             if (out_ty) {
