@@ -40,6 +40,17 @@ typedef struct EnumInfo {
     EnumVariantVal  *variants;
 } EnumInfo;
 
+/* ── Tagged union variant table ───────────────────────────────────────────── */
+
+typedef struct { const char *name; Type *ty; } UnionVariantInfo; /* ty=NULL → unit variant */
+
+typedef struct UnionInfo {
+    struct UnionInfo *next;
+    const char       *name;
+    size_t            n_variants;
+    UnionVariantInfo *variants;
+} UnionInfo;
+
 /* ── Generic template table ───────────────────────────────────────────────── */
 
 typedef struct GenericTemplate {
@@ -57,6 +68,7 @@ typedef struct {
     int               errors;
     StructEntry      *structs;   /* name → field list for struct lookup */
     EnumInfo         *enums;     /* name → variant values for enum lookup */
+    UnionInfo        *unions;    /* name → tagged union variant table */
     GenericTemplate  *generics;  /* uninstantiated generic templates */
     /* built-in types — interned once */
     Type   *ty_void, *ty_bool, *ty_i8, *ty_i16, *ty_i32, *ty_i64;
@@ -568,7 +580,7 @@ static Type *check_expr(Sema *s, Expr *e) {
         }
 
         case EXPR_STRUCT_LIT: {
-            /* check field values; leave e->ty as the named struct type */
+            /* check field values; leave e->ty as the named struct/union type */
             for (size_t i = 0; i < e->struct_lit.fields.len; i++)
                 check_expr(s, e->struct_lit.fields.data[i].val);
             Sym *sym = lookup(s, e->struct_lit.ty_name);
@@ -577,6 +589,26 @@ static Type *check_expr(Sema *s, Expr *e) {
                 Type *t = make_ty(s, TY_NAMED);
                 t->named.name = e->struct_lit.ty_name;
                 e->ty = t;
+            }
+            /* validate tagged union construction: exactly one field, valid variant */
+            for (UnionInfo *ui = s->unions; ui; ui = ui->next) {
+                if (!strcmp(ui->name, e->struct_lit.ty_name)) {
+                    if (e->struct_lit.fields.len != 1) {
+                        sema_error(s, e->span,
+                            "tagged union literal for '%s' must set exactly one variant",
+                            ui->name);
+                    } else {
+                        const char *fname = e->struct_lit.fields.data[0].name;
+                        int found = 0;
+                        for (size_t vi = 0; vi < ui->n_variants; vi++) {
+                            if (!strcmp(ui->variants[vi].name, fname)) { found = 1; break; }
+                        }
+                        if (!found)
+                            sema_error(s, e->span, "union '%s' has no variant '%s'",
+                                       ui->name, fname);
+                    }
+                    break;
+                }
             }
             break;
         }
@@ -747,14 +779,48 @@ static void check_stmt(Sema *s, Stmt *st) {
 
         case STMT_WHEN: {
             Type *vt = check_expr(s, st->when.val);
+            /* check if subject is a tagged union */
+            UnionInfo *ui = NULL;
+            if (vt && vt->kind == TY_NAMED) {
+                for (UnionInfo *u = s->unions; u; u = u->next)
+                    if (!strcmp(u->name, vt->named.name)) { ui = u; break; }
+            }
             for (size_t i = 0; i < st->when.arms.len; i++) {
                 WhenArm *arm = &st->when.arms.data[i];
                 push_scope(s);
-                /* bind name for `any` arms */
-                if (arm->bind && vt)
-                    define(s, arm->span, arm->bind, vt, 0, 0);
-                for (size_t pi = 0; pi < arm->pats.len; pi++)
-                    check_expr(s, arm->pats.data[pi]);
+                if (ui) {
+                    /* tagged union: patterns are ".variantName" dot-prefixed idents */
+                    for (size_t pi = 0; pi < arm->pats.len; pi++) {
+                        Expr *pat = arm->pats.data[pi];
+                        if (pat->kind == EXPR_DISCARD) continue;
+                        if (pat->kind == EXPR_IDENT && pat->ident.name[0] == '.') {
+                            const char *vname = pat->ident.name + 1;
+                            int found = 0;
+                            for (size_t vi = 0; vi < ui->n_variants; vi++) {
+                                if (!strcmp(ui->variants[vi].name, vname)) {
+                                    found = 1;
+                                    /* bind payload type if arm has a binding name */
+                                    if (arm->bind && ui->variants[vi].ty)
+                                        define(s, arm->span, arm->bind,
+                                               ui->variants[vi].ty, 0, 0);
+                                    break;
+                                }
+                            }
+                            if (!found)
+                                sema_error(s, arm->span,
+                                    "union '%s' has no variant '%s'", ui->name, vname);
+                            pat->ty = vt;
+                        } else {
+                            check_expr(s, pat);
+                        }
+                    }
+                } else {
+                    /* regular when: bind name for `any` arms */
+                    if (arm->bind && vt)
+                        define(s, arm->span, arm->bind, vt, 0, 0);
+                    for (size_t pi = 0; pi < arm->pats.len; pi++)
+                        check_expr(s, arm->pats.data[pi]);
+                }
                 check_stmt(s, arm->body);
                 pop_scope(s);
             }
@@ -819,6 +885,13 @@ static void check_enum(Sema *s, Item *item) {
     for (size_t i = 0; i < item->enum_.variants.len; i++) {
         EnumVariant *v = &item->enum_.variants.data[i];
         if (v->val) check_expr(s, v->val);
+    }
+}
+
+static void check_union(Sema *s, Item *item) {
+    for (size_t i = 0; i < item->union_.fields.len; i++) {
+        Field *f = &item->union_.fields.data[i];
+        if (f->ty) f->ty = check_type(s, f->ty);
     }
 }
 
@@ -1157,6 +1230,26 @@ static void register_item(Sema *s, Item *item) {
             s->enums        = ei;
             break;
         }
+        case ITEM_UNION: {
+            if (!item->union_.tagged) break; /* untagged unions: no type registration yet */
+            Type *ty = make_ty(s, TY_NAMED);
+            ty->named.name = item->name;
+            define(s, item->span, item->name, ty, 0, 1);
+            /* build variant info table */
+            size_t n = item->union_.fields.len;
+            UnionVariantInfo *vars = ARENA_ALLOC(s->arena, UnionVariantInfo, n);
+            for (size_t i = 0; i < n; i++) {
+                vars[i].name = item->union_.fields.data[i].name;
+                vars[i].ty   = item->union_.fields.data[i].ty;
+            }
+            UnionInfo *ui  = ARENA_NEW(s->arena, UnionInfo);
+            ui->name       = item->name;
+            ui->n_variants = n;
+            ui->variants   = vars;
+            ui->next       = s->unions;
+            s->unions      = ui;
+            break;
+        }
         case ITEM_TYPE_ALIAS: {
             /* register placeholder; will be resolved in second pass */
             define(s, item->span, item->name, item->type_alias.ty, 0, 1);
@@ -1270,7 +1363,7 @@ int sema_check(Module *mod) {
             case ITEM_GLOBAL:     check_global(&s, item);     break;
             case ITEM_EXTERN_FN:  check_extern_fn(&s, item);  break;
             case ITEM_TYPE_ALIAS: check_type_alias(&s, item); break;
-            case ITEM_UNION:      break; /* TODO */
+            case ITEM_UNION:      check_union(&s, item); break;
             case ITEM_IMPORT:     break; /* resolved by module loader */
             default:              break;
         }

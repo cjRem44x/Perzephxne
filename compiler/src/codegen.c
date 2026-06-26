@@ -31,6 +31,16 @@ typedef struct EnumInfo {
     EnumVariantVal  *variants;
 } EnumInfo;
 
+typedef struct { const char *name; Type *ty; } UnionVariantCG; /* ty=NULL → unit variant */
+
+typedef struct UnionInfoCG {
+    struct UnionInfoCG *next;
+    const char         *name;
+    size_t              n_variants;
+    UnionVariantCG     *variants;
+    int                 payload_size; /* bytes — 0 if all unit variants */
+} UnionInfoCG;
+
 typedef struct Symbol {
     struct Symbol *next;
     const char    *name;
@@ -65,6 +75,7 @@ typedef struct {
     StrConst    *str_consts;
     StructInfo  *structs;    /* name → field list for struct layout */
     EnumInfo    *enums;      /* name → variant values for enum access */
+    UnionInfoCG *unions;     /* name → tagged union variant table */
     int          str_id;
     int          tmp_id;      /* next %t<n> temporary */
     int          label_id;    /* next label suffix     */
@@ -247,12 +258,43 @@ static EnumInfo *find_enum(CG *cg, const char *name) {
     return NULL;
 }
 
-/* For named types: enums use their backing integer type; structs use %Name. */
+static UnionInfoCG *find_union(CG *cg, const char *name) {
+    for (UnionInfoCG *ui = cg->unions; ui; ui = ui->next)
+        if (!strcmp(ui->name, name)) return ui;
+    return NULL;
+}
+
+/* Approximate byte size of a type for union payload sizing */
+static int cg_type_byte_size(CG *cg, Type *ty) {
+    if (!ty) return 0;
+    switch (ty->kind) {
+        case TY_BOOL: case TY_I8: case TY_U8: case TY_CHAR: return 1;
+        case TY_I16: case TY_U16: return 2;
+        case TY_I32: case TY_U32: case TY_F32: return 4;
+        case TY_I64: case TY_U64: case TY_F64: case TY_USIZE:
+        case TY_PTR: case TY_SMART_PTR: return 8;
+        case TY_STR: case TY_SLICE: case TY_ANY: return 16;
+        case TY_NAMED: {
+            StructInfo *si = find_struct(cg, ty->named.name);
+            if (si) {
+                int total = 0;
+                for (size_t i = 0; i < si->fields.len; i++)
+                    total += cg_type_byte_size(cg, si->fields.data[i].ty);
+                return total ? total : 8;
+            }
+            return 8;
+        }
+        default: return 8;
+    }
+}
+
+/* For named types: enums use their backing integer type; structs/unions use %Name. */
 static const char *effective_llvm_type(CG *cg, Type *ty) {
     if (!ty) return "i32";
     if (ty->kind == TY_NAMED) {
         EnumInfo *ei = find_enum(cg, ty->named.name);
         if (ei) return llvm_type(ei->backing_ty);
+        /* structs and tagged unions: %Name */
     }
     return llvm_type(ty);
 }
@@ -998,6 +1040,58 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
         }
 
         case EXPR_STRUCT_LIT: {
+            /* out_ty = the named struct/union type */
+            if (out_ty) {
+                Type *sty = ARENA_NEW(cg->arena, Type);
+                sty->kind = TY_NAMED;
+                sty->named.name = e->struct_lit.ty_name;
+                *out_ty = sty;
+            }
+
+            /* tagged union construction: shape{.circle=5.0} */
+            UnionInfoCG *ui = find_union(cg, e->struct_lit.ty_name);
+            if (ui) {
+                int t = new_tmp(cg);
+                emit(cg, "  %%t%d = alloca %%%s\n", t, e->struct_lit.ty_name);
+                if (e->struct_lit.fields.len == 1) {
+                    FieldInit *fi = &e->struct_lit.fields.data[0];
+                    /* find variant index */
+                    int disc = 0;
+                    Type *payload_ty = NULL;
+                    for (size_t vi = 0; vi < ui->n_variants; vi++) {
+                        if (!strcmp(ui->variants[vi].name, fi->name)) {
+                            disc = (int)vi;
+                            payload_ty = ui->variants[vi].ty;
+                            break;
+                        }
+                    }
+                    /* store discriminant at field 0 */
+                    int tag_ptr = new_tmp(cg);
+                    emit(cg, "  %%t%d = getelementptr %%%s, ptr %%t%d, i32 0, i32 0\n",
+                         tag_ptr, e->struct_lit.ty_name, t);
+                    emit(cg, "  store i32 %d, ptr %%t%d\n", disc, tag_ptr);
+                    /* store payload at field 1 (if variant has a payload and a real value) */
+                    if (payload_ty && fi->val && fi->val->kind != EXPR_UNDEF) {
+                        Type *fty = NULL;
+                        Val fv = cg_expr(cg, fi->val, &fty);
+                        const char *store_llt = fty ? llvm_type(fty) : llvm_type(payload_ty);
+                        int pay_ptr = new_tmp(cg);
+                        emit(cg, "  %%t%d = getelementptr %%%s, ptr %%t%d, i32 0, i32 1\n",
+                             pay_ptr, e->struct_lit.ty_name, t);
+                        /* for struct payloads: load then store */
+                        if (fty && fty->kind == TY_NAMED && find_struct(cg, fty->named.name)) {
+                            int loaded = new_tmp(cg);
+                            emit(cg, "  %%t%d = load %s, ptr %s\n", loaded, store_llt, fv.buf);
+                            emit(cg, "  store %s %%t%d, ptr %%t%d\n", store_llt, loaded, pay_ptr);
+                        } else {
+                            emit(cg, "  store %s %s, ptr %%t%d\n", store_llt, fv.buf, pay_ptr);
+                        }
+                    }
+                }
+                return val_tmp(t);
+            }
+
+            /* regular struct literal */
             StructInfo *si = find_struct(cg, e->struct_lit.ty_name);
             int t = new_tmp(cg);
             emit(cg, "  %%t%d = alloca %%%s\n", t, e->struct_lit.ty_name);
@@ -1013,13 +1107,6 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                 emit(cg, "  %%t%d = getelementptr %%%s, ptr %%t%d, i32 0, i32 %d\n",
                      fp, e->struct_lit.ty_name, t, fidx);
                 emit(cg, "  store %s %s, ptr %%t%d\n", store_llt, fv.buf, fp);
-            }
-            /* out_ty = the named struct type */
-            if (out_ty) {
-                Type *sty = ARENA_NEW(cg->arena, Type);
-                sty->kind = TY_NAMED;
-                sty->named.name = e->struct_lit.ty_name;
-                *out_ty = sty;
             }
             return val_tmp(t);
         }
@@ -1485,43 +1572,155 @@ static void cg_stmt(CG *cg, Stmt *s) {
             int end_l = new_label(cg);
             Type *val_ty = NULL;
             Val val = cg_expr(cg, s->when.val, &val_ty);
-            const char *llt = effective_llvm_type(cg, val_ty);
-            for (size_t i = 0; i < s->when.arms.len; i++) {
-                WhenArm *arm = &s->when.arms.data[i];
-                int body_l = new_label(cg);
-                int next_l = (i + 1 < s->when.arms.len) ? new_label(cg) : end_l;
 
-                int cond_t = -1;
-                for (size_t pi = 0; pi < arm->pats.len; pi++) {
-                    Expr *pat = arm->pats.data[pi];
-                    if (pat->kind == EXPR_DISCARD) {
+            /* check if subject is a tagged union */
+            UnionInfoCG *ui = NULL;
+            if (val_ty && val_ty->kind == TY_NAMED)
+                ui = find_union(cg, val_ty->named.name);
+
+            if (ui) {
+                /* tagged union: load the tag (field 0) from the union alloca */
+                int tag_ptr = new_tmp(cg);
+                emit(cg, "  %%t%d = getelementptr %%%s, ptr %s, i32 0, i32 0\n",
+                     tag_ptr, ui->name, val.buf);
+                int tag_val = new_tmp(cg);
+                emit(cg, "  %%t%d = load i32, ptr %%t%d\n", tag_val, tag_ptr);
+
+                for (size_t i = 0; i < s->when.arms.len; i++) {
+                    WhenArm *arm = &s->when.arms.data[i];
+                    int body_l = new_label(cg);
+                    int next_l = (i + 1 < s->when.arms.len) ? new_label(cg) : end_l;
+
+                    /* build condition: OR of all pattern discriminant comparisons */
+                    int cond_t = -1;
+                    Type *matched_payload_ty = NULL;
+                    int   matched_disc       = -1;
+                    for (size_t pi = 0; pi < arm->pats.len; pi++) {
+                        Expr *pat = arm->pats.data[pi];
+                        if (pat->kind == EXPR_DISCARD) {
+                            int wc = new_tmp(cg);
+                            emit(cg, "  %%t%d = add i1 0, 1\n", wc);
+                            cond_t = wc;
+                            break;
+                        }
+                        if (pat->kind == EXPR_IDENT && pat->ident.name[0] == '.') {
+                            const char *vname = pat->ident.name + 1;
+                            int disc = 0;
+                            Type *pty = NULL;
+                            for (size_t vi = 0; vi < ui->n_variants; vi++) {
+                                if (!strcmp(ui->variants[vi].name, vname)) {
+                                    disc = (int)vi;
+                                    pty  = ui->variants[vi].ty;
+                                    break;
+                                }
+                            }
+                            if (matched_disc < 0) {
+                                matched_disc       = disc;
+                                matched_payload_ty = pty;
+                            }
+                            int cmp = new_tmp(cg);
+                            emit(cg, "  %%t%d = icmp eq i32 %%t%d, %d\n",
+                                 cmp, tag_val, disc);
+                            if (cond_t < 0) {
+                                cond_t = cmp;
+                            } else {
+                                int or_t = new_tmp(cg);
+                                emit(cg, "  %%t%d = or i1 %%t%d, %%t%d\n",
+                                     or_t, cond_t, cmp);
+                                cond_t = or_t;
+                            }
+                        }
+                    }
+                    if (cond_t < 0) {
                         int wc = new_tmp(cg);
                         emit(cg, "  %%t%d = add i1 0, 1\n", wc);
                         cond_t = wc;
-                        break;
                     }
-                    Val pv = cg_expr(cg, pat, NULL);
-                    int cmp = new_tmp(cg);
-                    emit(cg, "  %%t%d = icmp eq %s %s, %s\n", cmp, llt, val.buf, pv.buf);
-                    if (cond_t < 0) {
-                        cond_t = cmp;
-                    } else {
-                        int or_t = new_tmp(cg);
-                        emit(cg, "  %%t%d = or i1 %%t%d, %%t%d\n", or_t, cond_t, cmp);
-                        cond_t = or_t;
-                    }
-                }
-                if (cond_t < 0) { int wc = new_tmp(cg); emit(cg,"  %%t%d = add i1 0,1\n",wc); cond_t=wc; }
 
-                emit_br(cg, "  br i1 %%t%d, label %%l%d, label %%l%d\n",
-                        cond_t, body_l, next_l);
-                emit_label(cg, body_l);
-                push_scope(cg);
-                cg_stmt(cg, arm->body);
-                pop_scope(cg);
-                emit_br(cg, "  br label %%l%d\n", end_l);
-                if (next_l != end_l) emit_label(cg, next_l);
+                    emit_br(cg, "  br i1 %%t%d, label %%l%d, label %%l%d\n",
+                            cond_t, body_l, next_l);
+                    emit_label(cg, body_l);
+                    push_scope(cg);
+
+                    /* bind payload if arm has a name and the variant has a payload */
+                    if (arm->bind && matched_payload_ty && ui->payload_size > 0) {
+                        int pay_ptr = new_tmp(cg);
+                        emit(cg, "  %%t%d = getelementptr %%%s, ptr %s, i32 0, i32 1\n",
+                             pay_ptr, ui->name, val.buf);
+                        char pay_buf[32];
+                        snprintf(pay_buf, sizeof(pay_buf), "%%t%d", pay_ptr);
+                        const char *bind_llvm;
+                        if (matched_payload_ty->kind == TY_NAMED
+                                && find_struct(cg, matched_payload_ty->named.name)) {
+                            /* struct payload: use the GEP ptr directly (struct-as-alloca) */
+                            bind_llvm = arena_strdup(cg->arena, pay_buf);
+                        } else {
+                            /* scalar payload: alloca + load + store */
+                            const char *pay_llt = llvm_type(matched_payload_ty);
+                            int bind_alloca = new_tmp(cg);
+                            emit(cg, "  %%t%d = alloca %s\n", bind_alloca, pay_llt);
+                            int pay_val = new_tmp(cg);
+                            emit(cg, "  %%t%d = load %s, ptr %%t%d\n",
+                                 pay_val, pay_llt, pay_ptr);
+                            emit(cg, "  store %s %%t%d, ptr %%t%d\n",
+                                 pay_llt, pay_val, bind_alloca);
+                            char bind_buf[32];
+                            snprintf(bind_buf, sizeof(bind_buf), "%%t%d", bind_alloca);
+                            bind_llvm = arena_strdup(cg->arena, bind_buf);
+                        }
+                        define_sym(cg, arm->bind, bind_llvm, 0, matched_payload_ty);
+                    }
+
+                    cg_stmt(cg, arm->body);
+                    pop_scope(cg);
+                    emit_br(cg, "  br label %%l%d\n", end_l);
+                    if (next_l != end_l) emit_label(cg, next_l);
+                }
+            } else {
+                /* regular when: integer/enum/bool pattern matching */
+                const char *llt = effective_llvm_type(cg, val_ty);
+                for (size_t i = 0; i < s->when.arms.len; i++) {
+                    WhenArm *arm = &s->when.arms.data[i];
+                    int body_l = new_label(cg);
+                    int next_l = (i + 1 < s->when.arms.len) ? new_label(cg) : end_l;
+
+                    int cond_t = -1;
+                    for (size_t pi = 0; pi < arm->pats.len; pi++) {
+                        Expr *pat = arm->pats.data[pi];
+                        if (pat->kind == EXPR_DISCARD) {
+                            int wc = new_tmp(cg);
+                            emit(cg, "  %%t%d = add i1 0, 1\n", wc);
+                            cond_t = wc;
+                            break;
+                        }
+                        Val pv = cg_expr(cg, pat, NULL);
+                        int cmp = new_tmp(cg);
+                        emit(cg, "  %%t%d = icmp eq %s %s, %s\n", cmp, llt, val.buf, pv.buf);
+                        if (cond_t < 0) {
+                            cond_t = cmp;
+                        } else {
+                            int or_t = new_tmp(cg);
+                            emit(cg, "  %%t%d = or i1 %%t%d, %%t%d\n", or_t, cond_t, cmp);
+                            cond_t = or_t;
+                        }
+                    }
+                    if (cond_t < 0) {
+                        int wc = new_tmp(cg);
+                        emit(cg, "  %%t%d = add i1 0, 1\n", wc);
+                        cond_t = wc;
+                    }
+
+                    emit_br(cg, "  br i1 %%t%d, label %%l%d, label %%l%d\n",
+                            cond_t, body_l, next_l);
+                    emit_label(cg, body_l);
+                    push_scope(cg);
+                    cg_stmt(cg, arm->body);
+                    pop_scope(cg);
+                    emit_br(cg, "  br label %%l%d\n", end_l);
+                    if (next_l != end_l) emit_label(cg, next_l);
+                }
             }
+
             emit_label(cg, end_l);
             break;
         }
@@ -1751,6 +1950,42 @@ int codegen(Module *mod, FILE *out) {
             emit(&cg, "%s", llvm_type(item->struct_.fields.data[j].ty));
         }
         emit(&cg, " }\n");
+    }
+    emit(&cg, "\n");
+
+    /* tagged union type declarations and layout table
+       Layout: { i32 tag, [N x i8] payload } where N = max variant payload size */
+    for (size_t i = 0; i < mod->items.len; i++) {
+        Item *item = mod->items.data[i];
+        if (item->kind != ITEM_UNION || !item->union_.tagged) continue;
+        /* compute max payload size */
+        int max_payload = 0;
+        for (size_t j = 0; j < item->union_.fields.len; j++) {
+            Type *fty = item->union_.fields.data[j].ty;
+            if (fty) {
+                int sz = cg_type_byte_size(&cg, fty);
+                if (sz > max_payload) max_payload = sz;
+            }
+        }
+        /* build variant table */
+        size_t nv = item->union_.fields.len;
+        UnionVariantCG *vars = ARENA_ALLOC(cg.arena, UnionVariantCG, nv);
+        for (size_t j = 0; j < nv; j++) {
+            vars[j].name = item->union_.fields.data[j].name;
+            vars[j].ty   = item->union_.fields.data[j].ty;
+        }
+        UnionInfoCG *ui  = ARENA_NEW(cg.arena, UnionInfoCG);
+        ui->name         = item->name;
+        ui->n_variants   = nv;
+        ui->variants     = vars;
+        ui->payload_size = max_payload;
+        ui->next         = cg.unions;
+        cg.unions        = ui;
+        /* emit LLVM named type */
+        if (max_payload > 0)
+            emit(&cg, "%%%s = type { i32, [%d x i8] }\n", item->name, max_payload);
+        else
+            emit(&cg, "%%%s = type { i32 }\n", item->name);
     }
     emit(&cg, "\n");
 
