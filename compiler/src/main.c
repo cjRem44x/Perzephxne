@@ -412,7 +412,7 @@ static int compile_file(const char *src_path, const char *out_path, int release)
 
     FILE *ll_f = fopen(ll_path, "w");
     if (!ll_f) { fprintf(stderr, "przp: cannot write '%s'\n", ll_path); return 1; }
-    int ok = codegen(mod, ll_f);
+    int ok = codegen(mod, ll_f, release);
     fclose(ll_f);
 
     arena_free(&arena);

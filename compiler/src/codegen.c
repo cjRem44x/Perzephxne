@@ -84,6 +84,7 @@ typedef struct {
     const char  *skip_rc_drop; /* alloca to skip in RC drops (being moved out by ret) */
     int          terminated;   /* 1 = current block already has a terminator */
     int          had_error;
+    int          release;      /* 1 = --release build (@debug=false, @release=true) */
 } CG;
 
 /* ── Utilities ────────────────────────────────────────────────────────────── */
@@ -1021,10 +1022,20 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                 return val_tmp(val);
             }
 
-            /* @size */
+            /* @size(T) — compile-time sizeof via GEP-from-null trick */
             if (!strcmp(name, "size")) {
-                /* return placeholder 8 — sema will fill in real sizes */
-                return val_str("8");
+                if (out_ty) {
+                    Type *ut = ARENA_NEW(cg->arena, Type); ut->kind = TY_USIZE; *out_ty = ut;
+                }
+                if (e->builtin.args.len >= 1) {
+                    Type *ta = e->builtin.args.data[0]->ty;
+                    const char *llt = ta ? llvm_type(ta) : "i8";
+                    int t = new_tmp(cg);
+                    emit(cg, "  %%t%d = ptrtoint ptr getelementptr (%s, ptr null, i32 1) to i64\n",
+                         t, llt);
+                    return val_tmp(t);
+                }
+                return val_str("0");
             }
 
             /* @len — always returns i64 */
@@ -1049,6 +1060,129 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                 int t = new_tmp(cg);
                 emit(cg, "  %%t%d = extractvalue { ptr, i64 } %s, 1\n", t, a.buf);
                 return val_tmp(t);
+            }
+
+            /* @offsetof(T, field) — byte offset of a struct field */
+            if (!strcmp(name, "offsetof")) {
+                if (e->builtin.args.len < 2)
+                    fatal_at(e->span, "@offsetof requires two arguments: @offsetof(T, field)");
+                if (out_ty) {
+                    Type *ut = ARENA_NEW(cg->arena, Type); ut->kind = TY_USIZE; *out_ty = ut;
+                }
+                /* first arg: type name (EXPR_IDENT) */
+                const char *ty_name = NULL;
+                if (e->builtin.args.data[0]->kind == EXPR_IDENT)
+                    ty_name = e->builtin.args.data[0]->ident.name;
+                /* second arg: field name (EXPR_IDENT) */
+                const char *field_name = NULL;
+                if (e->builtin.args.data[1]->kind == EXPR_IDENT)
+                    field_name = e->builtin.args.data[1]->ident.name;
+                if (!ty_name || !field_name)
+                    fatal_at(e->span, "@offsetof: expected identifier arguments");
+                StructInfo *si = find_struct(cg, ty_name);
+                if (!si) fatal_at(e->span, "@offsetof: '%s' is not a struct", ty_name);
+                int fidx = -1;
+                for (size_t fi = 0; fi < si->fields.len; fi++) {
+                    if (!strcmp(si->fields.data[fi].name, field_name)) { fidx = (int)fi; break; }
+                }
+                if (fidx < 0)
+                    fatal_at(e->span, "@offsetof: struct '%s' has no field '%s'", ty_name, field_name);
+                int t = new_tmp(cg);
+                emit(cg, "  %%t%d = ptrtoint ptr getelementptr (%%%s, ptr null, i32 0, i32 %d) to i64\n",
+                     t, ty_name, fidx);
+                return val_tmp(t);
+            }
+
+            /* @typeof(expr) — compile-time type name as a str constant */
+            if (!strcmp(name, "typeof")) {
+                if (e->builtin.args.len < 1)
+                    fatal_at(e->span, "@typeof requires one argument");
+                Type *ta = NULL;
+                cg_expr(cg, e->builtin.args.data[0], &ta); /* evaluate for side effects + type */
+                const char *tname = ta ? llvm_type(ta) : "unknown";
+                /* for named types, use the Perzephxne name */
+                if (ta && ta->kind == TY_NAMED) tname = ta->named.name;
+                else if (ta) {
+                    switch (ta->kind) {
+                        case TY_I8: tname="i8"; break; case TY_I16: tname="i16"; break;
+                        case TY_I32: tname="i32"; break; case TY_I64: tname="i64"; break;
+                        case TY_U8: tname="u8"; break; case TY_U16: tname="u16"; break;
+                        case TY_U32: tname="u32"; break; case TY_U64: tname="u64"; break;
+                        case TY_F32: tname="f32"; break; case TY_F64: tname="f64"; break;
+                        case TY_BOOL: tname="bool"; break; case TY_CHAR: tname="char"; break;
+                        case TY_STR: tname="str"; break; case TY_USIZE: tname="usize"; break;
+                        case TY_PTR: tname="ptr"; break; default: tname="unknown"; break;
+                    }
+                }
+                int sid = intern_str(cg, arena_strdup(cg->arena, tname));
+                size_t slen = strlen(tname);
+                int ft = new_tmp(cg);
+                emit(cg, "  %%t%d = getelementptr inbounds [%zu x i8], ptr @.str.%d, i32 0, i32 0\n",
+                     ft, slen + 1, sid);
+                int sa = new_tmp(cg);
+                emit(cg, "  %%t%d = alloca { ptr, i64 }\n", sa);
+                int p0 = new_tmp(cg);
+                emit(cg, "  %%t%d = getelementptr { ptr, i64 }, ptr %%t%d, i32 0, i32 0\n", p0, sa);
+                emit(cg, "  store ptr %%t%d, ptr %%t%d\n", ft, p0);
+                int p1 = new_tmp(cg);
+                emit(cg, "  %%t%d = getelementptr { ptr, i64 }, ptr %%t%d, i32 0, i32 1\n", p1, sa);
+                emit(cg, "  store i64 %zu, ptr %%t%d\n", slen, p1);
+                int rv = new_tmp(cg);
+                emit(cg, "  %%t%d = load { ptr, i64 }, ptr %%t%d\n", rv, sa);
+                if (out_ty) { Type *st = ARENA_NEW(cg->arena, Type); st->kind = TY_STR; *out_ty = st; }
+                return val_tmp(rv);
+            }
+
+            /* @debug / @release — compile-time build mode booleans */
+            if (!strcmp(name, "debug")) {
+                if (out_ty) { Type *bt = ARENA_NEW(cg->arena, Type); bt->kind = TY_BOOL; *out_ty = bt; }
+                return val_str(cg->release ? "0" : "1");
+            }
+            if (!strcmp(name, "release")) {
+                if (out_ty) { Type *bt = ARENA_NEW(cg->arena, Type); bt->kind = TY_BOOL; *out_ty = bt; }
+                return val_str(cg->release ? "1" : "0");
+            }
+
+            /* @os.* / @arch.* — compile-time platform booleans */
+            if (!strncmp(name, "os.", 3) || !strncmp(name, "arch.", 5)) {
+                if (out_ty) { Type *bt = ARENA_NEW(cg->arena, Type); bt->kind = TY_BOOL; *out_ty = bt; }
+#if defined(__linux__)
+                if (!strcmp(name, "os.linux"))   return val_str("1");
+#else
+                if (!strcmp(name, "os.linux"))   return val_str("0");
+#endif
+#if defined(_WIN32) || defined(_WIN64)
+                if (!strcmp(name, "os.windows")) return val_str("1");
+#else
+                if (!strcmp(name, "os.windows")) return val_str("0");
+#endif
+#if defined(__APPLE__)
+                if (!strcmp(name, "os.mac"))     return val_str("1");
+#else
+                if (!strcmp(name, "os.mac"))     return val_str("0");
+#endif
+#if defined(__x86_64__) || defined(_M_X64)
+                if (!strcmp(name, "arch.x86_64")) return val_str("1");
+#else
+                if (!strcmp(name, "arch.x86_64")) return val_str("0");
+#endif
+#if defined(__aarch64__) || defined(_M_ARM64)
+                if (!strcmp(name, "arch.arm64")) return val_str("1");
+#else
+                if (!strcmp(name, "arch.arm64")) return val_str("0");
+#endif
+#if defined(__i386__) || defined(_M_IX86)
+                if (!strcmp(name, "arch.x86"))   return val_str("1");
+#else
+                if (!strcmp(name, "arch.x86"))   return val_str("0");
+#endif
+#if defined(__arm__)
+                if (!strcmp(name, "arch.arm"))   return val_str("1");
+#else
+                if (!strcmp(name, "arch.arm"))   return val_str("0");
+#endif
+                /* unknown os/arch variant — false */
+                return val_str("0");
             }
 
             /* @err.constant — error code integer constants */
@@ -2390,10 +2524,11 @@ static void cg_global(CG *cg, Item *item) {
 
 /* ── Module entry ─────────────────────────────────────────────────────────── */
 
-int codegen(Module *mod, FILE *out) {
+int codegen(Module *mod, FILE *out, int release) {
     CG cg = {0};
-    cg.out   = out;
-    cg.arena = mod->arena;
+    cg.out     = out;
+    cg.arena   = mod->arena;
+    cg.release = release;
 
     /* global scope */
     Scope global_scope = {0};

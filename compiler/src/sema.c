@@ -289,6 +289,9 @@ static Type *builtin_ret_ty(Sema *s, const char *name) {
     if (!strcmp(name, "sqrt"))                        return s->ty_f64;
     if (!strcmp(name, "zeroed"))                      return NULL; /* inferred from arg */
     if (!strcmp(name, "memcpy") || !strcmp(name, "memset")) return s->ty_void;
+    if (!strcmp(name, "debug") || !strcmp(name, "release")) return s->ty_bool;
+    if (!strcmp(name, "offsetof"))  return s->ty_usize;
+    if (!strcmp(name, "typeof"))    return s->ty_str;
     if (!strcmp(name, "os.linux") || !strcmp(name, "os.windows") ||
         !strcmp(name, "os.mac"))                      return s->ty_bool;
     if (!strncmp(name, "arch.", 5))                   return s->ty_bool;
@@ -347,6 +350,11 @@ static Type *check_expr(Sema *s, Expr *e) {
         }
 
         case EXPR_BUILTIN: {
+            /* @offsetof(T, field) — both args are names, not expressions */
+            if (!strcmp(e->builtin.name, "offsetof")) {
+                e->ty = s->ty_usize;
+                break;
+            }
             /* check all args */
             for (size_t i = 0; i < e->builtin.args.len; i++)
                 check_expr(s, e->builtin.args.data[i]);
