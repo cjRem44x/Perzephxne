@@ -239,6 +239,9 @@ static int ty_coerces(Type *from, Type *to) {
     if (to->kind == TY_FAILABLE && ty_coerces(from, to->ptr.inner)) return 1;
     /* !T coerces to T (extract value part in failable destructure) */
     if (from->kind == TY_FAILABLE && ty_coerces(from->ptr.inner, to)) return 1;
+    /* [N]T1 coerces to [N]T2 if T1 coerces to T2 (e.g. [3]i32 → [3]u8) */
+    if (from->kind == TY_ARRAY && to->kind == TY_ARRAY
+            && ty_coerces(from->array.inner, to->array.inner)) return 1;
     return 0;
 }
 
@@ -431,12 +434,30 @@ static Type *check_expr(Sema *s, Expr *e) {
                 case BINOP_RANGE: case BINOP_RANGE_INC:
                     e->ty = NULL; /* range used in for, not a value */
                     break;
-                default:
-                    /* arithmetic/bitwise: take the "wider" type */
-                    if (lt && ty_is_numeric(lt)) e->ty = lt;
+                default: {
+                    /* arithmetic/bitwise: pick the wider/more-typed operand.
+                       i32 (default int literal) yields to any wider integer. */
+                    int lw = 0, rw = 0;
+                    if (lt) switch (lt->kind) {
+                        case TY_I8:  case TY_U8:  lw=8;  break;
+                        case TY_I16: case TY_U16: lw=16; break;
+                        case TY_I32: case TY_U32: lw=32; break;
+                        case TY_I64: case TY_U64: case TY_USIZE: lw=64; break;
+                        default: break;
+                    }
+                    if (rt) switch (rt->kind) {
+                        case TY_I8:  case TY_U8:  rw=8;  break;
+                        case TY_I16: case TY_U16: rw=16; break;
+                        case TY_I32: case TY_U32: rw=32; break;
+                        case TY_I64: case TY_U64: case TY_USIZE: rw=64; break;
+                        default: break;
+                    }
+                    if (lw && rw) e->ty = (rw > lw) ? rt : lt;
+                    else if (lt && ty_is_numeric(lt)) e->ty = lt;
                     else if (rt && ty_is_numeric(rt)) e->ty = rt;
                     else e->ty = s->ty_i32;
                     break;
+                }
             }
             /* type compatibility check (skip pointer arithmetic cases) */
             if (!ptr_arith && lt && rt && !ty_eq(lt, rt)

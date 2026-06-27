@@ -112,6 +112,69 @@ rc2: box.Rc[str] = rc.clone()
 # freed when both rc and rc2 drop
 ```
 
+## `std/file`
+
+Path-based file utilities — no open handle needed for common operations.
+
+```
+import(file = "std/file")
+
+ok: bool = file.exists("data.txt")
+sz: i64  = file.size("data.txt")
+
+content: str = file.read_all("data.txt")
+file.write_all("out.txt", content)
+file.append("log.txt", "entry\n")
+
+file.remove_file("tmp.txt")
+file.rename_file("old.txt", "new.txt")
+```
+
+| Function | Description |
+|---|---|
+| `file.exists(path)` | true if the path exists and is accessible |
+| `file.size(path)` | byte size, or -1 on error |
+| `file.read_all(path)` | read entire file into a heap-allocated `str` |
+| `file.write_all(path, content)` | create/overwrite with `content`; returns `bool` |
+| `file.append(path, content)` | append `content` (creates if missing); returns `bool` |
+| `file.remove_file(path)` | delete the file; returns `bool` |
+| `file.rename_file(old, new)` | rename/move a file; returns `bool` |
+
+## `std/crypto`
+
+Non-cryptographic and cryptographic hashing, XOR stream cipher, and SHA-256.
+
+```
+import(crypto = "std/crypto")
+
+# Fast non-cryptographic hashes (good for hash tables)
+h1: u64 = crypto.hash_djb2("hello")
+h2: u64 = crypto.hash_fnv1a("hello")
+
+# XOR stream cipher — call twice to decrypt
+buf: [16]u8 = undef
+# ... fill buf ...
+crypto.xor_encrypt(&buf[0], 16, "secretkey")
+
+# SHA-256 — returns a 32-byte heap buffer
+digest: *u8 = crypto.sha256(data_ptr, data_len)
+
+# SHA-256 as a lowercase hex string (64 characters)
+hex: str = crypto.sha256_hex(data_ptr, data_len)
+```
+
+| Function | Signature | Description |
+|---|---|---|
+| `hash_djb2(s)` | `fn(str) -> u64` | djb2 non-crypto hash |
+| `hash_fnv1a(s)` | `fn(str) -> u64` | FNV-1a 64-bit non-crypto hash |
+| `xor_encrypt(data, len, key)` | `fn(*u8, usize, str)` | XOR stream cipher in-place |
+| `sha256(data, len)` | `fn(*u8, usize) -> *u8` | SHA-256 digest (32 bytes, heap) |
+| `sha256_hex(data, len)` | `fn(*u8, usize) -> str` | SHA-256 as 64-char hex string |
+
+## `std/collections`
+
+A growable array of `i64` values.
+
 ## `std/atomic`
 
 Atomic integer types for lock-free programming.

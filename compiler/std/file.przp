@@ -1,0 +1,79 @@
+# std/file — high-level file utilities (path-based, no open handle required)
+
+extern fn fopen(path: *u8, mode: *u8) -> *u8
+extern fn fclose(f: *u8) -> i32
+extern fn fread(buf: *u8, size: usize, n: usize, f: *u8) -> usize
+extern fn fwrite(buf: *u8, size: usize, n: usize, f: *u8) -> usize
+extern fn fseek(f: *u8, off: i64, whence: i32) -> i32
+extern fn ftell(f: *u8) -> i64
+extern fn rewind(f: *u8)
+extern fn remove(path: *u8) -> i32
+extern fn rename(old: *u8, new_: *u8) -> i32
+extern fn access(path: *u8, mode: i32) -> i32
+extern fn malloc(n: usize) -> *u8
+extern fn memcpy(dst: *u8, src: *u8, n: usize) -> *u8
+
+SEEK_END: i32 = 2
+
+# exists: return true if the file exists and is accessible
+fn exists(path: str) -> bool {
+    ret access(path.data, 0) == 0
+}
+
+# size: return byte size of file at path, or -1 on error
+fn size(path: str) -> i64 {
+    f: *u8 = fopen(path.data, "rb")
+    if f == null { ret -1 }
+    fseek(f, 0, SEEK_END)
+    sz: i64 = ftell(f)
+    fclose(f)
+    ret sz
+}
+
+# read_all: read entire file into a heap-allocated null-terminated string
+fn read_all(path: str) -> str {
+    f: *u8 = fopen(path.data, "rb")
+    if f == null { ret @str_raw(path.data, 0) }
+    fseek(f, 0, SEEK_END)
+    sz: i64 = ftell(f)
+    rewind(f)
+    if sz <= 0 {
+        fclose(f)
+        ret @str_raw(path.data, 0)
+    }
+    n: usize = @usize(sz)
+    buf: *u8 = malloc(n + 1)
+    read: usize = fread(buf, 1, n, f)
+    fclose(f)
+    term: *u8 = buf + read
+    term.* = 0u8
+    ret @str_raw(buf, read)
+}
+
+# write_all: write content to path (creates or overwrites), return true on success
+fn write_all(path: str, content: str) -> bool {
+    f: *u8 = fopen(path.data, "wb")
+    if f == null { ret false }
+    fwrite(content.data, 1, content.len, f)
+    fclose(f)
+    ret true
+}
+
+# append: append content to path (creates if missing), return true on success
+fn append(path: str, content: str) -> bool {
+    f: *u8 = fopen(path.data, "ab")
+    if f == null { ret false }
+    fwrite(content.data, 1, content.len, f)
+    fclose(f)
+    ret true
+}
+
+# remove_file: delete the file at path, return true on success
+fn remove_file(path: str) -> bool {
+    ret remove(path.data) == 0
+}
+
+# rename_file: rename or move a file, return true on success
+fn rename_file(old: str, new_path: str) -> bool {
+    ret rename(old.data, new_path.data) == 0
+}

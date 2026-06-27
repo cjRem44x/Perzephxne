@@ -1,0 +1,263 @@
+# std/crypto — hashing and symmetric encryption
+#
+# hash_djb2    — fast non-crypto hash (good for hash tables)
+# hash_fnv1a   — fast non-crypto hash (better distribution)
+# xor_encrypt  — XOR stream cipher (in-place; call twice to decrypt)
+# sha256       — SHA-256 cryptographic hash (returns 32-byte digest)
+
+extern fn malloc(n: usize) -> *u8
+extern fn memcpy(dst: *u8, src: *u8, n: usize) -> *u8
+
+# ── Non-cryptographic hashes ──────────────────────────────────────────────────
+
+# hash_djb2: djb2 hash of s; fast, decent distribution
+fn hash_djb2(s: str) -> u64 {
+    h: u64 = 5381
+    i: usize = 0
+    while i < s.len {
+        c: u64 = @u64((s.data + i).*)
+        h = ((h << 5) + h) + c
+        i = i + 1
+    }
+    ret h
+}
+
+# hash_fnv1a: FNV-1a 64-bit hash; better avalanche than djb2
+fn hash_fnv1a(s: str) -> u64 {
+    h: u64 = 0xcbf29ce484222325
+    prime: u64 = 0x100000001b3
+    i: usize = 0
+    while i < s.len {
+        c: u64 = @u64((s.data + i).*)
+        h = h ^ c
+        h = h * prime
+        i = i + 1
+    }
+    ret h
+}
+
+# ── XOR stream cipher ─────────────────────────────────────────────────────────
+
+# xor_encrypt: XOR each byte of data with the cycling key bytes.
+# Call with the same key to decrypt. Not cryptographically secure on its own —
+# use with a hashed/expanded key for better security.
+fn xor_encrypt(data: *u8, len: usize, key: str) {
+    if key.len == 0 { ret }
+    i: usize = 0
+    while i < len {
+        p: *u8 = data + i
+        k: u8 = (key.data + (i % key.len)).*
+        p.* = p.* ^ k
+        i = i + 1
+    }
+}
+
+# ── SHA-256 ───────────────────────────────────────────────────────────────────
+
+fn rotr32(x: u32, n: u32) -> u32 {
+    ret (x >> n) | (x << (32 - n))
+}
+
+fn sha256_load_be(p: *u8) -> u32 {
+    b0: u32 = @u32(p.*)
+    b1: u32 = @u32((p + 1).*)
+    b2: u32 = @u32((p + 2).*)
+    b3: u32 = @u32((p + 3).*)
+    ret (b0 << 24) | (b1 << 16) | (b2 << 8) | b3
+}
+
+fn sha256_store_be(p: *u8, v: u32) {
+    p.* = @u8(v >> 24)
+    p1: *u8 = p + 1
+    p1.* = @u8(v >> 16)
+    p2: *u8 = p + 2
+    p2.* = @u8(v >> 8)
+    p3: *u8 = p + 3
+    p3.* = @u8(v)
+}
+
+fn sha256_compress(state: *u32, block: *u8) {
+    # Round constants
+    k0:  u32 = 0x428a2f98   k1:  u32 = 0x71374491
+    k2:  u32 = 0xb5c0fbcf   k3:  u32 = 0xe9b5dba5
+    k4:  u32 = 0x3956c25b   k5:  u32 = 0x59f111f1
+    k6:  u32 = 0x923f82a4   k7:  u32 = 0xab1c5ed5
+    k8:  u32 = 0xd807aa98   k9:  u32 = 0x12835b01
+    k10: u32 = 0x243185be   k11: u32 = 0x550c7dc3
+    k12: u32 = 0x72be5d74   k13: u32 = 0x80deb1fe
+    k14: u32 = 0x9bdc06a7   k15: u32 = 0xc19bf174
+    k16: u32 = 0xe49b69c1   k17: u32 = 0xefbe4786
+    k18: u32 = 0x0fc19dc6   k19: u32 = 0x240ca1cc
+    k20: u32 = 0x2de92c6f   k21: u32 = 0x4a7484aa
+    k22: u32 = 0x5cb0a9dc   k23: u32 = 0x76f988da
+    k24: u32 = 0x983e5152   k25: u32 = 0xa831c66d
+    k26: u32 = 0xb00327c8   k27: u32 = 0xbf597fc7
+    k28: u32 = 0xc6e00bf3   k29: u32 = 0xd5a79147
+    k30: u32 = 0x06ca6351   k31: u32 = 0x14292967
+    k32: u32 = 0x27b70a85   k33: u32 = 0x2e1b2138
+    k34: u32 = 0x4d2c6dfc   k35: u32 = 0x53380d13
+    k36: u32 = 0x650a7354   k37: u32 = 0x766a0abb
+    k38: u32 = 0x81c2c92e   k39: u32 = 0x92722c85
+    k40: u32 = 0xa2bfe8a1   k41: u32 = 0xa81a664b
+    k42: u32 = 0xc24b8b70   k43: u32 = 0xc76c51a3
+    k44: u32 = 0xd192e819   k45: u32 = 0xd6990624
+    k46: u32 = 0xf40e3585   k47: u32 = 0x106aa070
+    k48: u32 = 0x19a4c116   k49: u32 = 0x1e376c08
+    k50: u32 = 0x2748774c   k51: u32 = 0x34b0bcb5
+    k52: u32 = 0x391c0cb3   k53: u32 = 0x4ed8aa4a
+    k54: u32 = 0x5b9cca4f   k55: u32 = 0x682e6ff3
+    k56: u32 = 0x748f82ee   k57: u32 = 0x78a5636f
+    k58: u32 = 0x84c87814   k59: u32 = 0x8cc70208
+    k60: u32 = 0x90befffa   k61: u32 = 0xa4506ceb
+    k62: u32 = 0xbef9a3f7   k63: u32 = 0xc67178f2
+
+    # Message schedule w[0..63]
+    w: [64]u32 = undef
+
+    i: usize = 0
+    while i < 16 {
+        p: *u32 = &w[i]
+        p.* = sha256_load_be(block + i * 4)
+        i = i + 1
+    }
+    while i < 64 {
+        w0: u32 = w[i - 15]
+        w1: u32 = w[i - 2]
+        s0: u32 = rotr32(w0, 7)  ^ rotr32(w0, 18) ^ (w0 >> 3)
+        s1: u32 = rotr32(w1, 17) ^ rotr32(w1, 19) ^ (w1 >> 10)
+        p: *u32 = &w[i]
+        p.* = w[i - 16] + s0 + w[i - 7] + s1
+        i = i + 1
+    }
+
+    # Working variables
+    a: u32 = (state + 0).*   b: u32 = (state + 1).*
+    c: u32 = (state + 2).*   d: u32 = (state + 3).*
+    e: u32 = (state + 4).*   f: u32 = (state + 5).*
+    g: u32 = (state + 6).*   h: u32 = (state + 7).*
+
+    # 64 rounds
+    k: [64]u32 = [
+        k0,  k1,  k2,  k3,  k4,  k5,  k6,  k7,
+        k8,  k9,  k10, k11, k12, k13, k14, k15,
+        k16, k17, k18, k19, k20, k21, k22, k23,
+        k24, k25, k26, k27, k28, k29, k30, k31,
+        k32, k33, k34, k35, k36, k37, k38, k39,
+        k40, k41, k42, k43, k44, k45, k46, k47,
+        k48, k49, k50, k51, k52, k53, k54, k55,
+        k56, k57, k58, k59, k60, k61, k62, k63
+    ]
+
+    i = 0
+    while i < 64 {
+        S1: u32 = rotr32(e, 6) ^ rotr32(e, 11) ^ rotr32(e, 25)
+        ch: u32 = (e & f) ^ (~e & g)
+        temp1: u32 = h + S1 + ch + k[i] + w[i]
+        S0: u32 = rotr32(a, 2) ^ rotr32(a, 13) ^ rotr32(a, 22)
+        maj: u32 = (a & b) ^ (a & c) ^ (b & c)
+        temp2: u32 = S0 + maj
+
+        h = g
+        g = f
+        f = e
+        e = d + temp1
+        d = c
+        c = b
+        b = a
+        a = temp1 + temp2
+        i = i + 1
+    }
+
+    s0: *u32 = state + 0   s0.* = s0.* + a
+    s1: *u32 = state + 1   s1.* = s1.* + b
+    s2: *u32 = state + 2   s2.* = s2.* + c
+    s3: *u32 = state + 3   s3.* = s3.* + d
+    s4: *u32 = state + 4   s4.* = s4.* + e
+    s5: *u32 = state + 5   s5.* = s5.* + f
+    s6: *u32 = state + 6   s6.* = s6.* + g
+    s7: *u32 = state + 7   s7.* = s7.* + h
+}
+
+# sha256: compute SHA-256 digest of data, return 32-byte heap buffer
+fn sha256(data: *u8, len: usize) -> *u8 {
+    # Initial hash values (first 32 bits of fractional parts of sqrt of first 8 primes)
+    state: [8]u32 = [
+        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
+        0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19
+    ]
+
+    # Process all complete 64-byte blocks
+    i: usize = 0
+    while i + 64 <= len {
+        sha256_compress(&state[0], data + i)
+        i = i + 64
+    }
+
+    # Build padded final block(s)
+    buf: [128]u8 = undef
+    j: usize = 0
+    while j < 128 {
+        p: *u8 = &buf[j]
+        p.* = 0u8
+        j = j + 1
+    }
+    remaining: usize = len - i
+    j = 0
+    while j < remaining {
+        dp: *u8 = &buf[j]
+        dp.* = (data + i + j).*
+        j = j + 1
+    }
+    # append 0x80 bit
+    pad_p: *u8 = &buf[remaining]
+    pad_p.* = 0x80u8
+
+    # append bit-length as big-endian u64 at end of block
+    bit_len: u64 = @u64(len) * 8
+    # if padding doesn't fit in one block, use two blocks
+    blocks: usize = 1
+    if remaining >= 56 { blocks = 2 }
+    off: usize = blocks * 64 - 8
+    k: usize = 0
+    while k < 8 {
+        pp: *u8 = &buf[off + k]
+        pp.* = @u8(bit_len >> @u64((7 - k) * 8))
+        k = k + 1
+    }
+
+    sha256_compress(&state[0], &buf[0])
+    if blocks == 2 {
+        sha256_compress(&state[0], &buf[64])
+    }
+
+    # Write digest as big-endian bytes
+    digest: *u8 = malloc(32)
+    m: usize = 0
+    while m < 8 {
+        sha256_store_be(digest + m * 4, (& state[m]).*)
+        m = m + 1
+    }
+    ret digest
+}
+
+# sha256_hex: return SHA-256 digest as a 64-character hex string
+fn sha256_hex(data: *u8, len: usize) -> str {
+    digest: *u8 = sha256(data, len)
+    hex: *u8 = malloc(65)
+    nibbles: [16]u8 = [
+        0x30u8, 0x31u8, 0x32u8, 0x33u8, 0x34u8, 0x35u8, 0x36u8, 0x37u8,
+        0x38u8, 0x39u8, 0x61u8, 0x62u8, 0x63u8, 0x64u8, 0x65u8, 0x66u8
+    ]
+    i: usize = 0
+    while i < 32 {
+        b: u8 = (digest + i).*
+        hp: *u8 = hex + i * 2
+        hp.* = nibbles[@usize(b >> 4)]
+        hp1: *u8 = hp + 1
+        hp1.* = nibbles[@usize(b & 0x0fu8)]
+        i = i + 1
+    }
+    term: *u8 = hex + 64
+    term.* = 0u8
+    ret @str_raw(hex, 64)
+}

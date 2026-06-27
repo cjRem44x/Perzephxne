@@ -261,6 +261,17 @@ static const char *llvm_type(Type *ty) {
             snprintf(fbufs[fbi], sizeof(fbufs[fbi]), "{ %s, i32 }", llvm_type(ty->ptr.inner));
             return fbufs[fbi];
         }
+        case TY_ARRAY: {
+            static char abufs[4][64];
+            static int  abi = 0;
+            abi = (abi + 1) % 4;
+            int64_t n = 0;
+            if (ty->array.size && ty->array.size->kind == EXPR_INT)
+                n = (int64_t)ty->array.size->ival;
+            const char *elem = ty->array.inner ? llvm_type(ty->array.inner) : "i8";
+            snprintf(abufs[abi], sizeof(abufs[abi]), "[%" PRId64 " x %s]", n, elem);
+            return abufs[abi];
+        }
         case TY_NAMED: {
             /* Round-robin static buffers — safe for up to 8 concurrent uses */
             static char bufs[8][128];
@@ -497,7 +508,9 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
             if (!sym)
                 fatal_at(e->span, "undefined identifier '%s'", e->ident.name);
             if (out_ty) *out_ty = sym->ty;
-            /* Struct values: return alloca ptr (no load). Enums/scalars: load. */
+            /* Struct/array values: return alloca ptr (no load). Enums/scalars: load. */
+            if (sym->ty && sym->ty->kind == TY_ARRAY)
+                return val_str(sym->llvm_name);
             if (sym->ty && sym->ty->kind == TY_NAMED && !find_enum(cg, sym->ty->named.name))
                 return val_str(sym->llvm_name);
             int t = new_tmp(cg);
@@ -1103,6 +1116,108 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                 return val_tmp(fb);
             }
 
+            /* @rng_seed(n) — seed the RNG */
+            if (!strcmp(name, "rng_seed")) {
+                Type *st = NULL;
+                Val sv = cg_expr(cg, e->builtin.args.data[0], &st);
+                int sc = new_tmp(cg);
+                emit(cg, "  %%t%d = trunc i64 %s to i32\n", sc, sv.buf);
+                emit(cg, "  call void @srand(i32 %%t%d)\n", sc);
+                if (out_ty) { Type *vt = ARENA_NEW(cg->arena, Type); vt->kind = TY_VOID; *out_ty = vt; }
+                return val_str("0");
+            }
+
+            /* @rng(T, min, max) — inclusive random number in [min, max] */
+            if (!strcmp(name, "rng")) {
+                if (e->builtin.args.len < 3)
+                    fatal_at(e->span, "@rng requires 3 arguments: @rng(T, min, max)");
+                Type *rng_ty = e->builtin.args.data[0]->ty;
+                if (!rng_ty) fatal_at(e->span, "@rng first argument must be a type");
+                if (out_ty) *out_ty = rng_ty;
+                const char *llt = llvm_type(rng_ty);
+
+                Type *min_ty = NULL, *max_ty = NULL;
+                Val minv = cg_expr(cg, e->builtin.args.data[1], &min_ty);
+                Val maxv = cg_expr(cg, e->builtin.args.data[2], &max_ty);
+
+                int rand_t = new_tmp(cg);
+                emit(cg, "  %%t%d = call i32 @rand()\n", rand_t);
+                int result = new_tmp(cg);
+
+                if (type_is_float(rng_ty)) {
+                    /* float: min + (rand / RAND_MAX) * (max - min) */
+                    const char *flt = (rng_ty->kind == TY_F32) ? "float" : "double";
+                    /* widen min to target float type */
+                    int min_f = new_tmp(cg), max_f = new_tmp(cg);
+                    if (min_ty && type_is_float(min_ty)) {
+                        if (rng_ty->kind == TY_F64 && min_ty->kind == TY_F32)
+                            emit(cg, "  %%t%d = fpext float %s to double\n", min_f, minv.buf);
+                        else if (rng_ty->kind == TY_F32 && min_ty->kind == TY_F64)
+                            emit(cg, "  %%t%d = fptrunc double %s to float\n", min_f, minv.buf);
+                        else { emit(cg, "  %%t%d = fadd %s %s, 0.0\n", min_f, flt, minv.buf); }
+                    } else {
+                        const char *op = (min_ty && type_is_signed(min_ty)) ? "sitofp" : "uitofp";
+                        const char *sl = min_ty ? llvm_type(min_ty) : "i64";
+                        emit(cg, "  %%t%d = %s %s %s to %s\n", min_f, op, sl, minv.buf, flt);
+                    }
+                    if (max_ty && type_is_float(max_ty)) {
+                        if (rng_ty->kind == TY_F64 && max_ty->kind == TY_F32)
+                            emit(cg, "  %%t%d = fpext float %s to double\n", max_f, maxv.buf);
+                        else if (rng_ty->kind == TY_F32 && max_ty->kind == TY_F64)
+                            emit(cg, "  %%t%d = fptrunc double %s to float\n", max_f, maxv.buf);
+                        else { emit(cg, "  %%t%d = fadd %s %s, 0.0\n", max_f, flt, maxv.buf); }
+                    } else {
+                        const char *op = (max_ty && type_is_signed(max_ty)) ? "sitofp" : "uitofp";
+                        const char *sl = max_ty ? llvm_type(max_ty) : "i64";
+                        emit(cg, "  %%t%d = %s %s %s to %s\n", max_f, op, sl, maxv.buf, flt);
+                    }
+                    /* normalize rand to [0.0, 1.0] */
+                    int rf = new_tmp(cg), rn = new_tmp(cg);
+                    emit(cg, "  %%t%d = sitofp i32 %%t%d to %s\n", rf, rand_t, flt);
+                    emit(cg, "  %%t%d = fdiv %s %%t%d, 2.147483647e+09\n", rn, flt, rf);
+                    /* range = max - min */
+                    int rng_range = new_tmp(cg), scaled = new_tmp(cg);
+                    emit(cg, "  %%t%d = fsub %s %%t%d, %%t%d\n", rng_range, flt, max_f, min_f);
+                    emit(cg, "  %%t%d = fmul %s %%t%d, %%t%d\n", scaled, flt, rn, rng_range);
+                    emit(cg, "  %%t%d = fadd %s %%t%d, %%t%d\n", result, flt, min_f, scaled);
+                } else {
+                    /* integer: min + rand % (max - min + 1) as i64 */
+                    int r64 = new_tmp(cg);
+                    emit(cg, "  %%t%d = zext i32 %%t%d to i64\n", r64, rand_t);
+                    /* widen min/max to i64 */
+                    const char *minllt = min_ty ? llvm_type(min_ty) : "i64";
+                    const char *maxllt = max_ty ? llvm_type(max_ty) : "i64";
+                    int min64 = new_tmp(cg), max64 = new_tmp(cg);
+                    if (!strcmp(minllt, "i64")) {
+                        emit(cg, "  %%t%d = add i64 %s, 0\n", min64, minv.buf);
+                    } else {
+                        const char *op = (min_ty && type_is_signed(min_ty)) ? "sext" : "zext";
+                        emit(cg, "  %%t%d = %s %s %s to i64\n", min64, op, minllt, minv.buf);
+                    }
+                    if (!strcmp(maxllt, "i64")) {
+                        emit(cg, "  %%t%d = add i64 %s, 0\n", max64, maxv.buf);
+                    } else {
+                        const char *op = (max_ty && type_is_signed(max_ty)) ? "sext" : "zext";
+                        emit(cg, "  %%t%d = %s %s %s to i64\n", max64, op, maxllt, maxv.buf);
+                    }
+                    /* range = max - min + 1 (ensure positive) */
+                    int rng_range = new_tmp(cg), rng_range1 = new_tmp(cg);
+                    emit(cg, "  %%t%d = sub i64 %%t%d, %%t%d\n", rng_range, max64, min64);
+                    emit(cg, "  %%t%d = add i64 %%t%d, 1\n", rng_range1, rng_range);
+                    /* rmod = r64 % range */
+                    int rmod = new_tmp(cg), rsum = new_tmp(cg);
+                    emit(cg, "  %%t%d = urem i64 %%t%d, %%t%d\n", rmod, r64, rng_range1);
+                    emit(cg, "  %%t%d = add i64 %%t%d, %%t%d\n", rsum, min64, rmod);
+                    /* truncate to target type */
+                    if (!strcmp(llt, "i64")) {
+                        result = rsum;
+                    } else {
+                        emit(cg, "  %%t%d = trunc i64 %%t%d to %s\n", result, rsum, llt);
+                    }
+                }
+                return val_tmp(result);
+            }
+
             /* @size(T) — compile-time sizeof via GEP-from-null trick */
             if (!strcmp(name, "size")) {
                 if (out_ty) {
@@ -1543,6 +1658,7 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                 else if (!strcmp(dst,"u16"))   INT_CAST("i16",16);
                 else if (!strcmp(dst,"u32"))   INT_CAST("i32",32);
                 else if (!strcmp(dst,"u64"))   INT_CAST("i64",64);
+                else if (!strcmp(dst,"usize")) INT_CAST("i64",64);
                 #undef INT_CAST
                 else if (!strcmp(dst,"f32")) {
                     if (type_is_float(src_ty))
@@ -1617,10 +1733,35 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                     return val_tmp(t2);
                 }
             }
-            const char *llt = ty ? llvm_type(ty) : "i32";
+            /* pick dominant integer type: widen i32 literal to match wider typed operand */
+            Type *op_ty = ty;
+            if (lt && rt && lt->kind != TY_PTR && rt->kind != TY_PTR) {
+                const char *lllt = llvm_type(lt), *rllt = llvm_type(rt);
+                int lw = 0, rw = 0;
+                if (!strcmp(lllt,"i8"))  lw=8; else if (!strcmp(lllt,"i16")) lw=16;
+                else if (!strcmp(lllt,"i32")) lw=32; else if (!strcmp(lllt,"i64")) lw=64;
+                if (!strcmp(rllt,"i8"))  rw=8; else if (!strcmp(rllt,"i16")) rw=16;
+                else if (!strcmp(rllt,"i32")) rw=32; else if (!strcmp(rllt,"i64")) rw=64;
+                if (lw && rw && lw != rw) {
+                    /* widen narrower operand */
+                    if (lw < rw) {
+                        int ext = new_tmp(cg);
+                        emit(cg, "  %%t%d = %sext %s %s to %s\n",
+                             ext, type_is_signed(lt)?"s":"z", lllt, l.buf, rllt);
+                        l = val_tmp(ext);
+                        op_ty = rt;
+                    } else {
+                        int ext = new_tmp(cg);
+                        emit(cg, "  %%t%d = %sext %s %s to %s\n",
+                             ext, type_is_signed(rt)?"s":"z", rllt, r.buf, lllt);
+                        r = val_tmp(ext);
+                    }
+                }
+            }
+            const char *llt = op_ty ? llvm_type(op_ty) : "i32";
             int t = new_tmp(cg);
-            int is_flt = type_is_float(ty);
-            int is_sgn = type_is_signed(ty);
+            int is_flt = type_is_float(op_ty);
+            int is_sgn = type_is_signed(op_ty);
 
             switch (e->binop.op) {
                 case BINOP_ADD: emit(cg, "  %%t%d = %s %s %s, %s\n", t, is_flt?"fadd":"add", llt, l.buf, r.buf); break;
@@ -1657,11 +1798,34 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                 case UNOP_BITNOT: emit(cg, "  %%t%d = xor %s %s, -1\n", t, llt, o.buf); break;
                 case UNOP_ADDROF: {
                     /* &var must return the alloca pointer, not a loaded value.
-                       For struct types cg_expr already returns the alloca ptr.
-                       For scalar types we need to bypass the load and get the alloca. */
+                       For struct/array types cg_expr already returns the alloca ptr.
+                       For scalar types we need to bypass the load and get the alloca.
+                       For &arr[i] we want the GEP ptr, not the loaded element. */
                     if (e->unop.operand->kind == EXPR_IDENT) {
                         Symbol *sym = lookup(cg, e->unop.operand->ident.name);
                         if (sym) return val_str(sym->llvm_name);
+                    }
+                    if (e->unop.operand->kind == EXPR_INDEX) {
+                        /* recompute element address without the load */
+                        Expr *ie = e->unop.operand;
+                        Type *at2 = NULL;
+                        Val arr2 = cg_expr(cg, ie->index.arr, &at2);
+                        Val idx2 = cg_expr(cg, ie->index.idx, NULL);
+                        const char *elem_llt2 = "i8";
+                        const char *data_buf2 = arr2.buf;
+                        if (at2 && at2->kind == TY_SLICE) {
+                            int dp2 = new_tmp(cg);
+                            emit(cg, "  %%t%d = extractvalue { ptr, i64 } %s, 0\n", dp2, arr2.buf);
+                            char tb2[32]; snprintf(tb2, sizeof(tb2), "%%t%d", dp2);
+                            data_buf2 = arena_strdup(cg->arena, tb2);
+                            if (at2->ptr.inner) elem_llt2 = llvm_type(at2->ptr.inner);
+                        } else if (at2 && at2->kind == TY_ARRAY && at2->array.inner) {
+                            elem_llt2 = llvm_type(at2->array.inner);
+                        }
+                        int ep2 = new_tmp(cg);
+                        emit(cg, "  %%t%d = getelementptr %s, ptr %s, i64 %s\n",
+                             ep2, elem_llt2, data_buf2, idx2.buf);
+                        return val_tmp(ep2);
                     }
                     return val_str(o.buf);
                 }
@@ -2272,7 +2436,7 @@ static void cg_stmt(CG *cg, Stmt *s) {
                         case TY_BOOL: zero = "false"; break;
                         case TY_F16: case TY_F32: case TY_F64: zero = "0.0"; break;
                         case TY_PTR: case TY_SMART_PTR: zero = "null"; break;
-                        case TY_STR: case TY_SLICE: case TY_NAMED:
+                        case TY_STR: case TY_SLICE: case TY_NAMED: case TY_ARRAY:
                             zero = "zeroinitializer"; break;
                         default: zero = "0"; break;
                     }
@@ -2300,7 +2464,58 @@ static void cg_stmt(CG *cg, Stmt *s) {
                     int is_rc_copy = init_ty && init_ty->kind == TY_SMART_PTR
                                      && s->let.init->kind == EXPR_IDENT;
                     if (is_rc_copy) emit_rc_inc(cg, init.buf);
-                    if (is_struct && init_is_ptr) {
+                    if (init_ty && init_ty->kind == TY_ARRAY) {
+                        /* array init: EXPR_ARRAY_LIT returns alloca ptr.
+                           When declared element type differs from literal element type
+                           (e.g. [4]u8 = [10u8,...] where literal has i32 elements),
+                           do per-element GEP+load+trunc/ext+store to avoid size mismatch. */
+                        Type *decl_ty2 = s->let.ty;
+                        const char *src_elem_llt = (init_ty->array.inner)
+                                                   ? llvm_type(init_ty->array.inner) : "i32";
+                        const char *dst_elem_llt = (decl_ty2 && decl_ty2->kind == TY_ARRAY
+                                                    && decl_ty2->array.inner)
+                                                   ? llvm_type(decl_ty2->array.inner)
+                                                   : src_elem_llt;
+                        if (strcmp(src_elem_llt, dst_elem_llt) != 0
+                                && s->let.init->kind == EXPR_ARRAY_LIT) {
+                            size_t n_elems = s->let.init->array_lit.len;
+                            int sw2=0, dw2=0;
+                            if (!strcmp(src_elem_llt,"i8"))  sw2=8;
+                            else if (!strcmp(src_elem_llt,"i16")) sw2=16;
+                            else if (!strcmp(src_elem_llt,"i32")) sw2=32;
+                            else if (!strcmp(src_elem_llt,"i64")) sw2=64;
+                            if (!strcmp(dst_elem_llt,"i8"))  dw2=8;
+                            else if (!strcmp(dst_elem_llt,"i16")) dw2=16;
+                            else if (!strcmp(dst_elem_llt,"i32")) dw2=32;
+                            else if (!strcmp(dst_elem_llt,"i64")) dw2=64;
+                            const char *cast_op2 = (dw2 < sw2) ? "trunc"
+                                : (init_ty->array.inner && type_is_signed(init_ty->array.inner)
+                                   ? "sext" : "zext");
+                            for (size_t jj = 0; jj < n_elems; jj++) {
+                                int sp2 = new_tmp(cg);
+                                emit(cg, "  %%t%d = getelementptr [%zu x %s], ptr %s, i32 0, i32 %zu\n",
+                                     sp2, n_elems, src_elem_llt, init.buf, jj);
+                                int sv2 = new_tmp(cg);
+                                emit(cg, "  %%t%d = load %s, ptr %%t%d\n", sv2, src_elem_llt, sp2);
+                                int cv2 = sv2;
+                                if (sw2 && dw2 && sw2 != dw2) {
+                                    cv2 = new_tmp(cg);
+                                    emit(cg, "  %%t%d = %s %s %%t%d to %s\n",
+                                         cv2, cast_op2, src_elem_llt, sv2, dst_elem_llt);
+                                }
+                                int dp2 = new_tmp(cg);
+                                emit(cg, "  %%t%d = getelementptr [%zu x %s], ptr %%t%d, i32 0, i32 %zu\n",
+                                     dp2, n_elems, dst_elem_llt, alloca, jj);
+                                emit(cg, "  store %s %%t%d, ptr %%t%d\n", dst_elem_llt, cv2, dp2);
+                            }
+                        } else {
+                            /* same element type: simple aggregate load+store */
+                            const char *arr_llt = llvm_type(init_ty);
+                            int loaded = new_tmp(cg);
+                            emit(cg, "  %%t%d = load %s, ptr %s\n", loaded, arr_llt, init.buf);
+                            emit(cg, "  store %s %%t%d, ptr %%t%d\n", arr_llt, loaded, alloca);
+                        }
+                    } else if (is_struct && init_is_ptr) {
                         /* struct init returns a ptr — copy via load+store */
                         int loaded = new_tmp(cg);
                         emit(cg, "  %%t%d = load %s, ptr %s\n", loaded, llvm_type(init_ty), init.buf);
@@ -3092,7 +3307,9 @@ static void cg_fn(CG *cg, Item *item) {
 
 /* Names declared in the preamble — skip re-declaration from extern fn */
 static const char *g_preamble_decls[] = {
-    "printf", "fprintf", "sprintf", "atoi", "strlen",
+    "printf", "fprintf", "sprintf",
+    "atoi", "atol", "atof", "strtol", "strtod",
+    "strcmp", "strlen", "rand", "srand",
     "malloc", "realloc", "free", "exit", "fgets",
     NULL
 };
@@ -3271,6 +3488,8 @@ int codegen(Module *mod, FILE *out, int release) {
     emit(&cg, "declare double @strtod(ptr, ptr)\n");
     emit(&cg, "declare i32 @strcmp(ptr, ptr)\n");
     emit(&cg, "declare i64 @strlen(ptr)\n");
+    emit(&cg, "declare i32 @rand()\n");
+    emit(&cg, "declare void @srand(i32)\n");
     emit(&cg, "declare ptr @malloc(i64)\n");
     emit(&cg, "declare ptr @realloc(ptr, i64)\n");
     emit(&cg, "declare void @free(ptr)\n");
