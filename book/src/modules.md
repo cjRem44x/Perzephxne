@@ -5,76 +5,59 @@ A module is a source file. There are no header files and no separate declaration
 ## Importing
 
 ```
-import "std/io"
-import "std/mem"
-import "mylib/math"
+import(io = "std/io")
+import(io = "std/io", math = "std/math")
 ```
 
-Imports are resolved relative to the project root, or to the standard library path for `"std/*"` imports.
+Each entry is `alias = "path"`. The alias is the namespace prefix used to access the module's symbols. Multiple modules can be imported in a single statement with a comma-separated list.
+
+Paths starting with `"std/"` resolve against the standard library. Everything else resolves relative to the importing file's directory.
 
 ## Using Symbols
 
-After importing, use the module's name as a namespace prefix:
+After importing, use the alias as a namespace prefix:
 
 ```
-import "std/io"
+import(io = "std/io")
 
-io.print("hello\n")
-fd: io.File = io.open("data.txt")
+fn main() {
+    io.println("hello")
+}
 ```
 
-## Aliasing an Import
+## Multiple Imports
 
 ```
-import "mylib/very_long_name" as vln
+import(io = "std/io", math = "std/math", os = "std/os")
 
-vln.do_thing()
-```
-
-## Selective Import
-
-```
-import "std/math" { sqrt, PI }
-
-r: f64 = sqrt(9.0)
-@pf("{PI}\n")
+fn main() {
+    r: f64 = math.sqrt(2.0)
+    io.println(@str(r))
+}
 ```
 
 ## Module Layout
 
+Source files within the same project are visible by default. Layout follows the filesystem:
+
 ```
 MyProject/
   src/
-    main.przp       # import "src/util" resolves to this file
-    util.przp
+    main.przp
+    util.przp          # import(u = "util") or import(u = "src/util")
     net/
-      http.przp     # import "src/net/http"
+      http.przp        # import(http = "net/http")
+  przp.toml
 ```
 
 ## Visibility
 
 All top-level declarations are visible within a project by default.
 
-Mark symbols `private` to restrict access to the declaring file:
+Mark a symbol `private` to restrict it to the declaring file:
 
 ```
 private fn internal_helper() { ... }
-```
-
-Private symbols are not accessible from other files.
-
-## External Libraries
-
-```
-@link("mylib")        # links libmylib.a / libmylib.so
-import "mylib/core"
-```
-
-Or in `przp.toml`:
-
-```toml
-[dependencies]
-mylib = { path = "../mylib" }
 ```
 
 ## Standard Library Modules
@@ -82,9 +65,7 @@ mylib = { path = "../mylib" }
 | Module | Contents |
 |---|---|
 | `std/io` | print, file I/O, stdin |
-| `std/mem` | alloc, free, memcpy, memset |
 | `std/str` | string operations |
-| `std/math` | sqrt, sin, cos, etc. |
-| `std/os` | env, args, exit, paths |
-| `std/box` | `Box[T]`, `Rc[T]`, `Weak[T]` |
-| `std/fmt` | string formatting |
+| `std/math` | sqrt, trig, constants |
+| `std/os` | env, args, paths |
+| `std/collections` | dynamic arrays, maps |

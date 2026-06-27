@@ -15,7 +15,7 @@ fn rdtsc() -> u64 {
     lo: u32 = undef
     hi: u32 = undef
     @asm("rdtsc", "=a,=d", &lo, &hi)
-    ret @u64(lo) | (@u64(hi) << 32)
+    ret @u64(lo) | (@u64(hi) << 32u64)
 }
 ```
 

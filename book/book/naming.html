@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-aaa7ce02.js";
+            window.path_to_searchindex_js = "searchindex-c7c4a1ff.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-d2cdd05f.js"></script>
@@ -194,7 +194,7 @@
 <tr><td>Enum variants</td><td><code>PascalCase</code></td><td><code>Direction.North</code></td></tr>
 <tr><td>Type aliases</td><td><code>PascalCase</code></td><td><code>type Byte = u8</code></td></tr>
 <tr><td>Type parameters</td><td>single uppercase letter or <code>PascalCase</code></td><td><code>T</code>, <code>Key</code>, <code>Val</code></td></tr>
-<tr><td>Module names</td><td><code>snake_case</code></td><td><code>import "std/io"</code></td></tr>
+<tr><td>Module names</td><td><code>snake_case</code></td><td><code>import(io = "std/io")</code></td></tr>
 <tr><td>File names</td><td><code>snake_case.przp</code></td><td><code>http_client.przp</code></td></tr>
 </tbody>
 </table>
@@ -241,12 +241,11 @@ parse_URL: fn(str) -&gt; URL
 URL: str = "..."
 </code></pre>
 <h2 id="module-aliases"><a class="header" href="#module-aliases">Module Aliases</a></h2>
-<p>When a module name is long or conflicts with a local name, alias it with a short, obvious prefix:</p>
-<pre><code>import "mylib/geometry" as geo
-import "std/fmt" as fmt
+<p>When a module name is long or conflicts with a local name, choose a short alias in the import:</p>
+<pre><code>import(geo = "mylib/geometry", m = "std/math")
 
 p: geo.Point = geo.Point{.x=0.0, .y=0.0}
-s: str = fmt.sprintf("{p.x}, {p.y}")
+r: f64 = m.sqrt(2.0)
 </code></pre>
 
                     </main>

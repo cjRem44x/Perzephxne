@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-aaa7ce02.js";
+            window.path_to_searchindex_js = "searchindex-c7c4a1ff.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-d2cdd05f.js"></script>
@@ -466,7 +466,7 @@ x = x + 1    # wraps to 0 — defined
 </code></pre>
 <p>Use <code>@checked_*</code> to detect overflow in any build mode:</p>
 <pre><code>result, err: !i32 = @checked_add(a, b)
-if err != @err.ok { @panic("overflow") }
+if err != 0 { @panic("overflow") }
 </code></pre>
 <h2 id="special-values"><a class="header" href="#special-values">Special Values</a></h2>
 <div class="table-wrapper">
@@ -569,30 +569,6 @@ fn find[T](s: []T, pred: fn(T) -&gt; bool) -&gt; Option[T] {
     ret Option[T].None
 }
 </code></pre>
-<h2 id="constraints"><a class="header" href="#constraints">Constraints</a></h2>
-<p>Use <code>where</code> to restrict what types are accepted:</p>
-<pre><code>fn print_all[T](items: []T) where T: @Display {
-    for x =&gt; items { @pf("{x}\n") }
-}
-</code></pre>
-<p>Built-in constraint traits:</p>
-<div class="table-wrapper">
-<table>
-<thead>
-<tr><th>Constraint</th><th>Meaning</th></tr>
-</thead>
-<tbody>
-<tr><td><code>@Display</code></td><td>type can be formatted with <code>@pf</code></td></tr>
-<tr><td><code>@Eq</code></td><td>type supports <code>==</code> and <code>!=</code></td></tr>
-<tr><td><code>@Ord</code></td><td>type supports <code>&lt;</code>, <code>&gt;</code>, <code>&lt;=</code>, <code>&gt;=</code></td></tr>
-<tr><td><code>@Copy</code></td><td>type is trivially copyable (all primitives)</td></tr>
-<tr><td><code>@Zero</code></td><td>type has a zero value</td></tr>
-</tbody>
-</table>
-</div>
-<p>Multiple constraints use <code>+</code>:</p>
-<pre><code>fn clamp[T](v: T, lo: T, hi: T) -&gt; T where T: @Ord + @Copy { ... }
-</code></pre>
 <h2 id="monomorphization"><a class="header" href="#monomorphization">Monomorphization</a></h2>
 <p>Generics are compiled to concrete, specialized versions at the call site — the same approach as C++ templates, with no runtime overhead.</p>
 <div style="break-before: page; page-break-before: always;"></div>
@@ -628,20 +604,17 @@ q, r: i32 = divmod(17, 5)
 }
 </code></pre>
 <h2 id="failable-functions"><a class="header" href="#failable-functions">Failable Functions</a></h2>
-<p>Use <code>!T</code> to indicate the function might return an error:</p>
-<pre><code>fn parse_int(s: str) -&gt; !i32 {
-    # returns an error value on failure
+<p>Use <code>!T</code> as the return type to indicate the function might return an error. Return <code>@ok(val)</code> on success or <code>@err(code)</code> on failure:</p>
+<pre><code>fn parse_port(s: str) -&gt; !i32 {
+    val, err: !i32 = @i32(s)
+    if err != 0 { ret @err(1) }
+    if val &lt; 1 || val &gt; 65535 { ret @err(2) }
+    ret @ok(val)
 }
-
-n: !i32 = parse_int("abc")
-if n == @err { @pf("parse failed\n") }
 </code></pre>
-<p>Use the <code>?</code> operator to propagate errors up:</p>
-<pre><code>fn load_config() -&gt; !Config {
-    text: str    = read_file("config.toml")?
-    parsed: Config = parse_toml(text)?
-    ret parsed
-}
+<p>Callers destructure the result:</p>
+<pre><code>port, err: !i32 = parse_port("8080")
+if err != 0 { @pf("invalid port (err=%d)\n", err) }
 </code></pre>
 <h2 id="entry-point"><a class="header" href="#entry-point">Entry Point</a></h2>
 <pre><code>fn main() {
@@ -820,16 +793,18 @@ when s {
 <h1 id="defer"><a class="header" href="#defer">Defer</a></h1>
 <p><code>defer</code> pushes a statement onto a LIFO stack that runs when the enclosing scope exits — whether by <code>ret</code>, <code>break</code>, <code>continue</code>, or falling off the end.</p>
 <h2 id="basic-usage"><a class="header" href="#basic-usage">Basic Usage</a></h2>
-<pre><code>fn read_file(path: str) -&gt; !str {
-    fd: i32 = open(path)?
-    defer close(fd)           # runs when the function returns
+<pre><code>import(io = "std/io")
 
-    buf: [4096]u8 = undef
-    n: isize = read(fd, &amp;buf[0], @sizeof(buf))
-    ret str{.data=&amp;buf[0], .len=@usize(n)}
+fn process_file(path: str) {
+    f: *u8 = io.open(path, "r")
+    if f == null { ret }
+    defer io.close(f)    # runs when the function returns
+
+    line: str = io.read_line(f)
+    @pf("{line}\n")
 }
 </code></pre>
-<p><code>close(fd)</code> runs after the <code>ret</code> — the file is always closed.</p>
+<p><code>io.close(f)</code> runs after the <code>ret</code> — the file is always closed.</p>
 <h2 id="ordering"><a class="header" href="#ordering">Ordering</a></h2>
 <p>Multiple defers run in <strong>reverse</strong> (last-in, first-out) order:</p>
 <pre><code>defer @pf("1\n")
@@ -1098,36 +1073,15 @@ if p != null {
 }
 </code></pre>
 <h2 id="allocation"><a class="header" href="#allocation">Allocation</a></h2>
-<pre><code>import "std/mem"
-
-p: *i32  = mem.alloc(i32)
+<p>Use <code>@new(T)</code> to heap-allocate a single value:</p>
+<pre><code>p: *i32 = @new(i32)
 p.* = 42
 # ...
-mem.free(p)
+@free(p)
 </code></pre>
-<p>Array allocation:</p>
-<pre><code>buf: *u8 = mem.alloc_n(u8, 1024)
-defer mem.free(buf)
-</code></pre>
-<h2 id="smart-pointers"><a class="header" href="#smart-pointers">Smart Pointers</a></h2>
-<p>The standard library provides smart pointers that free automatically:</p>
-<div class="table-wrapper">
-<table>
-<thead>
-<tr><th>Type</th><th>Description</th></tr>
-</thead>
-<tbody>
-<tr><td><code>Box[T]</code></td><td>unique ownership — frees on scope exit</td></tr>
-<tr><td><code>Rc[T]</code></td><td>shared ownership — frees when last reference drops</td></tr>
-<tr><td><code>Weak[T]</code></td><td>non-owning reference to <code>Rc[T]</code></td></tr>
-</tbody>
-</table>
-</div>
-<pre><code>import "std/box"
-
-b: Box[i32] = Box.new(42)
-@pf("{b.get().*}\n")
-# freed at end of scope
+<p>For raw byte buffers use <code>@alo</code> (allocate) and <code>@free</code>:</p>
+<pre><code>buf: *u8 = @alo(1024)
+defer @free(buf)
 </code></pre>
 <h2 id="stack-allocation"><a class="header" href="#stack-allocation">Stack Allocation</a></h2>
 <p>Prefer stack allocation when the lifetime is bounded to a scope:</p>
@@ -1153,14 +1107,9 @@ p: *u8 = &amp;buf[0]
 <pre><code>p: *i32 = &amp;x
 pb: *u8 = @bitcast(*u8, p)   # reinterpret pointer type
 </code></pre>
-<h2 id="sizeof-and-alignof"><a class="header" href="#sizeof-and-alignof"><code>@sizeof</code> and <code>@alignof</code></a></h2>
-<pre><code>sz: usize  = @sizeof(i32)    # 4
-al: usize  = @alignof(f64)   # 8
-</code></pre>
-<h2 id="ptrof-and-addrof"><a class="header" href="#ptrof-and-addrof"><code>@ptrof</code> and <code>@addrof</code></a></h2>
-<pre><code>fn my_fn() {}
-fp: fn() = @ptrof(my_fn)    # function pointer from name
-addr: usize = @addrof(my_fn)
+<h2 id="size-and-align"><a class="header" href="#size-and-align"><code>@size</code> and <code>@align</code></a></h2>
+<pre><code>sz: usize  = @size(i32)    # 4
+al: usize  = @align(f64)   # 8
 </code></pre>
 <h2 id="common-patterns"><a class="header" href="#common-patterns">Common Patterns</a></h2>
 <p><strong>Out-parameter:</strong></p>
@@ -1191,52 +1140,42 @@ type WindowHandle = *SDL_Window
 <h1 id="error-handling"><a class="header" href="#error-handling">Error Handling</a></h1>
 <p>Errors in Perzephxne are values — not exceptions. There are no <code>try/catch</code> blocks.</p>
 <h2 id="failable-return-type-t"><a class="header" href="#failable-return-type-t">Failable Return Type <code>!T</code></a></h2>
-<p>A function that can fail returns <code>!T</code>. The <code>!</code> wrapper holds either a success value of type <code>T</code> or an error.</p>
-<pre><code>fn open_file(path: str) -&gt; !str { ... }
-</code></pre>
-<h2 id="checking-for-errors"><a class="header" href="#checking-for-errors">Checking for Errors</a></h2>
-<pre><code>result: !str = open_file("data.txt")
-
-if result == @err {
-    @pf("failed: {result.err_msg}\n")
-} else {
-    @pf("{result}\n")
-}
-</code></pre>
-<h2 id="the--propagation-operator"><a class="header" href="#the--propagation-operator">The <code>?</code> Propagation Operator</a></h2>
-<p><code>?</code> unwraps a <code>!T</code> result — on error it immediately returns the error to the caller.</p>
-<pre><code>fn load() -&gt; !Config {
-    text: str    = read_file("cfg.toml")?
-    cfg:  Config = parse_toml(text)?
-    ret cfg
-}
-</code></pre>
-<p>Equivalent to:</p>
-<pre><code>fn load() -&gt; !Config {
-    text_r: !str = read_file("cfg.toml")
-    if text_r == @err { ret text_r.err }
-    text: str = text_r
-
-    cfg_r: !Config = parse_toml(text)
-    if cfg_r == @err { ret cfg_r.err }
-    ret cfg_r
-}
-</code></pre>
-<h2 id="returning-an-error"><a class="header" href="#returning-an-error">Returning an Error</a></h2>
+<p>A function that can fail returns <code>!T</code>. The caller receives a struct of <code>{ value: T, err: i32 }</code>. A zero error code means success; non-zero means failure.</p>
 <pre><code>fn divide(a: i32, b: i32) -&gt; !i32 {
-    if b == 0 { ret @err("division by zero") }
-    ret a / b
+    if b == 0 { ret @err(1) }
+    ret @ok(a / b)
 }
 </code></pre>
-<h2 id="custom-error-types"><a class="header" href="#custom-error-types">Custom Error Types</a></h2>
-<p>Define your own error enum and use it as the payload:</p>
-<pre><code>enum IoError {
-    NotFound,
-    PermissionDenied,
-    UnexpectedEof,
+<h2 id="returning-success-or-failure"><a class="header" href="#returning-success-or-failure">Returning Success or Failure</a></h2>
+<p>Use <code>@ok(val)</code> to return a successful value and <code>@err(code)</code> to return an error:</p>
+<pre><code>fn parse_port(s: str) -&gt; !i32 {
+    val, err: !i32 = @i32(s)
+    if err != 0 { ret @err(1) }          # not a number
+    if val &lt; 1 || val &gt; 65535 { ret @err(2) }
+    ret @ok(val)
 }
-
-fn read(path: str) -&gt; !str | IoError { ... }
+</code></pre>
+<h2 id="checking-the-result"><a class="header" href="#checking-the-result">Checking the Result</a></h2>
+<p>Use failable destructuring to separate the value and error flag:</p>
+<pre><code>port, err: !i32 = parse_port("8080")
+if err != 0 {
+    @pf("bad port (err=%d)\n", err)
+} else {
+    @pf("listening on %d\n", port)
+}
+</code></pre>
+<p>When you only care about the value and want to ignore errors, assign to a plain type — the value field is extracted automatically (zero on failure):</p>
+<pre><code>n: i32 = parse_port("8080")   # err flag discarded
+</code></pre>
+<h2 id="checked-arithmetic"><a class="header" href="#checked-arithmetic">Checked Arithmetic</a></h2>
+<p><code>@checked_add</code>, <code>@checked_sub</code>, and <code>@checked_mul</code> return <code>!T</code> with the overflow flag as the error:</p>
+<pre><code>val, err: !i32 = @checked_add(x, y)
+if err != 0 { @panic("integer overflow") }
+</code></pre>
+<h2 id="string-to-number-casts"><a class="header" href="#string-to-number-casts">String-to-Number Casts</a></h2>
+<p>All <code>@T(str)</code> casts return <code>!T</code> — error is 1 if the string isn’t a valid number:</p>
+<pre><code>val, err: !i64 = @i64("9876543210")    # val=9876543210 err=0
+bad, err2: !f64 = @f64("hello")        # bad=0.0        err2=1
 </code></pre>
 <h2 id="panics"><a class="header" href="#panics">Panics</a></h2>
 <p>For unrecoverable situations, use <code>@panic</code>:</p>
@@ -1245,12 +1184,11 @@ fn read(path: str) -&gt; !str | IoError { ... }
     ret s[i]
 }
 </code></pre>
-<p><code>@panic</code> prints the message and the call stack, then terminates the process immediately.</p>
-<p>Panics are <strong>not</strong> for expected error conditions — use <code>!T</code> for those.</p>
+<p><code>@panic</code> prints the message and terminates the process immediately. Panics are <strong>not</strong> for expected error conditions — use <code>!T</code> for those.</p>
 <h2 id="assert"><a class="header" href="#assert"><code>@assert</code></a></h2>
 <pre><code>@assert(x &gt; 0, "x must be positive")
 </code></pre>
-<p>Active in debug builds; stripped in release builds. Use for invariants you know hold but want verified during development.</p>
+<p>Active in debug builds; stripped in release. Use for invariants you know hold but want verified during development.</p>
 <h2 id="unreachable"><a class="header" href="#unreachable"><code>@unreachable</code></a></h2>
 <p>Mark code paths that should never execute:</p>
 <pre><code>when color {
@@ -1260,55 +1198,46 @@ fn read(path: str) -&gt; !str | IoError { ... }
     _           =&gt; @unreachable(),
 }
 </code></pre>
-<p>In debug builds <code>@unreachable()</code> panics if reached. In release it is a hint to the optimizer (undefined behavior if reached).</p>
+<p>In debug builds <code>@unreachable()</code> panics if reached. In release it is a hint to the optimizer.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="modules"><a class="header" href="#modules">Modules</a></h1>
 <p>A module is a source file. There are no header files and no separate declaration step.</p>
 <h2 id="importing"><a class="header" href="#importing">Importing</a></h2>
-<pre><code>import "std/io"
-import "std/mem"
-import "mylib/math"
+<pre><code>import(io = "std/io")
+import(io = "std/io", math = "std/math")
 </code></pre>
-<p>Imports are resolved relative to the project root, or to the standard library path for <code>"std/*"</code> imports.</p>
+<p>Each entry is <code>alias = "path"</code>. The alias is the namespace prefix used to access the module’s symbols. Multiple modules can be imported in a single statement with a comma-separated list.</p>
+<p>Paths starting with <code>"std/"</code> resolve against the standard library. Everything else resolves relative to the importing file’s directory.</p>
 <h2 id="using-symbols"><a class="header" href="#using-symbols">Using Symbols</a></h2>
-<p>After importing, use the module’s name as a namespace prefix:</p>
-<pre><code>import "std/io"
+<p>After importing, use the alias as a namespace prefix:</p>
+<pre><code>import(io = "std/io")
 
-io.print("hello\n")
-fd: io.File = io.open("data.txt")
+fn main() {
+    io.println("hello")
+}
 </code></pre>
-<h2 id="aliasing-an-import"><a class="header" href="#aliasing-an-import">Aliasing an Import</a></h2>
-<pre><code>import "mylib/very_long_name" as vln
+<h2 id="multiple-imports"><a class="header" href="#multiple-imports">Multiple Imports</a></h2>
+<pre><code>import(io = "std/io", math = "std/math", os = "std/os")
 
-vln.do_thing()
-</code></pre>
-<h2 id="selective-import"><a class="header" href="#selective-import">Selective Import</a></h2>
-<pre><code>import "std/math" { sqrt, PI }
-
-r: f64 = sqrt(9.0)
-@pf("{PI}\n")
+fn main() {
+    r: f64 = math.sqrt(2.0)
+    io.println(@str(r))
+}
 </code></pre>
 <h2 id="module-layout"><a class="header" href="#module-layout">Module Layout</a></h2>
+<p>Source files within the same project are visible by default. Layout follows the filesystem:</p>
 <pre><code>MyProject/
   src/
-    main.przp       # import "src/util" resolves to this file
-    util.przp
+    main.przp
+    util.przp          # import(u = "util") or import(u = "src/util")
     net/
-      http.przp     # import "src/net/http"
+      http.przp        # import(http = "net/http")
+  przp.toml
 </code></pre>
 <h2 id="visibility"><a class="header" href="#visibility">Visibility</a></h2>
 <p>All top-level declarations are visible within a project by default.</p>
-<p>Mark symbols <code>private</code> to restrict access to the declaring file:</p>
+<p>Mark a symbol <code>private</code> to restrict it to the declaring file:</p>
 <pre><code>private fn internal_helper() { ... }
-</code></pre>
-<p>Private symbols are not accessible from other files.</p>
-<h2 id="external-libraries"><a class="header" href="#external-libraries">External Libraries</a></h2>
-<pre><code>@link("mylib")        # links libmylib.a / libmylib.so
-import "mylib/core"
-</code></pre>
-<p>Or in <code>przp.toml</code>:</p>
-<pre><code class="language-toml">[dependencies]
-mylib = { path = "../mylib" }
 </code></pre>
 <h2 id="standard-library-modules"><a class="header" href="#standard-library-modules">Standard Library Modules</a></h2>
 <div class="table-wrapper">
@@ -1318,67 +1247,63 @@ mylib = { path = "../mylib" }
 </thead>
 <tbody>
 <tr><td><code>std/io</code></td><td>print, file I/O, stdin</td></tr>
-<tr><td><code>std/mem</code></td><td>alloc, free, memcpy, memset</td></tr>
 <tr><td><code>std/str</code></td><td>string operations</td></tr>
-<tr><td><code>std/math</code></td><td>sqrt, sin, cos, etc.</td></tr>
-<tr><td><code>std/os</code></td><td>env, args, exit, paths</td></tr>
-<tr><td><code>std/box</code></td><td><code>Box[T]</code>, <code>Rc[T]</code>, <code>Weak[T]</code></td></tr>
-<tr><td><code>std/fmt</code></td><td>string formatting</td></tr>
+<tr><td><code>std/math</code></td><td>sqrt, trig, constants</td></tr>
+<tr><td><code>std/os</code></td><td>env, args, paths</td></tr>
+<tr><td><code>std/collections</code></td><td>dynamic arrays, maps</td></tr>
 </tbody>
 </table>
 </div>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="platform-detection"><a class="header" href="#platform-detection">Platform Detection</a></h1>
-<p>Perzephxne provides compile-time builtins for conditional compilation based on the target platform.</p>
+<p>Perzephxne provides compile-time boolean builtins for conditional compilation based on the target platform. Dead branches are removed by the compiler — no runtime overhead.</p>
 <h2 id="os-detection"><a class="header" href="#os-detection">OS Detection</a></h2>
 <pre><code>if @os.linux   { @pf("linux\n") }
-if @os.macos   { @pf("macos\n") }
+if @os.mac     { @pf("macOS\n") }
 if @os.windows { @pf("windows\n") }
-if @os.freebsd { @pf("freebsd\n") }
 </code></pre>
-<p>These are compile-time constants (<code>bool</code>). The dead branch is removed by the compiler — no runtime overhead.</p>
 <h2 id="architecture-detection"><a class="header" href="#architecture-detection">Architecture Detection</a></h2>
-<pre><code>if @arch.x86_64  { @pf("64-bit x86\n") }
-if @arch.aarch64 { @pf("arm64\n") }
-if @arch.riscv64 { @pf("riscv64\n") }
-if @arch.wasm32  { @pf("wasm\n") }
-</code></pre>
-<h2 id="platform-specific-code-blocks"><a class="header" href="#platform-specific-code-blocks">Platform-Specific Code Blocks</a></h2>
-<p>Large blocks of platform-specific code can use <code>when</code> for clarity:</p>
-<pre><code>when @os {
-    .linux   =&gt; { use_epoll() },
-    .macos   =&gt; { use_kqueue() },
-    .windows =&gt; { use_iocp() },
-    _        =&gt; { use_select() },
-}
+<pre><code>if @arch.x86_64 { @pf("64-bit x86\n") }
+if @arch.arm64  { @pf("AArch64\n") }
+if @arch.x86    { @pf("32-bit x86\n") }
+if @arch.arm    { @pf("32-bit ARM\n") }
 </code></pre>
 <h2 id="build-mode"><a class="header" href="#build-mode">Build Mode</a></h2>
 <pre><code>if @debug   { validate_all() }
 if @release { fast_path() }
 </code></pre>
-<h2 id="endianness"><a class="header" href="#endianness">Endianness</a></h2>
-<pre><code>if @endian.little { @pf("little-endian\n") }
-if @endian.big    { @pf("big-endian\n") }
-</code></pre>
-<h2 id="pointer-width"><a class="header" href="#pointer-width">Pointer Width</a></h2>
-<pre><code>sz: usize = @ptr_width   # 4 or 8
-</code></pre>
-<h2 id="conditional-import"><a class="header" href="#conditional-import">Conditional Import</a></h2>
-<pre><code>if @os.linux {
-    import "std/linux/epoll"
-} else {
-    import "std/posix/select"
+<h2 id="combining-conditions"><a class="header" href="#combining-conditions">Combining Conditions</a></h2>
+<pre><code>fn init_network() {
+    if @os.linux {
+        setup_epoll()
+    }
+    if @os.mac {
+        setup_kqueue()
+    }
+    if @os.windows {
+        setup_iocp()
+    }
 }
 </code></pre>
-<h2 id="feature-flags"><a class="header" href="#feature-flags">Feature Flags</a></h2>
-<p>Define custom feature flags in <code>przp.toml</code> and query them at compile time:</p>
-<pre><code class="language-toml">[features]
-logging = true
-</code></pre>
-<pre><code>if @feature.logging {
-    log("request received")
-}
-</code></pre>
+<h2 id="compile-time-constants-reference"><a class="header" href="#compile-time-constants-reference">Compile-Time Constants Reference</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Builtin</th><th>Type</th><th>True when</th></tr>
+</thead>
+<tbody>
+<tr><td><code>@os.linux</code></td><td><code>bool</code></td><td>target is Linux</td></tr>
+<tr><td><code>@os.mac</code></td><td><code>bool</code></td><td>target is macOS</td></tr>
+<tr><td><code>@os.windows</code></td><td><code>bool</code></td><td>target is Windows</td></tr>
+<tr><td><code>@arch.x86_64</code></td><td><code>bool</code></td><td>target is x86-64</td></tr>
+<tr><td><code>@arch.arm64</code></td><td><code>bool</code></td><td>target is AArch64</td></tr>
+<tr><td><code>@arch.x86</code></td><td><code>bool</code></td><td>target is 32-bit x86</td></tr>
+<tr><td><code>@arch.arm</code></td><td><code>bool</code></td><td>target is 32-bit ARM</td></tr>
+<tr><td><code>@debug</code></td><td><code>bool</code></td><td>compiled without <code>--release</code></td></tr>
+<tr><td><code>@release</code></td><td><code>bool</code></td><td>compiled with <code>--release</code></td></tr>
+</tbody>
+</table>
+</div>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="inline-assembly"><a class="header" href="#inline-assembly">Inline Assembly</a></h1>
 <p>Inline assembly lets you embed target-specific instructions directly in a function body. The syntax mirrors LLVM’s inline assembly format.</p>
@@ -1390,7 +1315,7 @@ logging = true
     lo: u32 = undef
     hi: u32 = undef
     @asm("rdtsc", "=a,=d", &amp;lo, &amp;hi)
-    ret @u64(lo) | (@u64(hi) &lt;&lt; 32)
+    ret @u64(lo) | (@u64(hi) &lt;&lt; 32u64)
 }
 </code></pre>
 <h2 id="example--atomic-fence"><a class="header" href="#example--atomic-fence">Example — Atomic Fence</a></h2>
@@ -1398,7 +1323,7 @@ logging = true
     @asm("mfence", "", )
 }
 </code></pre>
-<h2 id="constraints-1"><a class="header" href="#constraints-1">Constraints</a></h2>
+<h2 id="constraints"><a class="header" href="#constraints">Constraints</a></h2>
 <p>Constraints follow AT&amp;T/GCC notation:</p>
 <div class="table-wrapper">
 <table>
@@ -1478,21 +1403,16 @@ fn handle_request() {
 }
 </code></pre>
 <h2 id="thread-safety"><a class="header" href="#thread-safety">Thread Safety</a></h2>
-<p>Global variables are <strong>not</strong> automatically thread-safe. For shared mutable state across threads, use <code>std/atomic</code> or protect with a mutex from <code>std/sync</code>.</p>
-<pre><code>import "std/atomic"
-
-active_threads: atomic.U32 = atomic.U32.new(0)
-</code></pre>
+<p>Global variables are <strong>not</strong> automatically thread-safe. Concurrent access to mutable globals requires external synchronization.</p>
 <h2 id="extern-globals"><a class="header" href="#extern-globals">Extern Globals</a></h2>
 <p>To reference a global defined in C or another object file:</p>
 <pre><code>extern count: i32
 extern name:  *u8
 </code></pre>
-<h2 id="args-and-argc"><a class="header" href="#args-and-argc"><code>@args</code> and <code>@argc</code></a></h2>
-<p>The program’s command-line arguments are available via builtins — no global declaration needed:</p>
+<h2 id="args"><a class="header" href="#args"><code>@args</code></a></h2>
+<p>The program’s command-line arguments are available via a builtin — no global declaration needed:</p>
 <pre><code>fn main() {
     args: []str = @args      # slice of all arguments including argv[0]
-    n: usize    = @argc      # argument count
     @pf("program: {args[0]}\n")
 }
 </code></pre>
@@ -1660,7 +1580,7 @@ bits: u32 = @bitcast(u32, f)   # raw bit pattern — 0x3F800000
 </tbody>
 </table>
 </div>
-<h2 id="checked-arithmetic"><a class="header" href="#checked-arithmetic">Checked Arithmetic</a></h2>
+<h2 id="checked-arithmetic-1"><a class="header" href="#checked-arithmetic-1">Checked Arithmetic</a></h2>
 <p>These return <code>!T</code> — use failable destructure to check for overflow:</p>
 <div class="table-wrapper">
 <table>
@@ -1694,122 +1614,150 @@ if err != 0 { @panic("integer overflow") }
 </div>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="standard-library"><a class="header" href="#standard-library">Standard Library</a></h1>
-<p>The standard library is organized into modules under the <code>std/</code> prefix.</p>
+<p>The standard library lives under <code>std/</code>. Import with <code>import(alias = "std/module")</code>.</p>
 <h2 id="stdio"><a class="header" href="#stdio"><code>std/io</code></a></h2>
-<p>File I/O and printing.</p>
-<pre><code>import "std/io"
+<p>File I/O via libc. Open files are raw <code>*u8</code> handles (libc <code>FILE *</code>).</p>
+<pre><code>import(io = "std/io")
 
-io.print("hello\n")
+f: *u8 = io.open("data.txt", "r")
+if f == null { @panic("open failed") }
+defer io.close(f)
 
-f: !io.File = io.open("data.txt", io.READ)
-defer f.close()
+line: str = io.read_line(f)
+@pf("{line}\n")
 
-buf: [1024]u8 = undef
-n: usize = f.read(&amp;buf[0], @sizeof(buf))
+io.write_str(f, "hello\n")
+sz: i64 = io.file_size(f)
 </code></pre>
-<p>Key types and functions:</p>
 <div class="table-wrapper">
 <table>
 <thead>
-<tr><th>Name</th><th>Description</th></tr>
+<tr><th>Function</th><th>Description</th></tr>
 </thead>
 <tbody>
-<tr><td><code>io.File</code></td><td>file handle</td></tr>
-<tr><td><code>io.open(path, mode)</code></td><td>open a file</td></tr>
-<tr><td><code>io.stdin</code></td><td>standard input</td></tr>
-<tr><td><code>io.stdout</code></td><td>standard output</td></tr>
-<tr><td><code>io.stderr</code></td><td>standard error</td></tr>
-<tr><td><code>io.print(s)</code></td><td>write string to stdout</td></tr>
-<tr><td><code>io.read_line()</code></td><td>read a line from stdin</td></tr>
+<tr><td><code>io.open(path, mode)</code></td><td>open a file (<code>"r"</code>, <code>"w"</code>, <code>"a"</code>, etc.) — <code>null</code> on failure</td></tr>
+<tr><td><code>io.close(f)</code></td><td>close the file handle</td></tr>
+<tr><td><code>io.write_str(f, s)</code></td><td>write a <code>str</code> to a file</td></tr>
+<tr><td><code>io.read_line(f)</code></td><td>read one line (heap-allocated)</td></tr>
+<tr><td><code>io.file_size(f)</code></td><td>byte size of an open file</td></tr>
 </tbody>
 </table>
 </div>
-<h2 id="stdmem"><a class="header" href="#stdmem"><code>std/mem</code></a></h2>
-<p>Memory allocation.</p>
-<pre><code>import "std/mem"
-
-p: *i32 = mem.alloc(i32)
-p.* = 42
-mem.free(p)
-
-buf: []u8 = mem.alloc_slice(u8, 1024)
-defer mem.free_slice(buf)
-
-mem.copy(dst, src, n)
-mem.set(dst, 0, n)
-</code></pre>
+<p>Constants: <code>io.SEEK_SET</code>, <code>io.SEEK_CUR</code>, <code>io.SEEK_END</code></p>
 <h2 id="stdstr"><a class="header" href="#stdstr"><code>std/str</code></a></h2>
-<p>String operations.</p>
-<pre><code>import "std/str"
+<p>String operations. Functions that return new strings allocate on the heap.</p>
+<pre><code>import(s = "std/str")
 
-s: str = "hello world"
-upper: str    = str.upper(s)
-parts: []str  = str.split(s, " ")
-joined: str   = str.join(parts, ", ")
-idx: !usize   = str.find(s, "world")
-has: bool     = str.contains(s, "hello")
-trimmed: str  = str.trim(s)
+greeting: str = "Hello, World!"
+upper: str  = s.to_upper(greeting)
+lower: str  = s.to_lower(greeting)
+trimmed: str = s.trim("  hi  ")
+idx: usize   = s.find(greeting, "World")  # returns s.len if not found
+ok: bool     = s.contains(greeting, "Hello")
+pfx: bool    = s.starts_with(greeting, "Hello")
+sfx: bool    = s.ends_with(greeting, "!")
+cat: str     = s.concat("foo", "bar")
+sub: str     = s.slice(greeting, 7, 12)   # "World"
+rep: str     = s.repeat("ab", 3)          # "ababab"
+eq:  bool    = s.eq("abc", "abc")
 </code></pre>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Function</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>s.len(s)</code></td><td>string length</td></tr>
+<tr><td><code>s.eq(a, b)</code></td><td>equality check</td></tr>
+<tr><td><code>s.concat(a, b)</code></td><td>concatenate two strings</td></tr>
+<tr><td><code>s.slice(s, start, end)</code></td><td>substring view (exclusive end)</td></tr>
+<tr><td><code>s.find(s, sub)</code></td><td>byte offset of first match, or <code>s.len</code></td></tr>
+<tr><td><code>s.contains(s, sub)</code></td><td>true if sub appears anywhere</td></tr>
+<tr><td><code>s.starts_with(s, pfx)</code></td><td>prefix check</td></tr>
+<tr><td><code>s.ends_with(s, sfx)</code></td><td>suffix check</td></tr>
+<tr><td><code>s.to_upper(s)</code></td><td>ASCII uppercase copy</td></tr>
+<tr><td><code>s.to_lower(s)</code></td><td>ASCII lowercase copy</td></tr>
+<tr><td><code>s.trim(s)</code></td><td>strip leading/trailing whitespace</td></tr>
+<tr><td><code>s.repeat(s, n)</code></td><td>repeat string n times</td></tr>
+</tbody>
+</table>
+</div>
 <h2 id="stdmath"><a class="header" href="#stdmath"><code>std/math</code></a></h2>
-<p>Mathematical functions.</p>
-<pre><code>import "std/math"
+<p>Mathematical functions via libm.</p>
+<pre><code>import(math = "std/math")
 
-y: f64 = math.sin(math.PI / 2.0)
+y: f64 = math.sin(math.PI / 2.0)    # 1.0
 z: f64 = math.sqrt(2.0)
-r: f64 = math.pow(2.0, 10.0)
-n: i32 = math.abs(-5)
+r: f64 = math.pow(2.0, 10.0)        # 1024.0
+n: i32 = math.abs_i32(-5)           # 5
+c: f64 = math.clamp_f64(1.5, 0.0, 1.0)  # 1.0
 </code></pre>
-<p>Constants: <code>math.PI</code>, <code>math.E</code>, <code>math.TAU</code>, <code>math.INF</code>, <code>math.NAN</code></p>
+<p>Constants: <code>math.PI</code>, <code>math.E</code></p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Function</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>math.sqrt(x)</code></td><td>square root</td></tr>
+<tr><td><code>math.pow(base, exp)</code></td><td>power</td></tr>
+<tr><td><code>math.log(x)</code></td><td>natural logarithm</td></tr>
+<tr><td><code>math.sin(x)</code>, <code>math.cos(x)</code>, <code>math.tan(x)</code></td><td>trig</td></tr>
+<tr><td><code>math.atan2(y, x)</code></td><td>arc tangent</td></tr>
+<tr><td><code>math.floor(x)</code>, <code>math.ceil(x)</code>, <code>math.round(x)</code></td><td>rounding</td></tr>
+<tr><td><code>math.fmod(x, y)</code></td><td>floating-point remainder</td></tr>
+<tr><td><code>math.abs_i32(x)</code>, <code>math.abs_i64(x)</code></td><td>integer absolute value</td></tr>
+<tr><td><code>math.min_i32(a, b)</code>, <code>math.max_i32(a, b)</code></td><td>integer min/max</td></tr>
+<tr><td><code>math.min_i64(a, b)</code>, <code>math.max_i64(a, b)</code></td><td>i64 min/max</td></tr>
+<tr><td><code>math.clamp_i32(x, lo, hi)</code>, <code>math.clamp_f64(x, lo, hi)</code></td><td>clamp</td></tr>
+</tbody>
+</table>
+</div>
 <h2 id="stdos"><a class="header" href="#stdos"><code>std/os</code></a></h2>
-<p>Operating system interface.</p>
-<pre><code>import "std/os"
+<p>Process and environment operations.</p>
+<pre><code>import(os = "std/os")
 
-home: !str = os.env("HOME")
-os.exit(0)
-
-cwd: str = os.getcwd()
-os.chdir("/tmp")
-
-files: ![]str = os.listdir(".")
-exists: bool  = os.path_exists("./data")
+home: str = os.getenv_str("HOME")
+os.run("ls -la")
+os.quit(0)
 </code></pre>
-<h2 id="stdbox"><a class="header" href="#stdbox"><code>std/box</code></a></h2>
-<p>Smart pointers.</p>
-<pre><code>import "std/box"
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Function</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>os.getenv_str(name)</code></td><td>read environment variable (empty str if unset)</td></tr>
+<tr><td><code>os.run(cmd)</code></td><td>run a shell command, return exit status</td></tr>
+<tr><td><code>os.quit(code)</code></td><td>exit the process</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="stdcollections"><a class="header" href="#stdcollections"><code>std/collections</code></a></h2>
+<p>A growable array of <code>i64</code> values.</p>
+<pre><code>import(c = "std/collections")
 
-b: box.Box[i32] = box.Box.new(42)
-@pf("{b.get().*}\n")
-# freed when b goes out of scope
+v: c.Vec = c.Vec.new()
+c.Vec.push(&amp;v, 10)
+c.Vec.push(&amp;v, 20)
+c.Vec.push(&amp;v, 30)
 
-rc: box.Rc[str] = box.Rc.new("shared")
-rc2: box.Rc[str] = rc.clone()
-# freed when both rc and rc2 drop
+@pf("len=%d\n", v.len)
+c.Vec.free_vec(&amp;v)
 </code></pre>
-<h2 id="stdatomic"><a class="header" href="#stdatomic"><code>std/atomic</code></a></h2>
-<p>Atomic integer types for lock-free programming.</p>
-<pre><code>import "std/atomic"
-
-counter: atomic.I32 = atomic.I32.new(0)
-counter.fetch_add(1)
-v: i32 = counter.load()
-</code></pre>
-<h2 id="stdsync"><a class="header" href="#stdsync"><code>std/sync</code></a></h2>
-<p>Mutex, RwLock, and channels.</p>
-<pre><code>import "std/sync"
-
-mu: sync.Mutex = sync.Mutex.new()
-mu.lock()
-defer mu.unlock()
-# ... critical section ...
-</code></pre>
-<h2 id="stdfmt"><a class="header" href="#stdfmt"><code>std/fmt</code></a></h2>
-<p>String formatting without printing.</p>
-<pre><code>import "std/fmt"
-
-s: str = fmt.sprintf("x={} y={}", x, y)
-</code></pre>
-<h2 id="stdnet-planned"><a class="header" href="#stdnet-planned"><code>std/net</code> <em>(planned)</em></a></h2>
-<p>TCP/UDP sockets and HTTP client. Not yet implemented.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Method</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>Vec.new()</code></td><td>create empty Vec</td></tr>
+<tr><td><code>Vec.push(self, val)</code></td><td>append an i64 value</td></tr>
+<tr><td><code>Vec.get(self, i)</code></td><td>get element at index</td></tr>
+<tr><td><code>Vec.free_vec(self)</code></td><td>release heap memory</td></tr>
+</tbody>
+</table>
+</div>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="operator-precedence"><a class="header" href="#operator-precedence">Operator Precedence</a></h1>
 <p>Operators are listed from highest to lowest precedence.</p>
@@ -1884,7 +1832,7 @@ c: Vec2 = Vec2.add(a, b)    # not: a + b
 <tr><td>Enum variants</td><td><code>PascalCase</code></td><td><code>Direction.North</code></td></tr>
 <tr><td>Type aliases</td><td><code>PascalCase</code></td><td><code>type Byte = u8</code></td></tr>
 <tr><td>Type parameters</td><td>single uppercase letter or <code>PascalCase</code></td><td><code>T</code>, <code>Key</code>, <code>Val</code></td></tr>
-<tr><td>Module names</td><td><code>snake_case</code></td><td><code>import "std/io"</code></td></tr>
+<tr><td>Module names</td><td><code>snake_case</code></td><td><code>import(io = "std/io")</code></td></tr>
 <tr><td>File names</td><td><code>snake_case.przp</code></td><td><code>http_client.przp</code></td></tr>
 </tbody>
 </table>
@@ -1931,12 +1879,11 @@ parse_URL: fn(str) -&gt; URL
 URL: str = "..."
 </code></pre>
 <h2 id="module-aliases"><a class="header" href="#module-aliases">Module Aliases</a></h2>
-<p>When a module name is long or conflicts with a local name, alias it with a short, obvious prefix:</p>
-<pre><code>import "mylib/geometry" as geo
-import "std/fmt" as fmt
+<p>When a module name is long or conflicts with a local name, choose a short alias in the import:</p>
+<pre><code>import(geo = "mylib/geometry", m = "std/math")
 
 p: geo.Point = geo.Point{.x=0.0, .y=0.0}
-s: str = fmt.sprintf("{p.x}, {p.y}")
+r: f64 = m.sqrt(2.0)
 </code></pre>
 
                     </main>

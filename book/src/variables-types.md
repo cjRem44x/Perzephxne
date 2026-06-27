@@ -166,7 +166,7 @@ Use `@checked_*` to detect overflow in any build mode:
 
 ```
 result, err: !i32 = @checked_add(a, b)
-if err != @err.ok { @panic("overflow") }
+if err != 0 { @panic("overflow") }
 ```
 
 ## Special Values

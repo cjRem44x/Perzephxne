@@ -50,32 +50,6 @@ fn find[T](s: []T, pred: fn(T) -> bool) -> Option[T] {
 }
 ```
 
-## Constraints
-
-Use `where` to restrict what types are accepted:
-
-```
-fn print_all[T](items: []T) where T: @Display {
-    for x => items { @pf("{x}\n") }
-}
-```
-
-Built-in constraint traits:
-
-| Constraint | Meaning |
-|---|---|
-| `@Display` | type can be formatted with `@pf` |
-| `@Eq` | type supports `==` and `!=` |
-| `@Ord` | type supports `<`, `>`, `<=`, `>=` |
-| `@Copy` | type is trivially copyable (all primitives) |
-| `@Zero` | type has a zero value |
-
-Multiple constraints use `+`:
-
-```
-fn clamp[T](v: T, lo: T, hi: T) -> T where T: @Ord + @Copy { ... }
-```
-
 ## Monomorphization
 
 Generics are compiled to concrete, specialized versions at the call site — the same approach as C++ templates, with no runtime overhead.

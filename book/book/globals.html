@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-aaa7ce02.js";
+            window.path_to_searchindex_js = "searchindex-c7c4a1ff.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-d2cdd05f.js"></script>
@@ -212,21 +212,16 @@ fn handle_request() {
 }
 </code></pre>
 <h2 id="thread-safety"><a class="header" href="#thread-safety">Thread Safety</a></h2>
-<p>Global variables are <strong>not</strong> automatically thread-safe. For shared mutable state across threads, use <code>std/atomic</code> or protect with a mutex from <code>std/sync</code>.</p>
-<pre><code>import "std/atomic"
-
-active_threads: atomic.U32 = atomic.U32.new(0)
-</code></pre>
+<p>Global variables are <strong>not</strong> automatically thread-safe. Concurrent access to mutable globals requires external synchronization.</p>
 <h2 id="extern-globals"><a class="header" href="#extern-globals">Extern Globals</a></h2>
 <p>To reference a global defined in C or another object file:</p>
 <pre><code>extern count: i32
 extern name:  *u8
 </code></pre>
-<h2 id="args-and-argc"><a class="header" href="#args-and-argc"><code>@args</code> and <code>@argc</code></a></h2>
-<p>The program’s command-line arguments are available via builtins — no global declaration needed:</p>
+<h2 id="args"><a class="header" href="#args"><code>@args</code></a></h2>
+<p>The program’s command-line arguments are available via a builtin — no global declaration needed:</p>
 <pre><code>fn main() {
     args: []str = @args      # slice of all arguments including argv[0]
-    n: usize    = @argc      # argument count
     @pf("program: {args[0]}\n")
 }
 </code></pre>

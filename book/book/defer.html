@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-aaa7ce02.js";
+            window.path_to_searchindex_js = "searchindex-c7c4a1ff.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-d2cdd05f.js"></script>
@@ -180,16 +180,18 @@
                         <h1 id="defer"><a class="header" href="#defer">Defer</a></h1>
 <p><code>defer</code> pushes a statement onto a LIFO stack that runs when the enclosing scope exits — whether by <code>ret</code>, <code>break</code>, <code>continue</code>, or falling off the end.</p>
 <h2 id="basic-usage"><a class="header" href="#basic-usage">Basic Usage</a></h2>
-<pre><code>fn read_file(path: str) -&gt; !str {
-    fd: i32 = open(path)?
-    defer close(fd)           # runs when the function returns
+<pre><code>import(io = "std/io")
 
-    buf: [4096]u8 = undef
-    n: isize = read(fd, &amp;buf[0], @sizeof(buf))
-    ret str{.data=&amp;buf[0], .len=@usize(n)}
+fn process_file(path: str) {
+    f: *u8 = io.open(path, "r")
+    if f == null { ret }
+    defer io.close(f)    # runs when the function returns
+
+    line: str = io.read_line(f)
+    @pf("{line}\n")
 }
 </code></pre>
-<p><code>close(fd)</code> runs after the <code>ret</code> — the file is always closed.</p>
+<p><code>io.close(f)</code> runs after the <code>ret</code> — the file is always closed.</p>
 <h2 id="ordering"><a class="header" href="#ordering">Ordering</a></h2>
 <p>Multiple defers run in <strong>reverse</strong> (last-in, first-out) order:</p>
 <pre><code>defer @pf("1\n")

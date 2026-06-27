@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-aaa7ce02.js";
+            window.path_to_searchindex_js = "searchindex-c7c4a1ff.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-d2cdd05f.js"></script>
@@ -187,7 +187,7 @@
     lo: u32 = undef
     hi: u32 = undef
     @asm("rdtsc", "=a,=d", &amp;lo, &amp;hi)
-    ret @u64(lo) | (@u64(hi) &lt;&lt; 32)
+    ret @u64(lo) | (@u64(hi) &lt;&lt; 32u64)
 }
 </code></pre>
 <h2 id="example--atomic-fence"><a class="header" href="#example--atomic-fence">Example — Atomic Fence</a></h2>

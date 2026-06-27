@@ -33,38 +33,20 @@ if p != null {
 
 ## Allocation
 
-```
-import "std/mem"
+Use `@new(T)` to heap-allocate a single value:
 
-p: *i32  = mem.alloc(i32)
+```
+p: *i32 = @new(i32)
 p.* = 42
 # ...
-mem.free(p)
+@free(p)
 ```
 
-Array allocation:
+For raw byte buffers use `@alo` (allocate) and `@free`:
 
 ```
-buf: *u8 = mem.alloc_n(u8, 1024)
-defer mem.free(buf)
-```
-
-## Smart Pointers
-
-The standard library provides smart pointers that free automatically:
-
-| Type | Description |
-|---|---|
-| `Box[T]` | unique ownership — frees on scope exit |
-| `Rc[T]` | shared ownership — frees when last reference drops |
-| `Weak[T]` | non-owning reference to `Rc[T]` |
-
-```
-import "std/box"
-
-b: Box[i32] = Box.new(42)
-@pf("{b.get().*}\n")
-# freed at end of scope
+buf: *u8 = @alo(1024)
+defer @free(buf)
 ```
 
 ## Stack Allocation
@@ -93,19 +75,11 @@ p: *i32 = &x
 pb: *u8 = @bitcast(*u8, p)   # reinterpret pointer type
 ```
 
-## `@sizeof` and `@alignof`
+## `@size` and `@align`
 
 ```
-sz: usize  = @sizeof(i32)    # 4
-al: usize  = @alignof(f64)   # 8
-```
-
-## `@ptrof` and `@addrof`
-
-```
-fn my_fn() {}
-fp: fn() = @ptrof(my_fn)    # function pointer from name
-addr: usize = @addrof(my_fn)
+sz: usize  = @size(i32)    # 4
+al: usize  = @align(f64)   # 8
 ```
 
 ## Common Patterns

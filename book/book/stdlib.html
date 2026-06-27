@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-aaa7ce02.js";
+            window.path_to_searchindex_js = "searchindex-c7c4a1ff.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-d2cdd05f.js"></script>
@@ -178,122 +178,150 @@
                 <div id="mdbook-content" class="content">
                     <main>
                         <h1 id="standard-library"><a class="header" href="#standard-library">Standard Library</a></h1>
-<p>The standard library is organized into modules under the <code>std/</code> prefix.</p>
+<p>The standard library lives under <code>std/</code>. Import with <code>import(alias = "std/module")</code>.</p>
 <h2 id="stdio"><a class="header" href="#stdio"><code>std/io</code></a></h2>
-<p>File I/O and printing.</p>
-<pre><code>import "std/io"
+<p>File I/O via libc. Open files are raw <code>*u8</code> handles (libc <code>FILE *</code>).</p>
+<pre><code>import(io = "std/io")
 
-io.print("hello\n")
+f: *u8 = io.open("data.txt", "r")
+if f == null { @panic("open failed") }
+defer io.close(f)
 
-f: !io.File = io.open("data.txt", io.READ)
-defer f.close()
+line: str = io.read_line(f)
+@pf("{line}\n")
 
-buf: [1024]u8 = undef
-n: usize = f.read(&amp;buf[0], @sizeof(buf))
+io.write_str(f, "hello\n")
+sz: i64 = io.file_size(f)
 </code></pre>
-<p>Key types and functions:</p>
 <div class="table-wrapper">
 <table>
 <thead>
-<tr><th>Name</th><th>Description</th></tr>
+<tr><th>Function</th><th>Description</th></tr>
 </thead>
 <tbody>
-<tr><td><code>io.File</code></td><td>file handle</td></tr>
-<tr><td><code>io.open(path, mode)</code></td><td>open a file</td></tr>
-<tr><td><code>io.stdin</code></td><td>standard input</td></tr>
-<tr><td><code>io.stdout</code></td><td>standard output</td></tr>
-<tr><td><code>io.stderr</code></td><td>standard error</td></tr>
-<tr><td><code>io.print(s)</code></td><td>write string to stdout</td></tr>
-<tr><td><code>io.read_line()</code></td><td>read a line from stdin</td></tr>
+<tr><td><code>io.open(path, mode)</code></td><td>open a file (<code>"r"</code>, <code>"w"</code>, <code>"a"</code>, etc.) — <code>null</code> on failure</td></tr>
+<tr><td><code>io.close(f)</code></td><td>close the file handle</td></tr>
+<tr><td><code>io.write_str(f, s)</code></td><td>write a <code>str</code> to a file</td></tr>
+<tr><td><code>io.read_line(f)</code></td><td>read one line (heap-allocated)</td></tr>
+<tr><td><code>io.file_size(f)</code></td><td>byte size of an open file</td></tr>
 </tbody>
 </table>
 </div>
-<h2 id="stdmem"><a class="header" href="#stdmem"><code>std/mem</code></a></h2>
-<p>Memory allocation.</p>
-<pre><code>import "std/mem"
-
-p: *i32 = mem.alloc(i32)
-p.* = 42
-mem.free(p)
-
-buf: []u8 = mem.alloc_slice(u8, 1024)
-defer mem.free_slice(buf)
-
-mem.copy(dst, src, n)
-mem.set(dst, 0, n)
-</code></pre>
+<p>Constants: <code>io.SEEK_SET</code>, <code>io.SEEK_CUR</code>, <code>io.SEEK_END</code></p>
 <h2 id="stdstr"><a class="header" href="#stdstr"><code>std/str</code></a></h2>
-<p>String operations.</p>
-<pre><code>import "std/str"
+<p>String operations. Functions that return new strings allocate on the heap.</p>
+<pre><code>import(s = "std/str")
 
-s: str = "hello world"
-upper: str    = str.upper(s)
-parts: []str  = str.split(s, " ")
-joined: str   = str.join(parts, ", ")
-idx: !usize   = str.find(s, "world")
-has: bool     = str.contains(s, "hello")
-trimmed: str  = str.trim(s)
+greeting: str = "Hello, World!"
+upper: str  = s.to_upper(greeting)
+lower: str  = s.to_lower(greeting)
+trimmed: str = s.trim("  hi  ")
+idx: usize   = s.find(greeting, "World")  # returns s.len if not found
+ok: bool     = s.contains(greeting, "Hello")
+pfx: bool    = s.starts_with(greeting, "Hello")
+sfx: bool    = s.ends_with(greeting, "!")
+cat: str     = s.concat("foo", "bar")
+sub: str     = s.slice(greeting, 7, 12)   # "World"
+rep: str     = s.repeat("ab", 3)          # "ababab"
+eq:  bool    = s.eq("abc", "abc")
 </code></pre>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Function</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>s.len(s)</code></td><td>string length</td></tr>
+<tr><td><code>s.eq(a, b)</code></td><td>equality check</td></tr>
+<tr><td><code>s.concat(a, b)</code></td><td>concatenate two strings</td></tr>
+<tr><td><code>s.slice(s, start, end)</code></td><td>substring view (exclusive end)</td></tr>
+<tr><td><code>s.find(s, sub)</code></td><td>byte offset of first match, or <code>s.len</code></td></tr>
+<tr><td><code>s.contains(s, sub)</code></td><td>true if sub appears anywhere</td></tr>
+<tr><td><code>s.starts_with(s, pfx)</code></td><td>prefix check</td></tr>
+<tr><td><code>s.ends_with(s, sfx)</code></td><td>suffix check</td></tr>
+<tr><td><code>s.to_upper(s)</code></td><td>ASCII uppercase copy</td></tr>
+<tr><td><code>s.to_lower(s)</code></td><td>ASCII lowercase copy</td></tr>
+<tr><td><code>s.trim(s)</code></td><td>strip leading/trailing whitespace</td></tr>
+<tr><td><code>s.repeat(s, n)</code></td><td>repeat string n times</td></tr>
+</tbody>
+</table>
+</div>
 <h2 id="stdmath"><a class="header" href="#stdmath"><code>std/math</code></a></h2>
-<p>Mathematical functions.</p>
-<pre><code>import "std/math"
+<p>Mathematical functions via libm.</p>
+<pre><code>import(math = "std/math")
 
-y: f64 = math.sin(math.PI / 2.0)
+y: f64 = math.sin(math.PI / 2.0)    # 1.0
 z: f64 = math.sqrt(2.0)
-r: f64 = math.pow(2.0, 10.0)
-n: i32 = math.abs(-5)
+r: f64 = math.pow(2.0, 10.0)        # 1024.0
+n: i32 = math.abs_i32(-5)           # 5
+c: f64 = math.clamp_f64(1.5, 0.0, 1.0)  # 1.0
 </code></pre>
-<p>Constants: <code>math.PI</code>, <code>math.E</code>, <code>math.TAU</code>, <code>math.INF</code>, <code>math.NAN</code></p>
+<p>Constants: <code>math.PI</code>, <code>math.E</code></p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Function</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>math.sqrt(x)</code></td><td>square root</td></tr>
+<tr><td><code>math.pow(base, exp)</code></td><td>power</td></tr>
+<tr><td><code>math.log(x)</code></td><td>natural logarithm</td></tr>
+<tr><td><code>math.sin(x)</code>, <code>math.cos(x)</code>, <code>math.tan(x)</code></td><td>trig</td></tr>
+<tr><td><code>math.atan2(y, x)</code></td><td>arc tangent</td></tr>
+<tr><td><code>math.floor(x)</code>, <code>math.ceil(x)</code>, <code>math.round(x)</code></td><td>rounding</td></tr>
+<tr><td><code>math.fmod(x, y)</code></td><td>floating-point remainder</td></tr>
+<tr><td><code>math.abs_i32(x)</code>, <code>math.abs_i64(x)</code></td><td>integer absolute value</td></tr>
+<tr><td><code>math.min_i32(a, b)</code>, <code>math.max_i32(a, b)</code></td><td>integer min/max</td></tr>
+<tr><td><code>math.min_i64(a, b)</code>, <code>math.max_i64(a, b)</code></td><td>i64 min/max</td></tr>
+<tr><td><code>math.clamp_i32(x, lo, hi)</code>, <code>math.clamp_f64(x, lo, hi)</code></td><td>clamp</td></tr>
+</tbody>
+</table>
+</div>
 <h2 id="stdos"><a class="header" href="#stdos"><code>std/os</code></a></h2>
-<p>Operating system interface.</p>
-<pre><code>import "std/os"
+<p>Process and environment operations.</p>
+<pre><code>import(os = "std/os")
 
-home: !str = os.env("HOME")
-os.exit(0)
-
-cwd: str = os.getcwd()
-os.chdir("/tmp")
-
-files: ![]str = os.listdir(".")
-exists: bool  = os.path_exists("./data")
+home: str = os.getenv_str("HOME")
+os.run("ls -la")
+os.quit(0)
 </code></pre>
-<h2 id="stdbox"><a class="header" href="#stdbox"><code>std/box</code></a></h2>
-<p>Smart pointers.</p>
-<pre><code>import "std/box"
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Function</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>os.getenv_str(name)</code></td><td>read environment variable (empty str if unset)</td></tr>
+<tr><td><code>os.run(cmd)</code></td><td>run a shell command, return exit status</td></tr>
+<tr><td><code>os.quit(code)</code></td><td>exit the process</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="stdcollections"><a class="header" href="#stdcollections"><code>std/collections</code></a></h2>
+<p>A growable array of <code>i64</code> values.</p>
+<pre><code>import(c = "std/collections")
 
-b: box.Box[i32] = box.Box.new(42)
-@pf("{b.get().*}\n")
-# freed when b goes out of scope
+v: c.Vec = c.Vec.new()
+c.Vec.push(&amp;v, 10)
+c.Vec.push(&amp;v, 20)
+c.Vec.push(&amp;v, 30)
 
-rc: box.Rc[str] = box.Rc.new("shared")
-rc2: box.Rc[str] = rc.clone()
-# freed when both rc and rc2 drop
+@pf("len=%d\n", v.len)
+c.Vec.free_vec(&amp;v)
 </code></pre>
-<h2 id="stdatomic"><a class="header" href="#stdatomic"><code>std/atomic</code></a></h2>
-<p>Atomic integer types for lock-free programming.</p>
-<pre><code>import "std/atomic"
-
-counter: atomic.I32 = atomic.I32.new(0)
-counter.fetch_add(1)
-v: i32 = counter.load()
-</code></pre>
-<h2 id="stdsync"><a class="header" href="#stdsync"><code>std/sync</code></a></h2>
-<p>Mutex, RwLock, and channels.</p>
-<pre><code>import "std/sync"
-
-mu: sync.Mutex = sync.Mutex.new()
-mu.lock()
-defer mu.unlock()
-# ... critical section ...
-</code></pre>
-<h2 id="stdfmt"><a class="header" href="#stdfmt"><code>std/fmt</code></a></h2>
-<p>String formatting without printing.</p>
-<pre><code>import "std/fmt"
-
-s: str = fmt.sprintf("x={} y={}", x, y)
-</code></pre>
-<h2 id="stdnet-planned"><a class="header" href="#stdnet-planned"><code>std/net</code> <em>(planned)</em></a></h2>
-<p>TCP/UDP sockets and HTTP client. Not yet implemented.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Method</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>Vec.new()</code></td><td>create empty Vec</td></tr>
+<tr><td><code>Vec.push(self, val)</code></td><td>append an i64 value</td></tr>
+<tr><td><code>Vec.get(self, i)</code></td><td>get element at index</td></tr>
+<tr><td><code>Vec.free_vec(self)</code></td><td>release heap memory</td></tr>
+</tbody>
+</table>
+</div>
 
                     </main>
 

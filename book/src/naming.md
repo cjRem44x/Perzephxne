@@ -14,7 +14,7 @@ These are conventions, not compiler-enforced rules. Following them makes code ea
 | Enum variants | `PascalCase` | `Direction.North` |
 | Type aliases | `PascalCase` | `type Byte = u8` |
 | Type parameters | single uppercase letter or `PascalCase` | `T`, `Key`, `Val` |
-| Module names | `snake_case` | `import "std/io"` |
+| Module names | `snake_case` | `import(io = "std/io")` |
 | File names | `snake_case.przp` | `http_client.przp` |
 
 ## Variables and Functions
@@ -81,12 +81,11 @@ URL: str = "..."
 
 ## Module Aliases
 
-When a module name is long or conflicts with a local name, alias it with a short, obvious prefix:
+When a module name is long or conflicts with a local name, choose a short alias in the import:
 
 ```
-import "mylib/geometry" as geo
-import "std/fmt" as fmt
+import(geo = "mylib/geometry", m = "std/math")
 
 p: geo.Point = geo.Point{.x=0.0, .y=0.0}
-s: str = fmt.sprintf("{p.x}, {p.y}")
+r: f64 = m.sqrt(2.0)
 ```
