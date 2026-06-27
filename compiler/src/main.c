@@ -509,6 +509,9 @@ static void load_imports(Module *mod, const char *src_path,
     size_t      n_aliases = 0;
     char        src_dir[1024];
     src_dir_of(src_path, src_dir, sizeof(src_dir));
+    /* remember how many items this module originally has so rw_item only
+       touches the caller's own code, not the imported (already-mangled) items */
+    size_t n_orig_items = mod->items.len;
 
     for (size_t i = 0; i < mod->items.len && n_aliases < 64; i++) {
         Item *item = mod->items.data[i];
@@ -557,9 +560,9 @@ static void load_imports(Module *mod, const char *src_path,
         }
     }
 
-    /* rewrite module accesses in the calling module */
+    /* rewrite module accesses in the calling module only (not imported items) */
     if (n_aliases > 0) {
-        for (size_t i = 0; i < mod->items.len; i++)
+        for (size_t i = 0; i < n_orig_items; i++)
             rw_item(mod->items.data[i], aliases, n_aliases, arena);
     }
 }
