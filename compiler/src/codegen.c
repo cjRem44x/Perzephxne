@@ -1343,9 +1343,112 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                          "ptr %%t%d, ptr @.fmt.d, i32 %s)\n", buf, src.buf);
                 emit(cg, "  %%t%d = getelementptr [32 x i8], ptr %%t%d, i32 0, i32 0\n",
                      t, buf);
-            } else if (!strcmp(dst, "i32") && src_ty &&
-                       (src_ty->kind == TY_STR)) {
-                emit(cg, "  %%t%d = call i32 @atoi(ptr %s)\n", t, src.buf);
+            } else if (src_ty && src_ty->kind == TY_STR && !strcmp(dst, "bool")) {
+                /* str → bool: "true" or "1" → true, anything else → false (no failable) */
+                int dp2 = new_tmp(cg);
+                emit(cg, "  %%t%d = extractvalue { ptr, i64 } %s, 0\n", dp2, src.buf);
+                int sid_t = intern_str(cg, "true");
+                int sid_o = intern_str(cg, "1");
+                int tptr = new_tmp(cg), optr = new_tmp(cg);
+                emit(cg, "  %%t%d = getelementptr inbounds [5 x i8], ptr @.str.%d, i32 0, i32 0\n",
+                     tptr, sid_t);
+                emit(cg, "  %%t%d = getelementptr inbounds [2 x i8], ptr @.str.%d, i32 0, i32 0\n",
+                     optr, sid_o);
+                int c1 = new_tmp(cg), c2 = new_tmp(cg);
+                emit(cg, "  %%t%d = call i32 @strcmp(ptr %%t%d, ptr %%t%d)\n", c1, dp2, tptr);
+                emit(cg, "  %%t%d = call i32 @strcmp(ptr %%t%d, ptr %%t%d)\n", c2, dp2, optr);
+                int eq1 = new_tmp(cg), eq2 = new_tmp(cg);
+                emit(cg, "  %%t%d = icmp eq i32 %%t%d, 0\n", eq1, c1);
+                emit(cg, "  %%t%d = icmp eq i32 %%t%d, 0\n", eq2, c2);
+                emit(cg, "  %%t%d = or i1 %%t%d, %%t%d\n", t, eq1, eq2);
+                if (out_ty) {
+                    Type *bt = ARENA_NEW(cg->arena, Type);
+                    bt->kind = TY_BOOL;
+                    *out_ty = bt;
+                }
+            } else if (src_ty && src_ty->kind == TY_STR
+                       && (!strcmp(dst,"i8")  || !strcmp(dst,"i16") || !strcmp(dst,"i32")
+                        || !strcmp(dst,"i64") || !strcmp(dst,"u8")  || !strcmp(dst,"u16")
+                        || !strcmp(dst,"u32") || !strcmp(dst,"u64") || !strcmp(dst,"usize")
+                        || !strcmp(dst,"f32") || !strcmp(dst,"f64"))) {
+                /* str → number: strtol/strtod with endptr validates full parse.
+                   Returns !T failable: { 0, 1 } on failure (air value), { parsed, 0 } on success. */
+                int is_float = !strcmp(dst,"f32") || !strcmp(dst,"f64");
+                int dp  = new_tmp(cg);
+                int ep  = new_tmp(cg);
+                int raw = new_tmp(cg);
+                int epl = new_tmp(cg);
+                int ne  = new_tmp(cg);
+                int eb  = new_tmp(cg);
+                int iz  = new_tmp(cg);
+                int ok  = new_tmp(cg);
+                int ec  = new_tmp(cg);
+
+                emit(cg, "  %%t%d = extractvalue { ptr, i64 } %s, 0\n", dp, src.buf);
+                emit(cg, "  %%t%d = alloca ptr\n", ep);
+                if (is_float)
+                    emit(cg, "  %%t%d = call double @strtod(ptr %%t%d, ptr %%t%d)\n", raw, dp, ep);
+                else
+                    emit(cg, "  %%t%d = call i64 @strtol(ptr %%t%d, ptr %%t%d, i32 10)\n", raw, dp, ep);
+
+                /* success = (ep != dp) && (*ep == '\0') */
+                emit(cg, "  %%t%d = load ptr, ptr %%t%d\n", epl, ep);
+                emit(cg, "  %%t%d = icmp ne ptr %%t%d, %%t%d\n", ne, dp, epl);
+                emit(cg, "  %%t%d = load i8, ptr %%t%d\n", eb, epl);
+                emit(cg, "  %%t%d = icmp eq i8 %%t%d, 0\n", iz, eb);
+                emit(cg, "  %%t%d = and i1 %%t%d, %%t%d\n", ok, ne, iz);
+                emit(cg, "  %%t%d = select i1 %%t%d, i32 0, i32 1\n", ec, ok);
+
+                /* convert raw to target type */
+                const char *val_llt;
+                int vfinal;
+                if (!strcmp(dst,"i8") || !strcmp(dst,"u8")) {
+                    val_llt = "i8";  vfinal = new_tmp(cg);
+                    emit(cg, "  %%t%d = trunc i64 %%t%d to i8\n", vfinal, raw);
+                } else if (!strcmp(dst,"i16") || !strcmp(dst,"u16")) {
+                    val_llt = "i16"; vfinal = new_tmp(cg);
+                    emit(cg, "  %%t%d = trunc i64 %%t%d to i16\n", vfinal, raw);
+                } else if (!strcmp(dst,"i32") || !strcmp(dst,"u32")) {
+                    val_llt = "i32"; vfinal = new_tmp(cg);
+                    emit(cg, "  %%t%d = trunc i64 %%t%d to i32\n", vfinal, raw);
+                } else if (!strcmp(dst,"f32")) {
+                    val_llt = "float"; vfinal = new_tmp(cg);
+                    emit(cg, "  %%t%d = fptrunc double %%t%d to float\n", vfinal, raw);
+                } else {
+                    val_llt = is_float ? "double" : "i64";
+                    vfinal = raw;
+                }
+
+                /* zero out value on failure: select ok ? parsed : 0 */
+                int vs = new_tmp(cg);
+                const char *zero = is_float ? "0.0" : "0";
+                emit(cg, "  %%t%d = select i1 %%t%d, %s %%t%d, %s %s\n",
+                     vs, ok, val_llt, vfinal, val_llt, zero);
+
+                char fail_llt[64];
+                snprintf(fail_llt, sizeof(fail_llt), "{ %s, i32 }", val_llt);
+                int a1 = new_tmp(cg);
+                emit(cg, "  %%t%d = insertvalue %s undef, %s %%t%d, 0\n", a1, fail_llt, val_llt, vs);
+                emit(cg, "  %%t%d = insertvalue %s %%t%d, i32 %%t%d, 1\n", t, fail_llt, a1, ec);
+
+                if (out_ty) {
+                    Type *inner = ARENA_NEW(cg->arena, Type);
+                    if      (!strcmp(dst,"i8"))    inner->kind = TY_I8;
+                    else if (!strcmp(dst,"i16"))   inner->kind = TY_I16;
+                    else if (!strcmp(dst,"i32"))   inner->kind = TY_I32;
+                    else if (!strcmp(dst,"i64"))   inner->kind = TY_I64;
+                    else if (!strcmp(dst,"u8"))    inner->kind = TY_U8;
+                    else if (!strcmp(dst,"u16"))   inner->kind = TY_U16;
+                    else if (!strcmp(dst,"u32"))   inner->kind = TY_U32;
+                    else if (!strcmp(dst,"u64"))   inner->kind = TY_U64;
+                    else if (!strcmp(dst,"usize")) inner->kind = TY_USIZE;
+                    else if (!strcmp(dst,"f32"))   inner->kind = TY_F32;
+                    else                           inner->kind = TY_F64;
+                    Type *ft = ARENA_NEW(cg->arena, Type);
+                    ft->kind = TY_FAILABLE;
+                    ft->ptr.inner = inner;
+                    *out_ty = ft;
+                }
             } else {
                 /* numeric cast — choose trunc/sext/zext based on bit widths */
                 const char *src_llt = src_ty ? llvm_type(src_ty) : "i32";
@@ -3067,6 +3170,11 @@ int codegen(Module *mod, FILE *out, int release) {
     emit(&cg, "declare i32 @fprintf(ptr, ptr noundef, ...)\n");
     emit(&cg, "declare i32 @sprintf(ptr, ptr, ...)\n");
     emit(&cg, "declare i32 @atoi(ptr)\n");
+    emit(&cg, "declare i64 @atol(ptr)\n");
+    emit(&cg, "declare double @atof(ptr)\n");
+    emit(&cg, "declare i64 @strtol(ptr, ptr, i32)\n");
+    emit(&cg, "declare double @strtod(ptr, ptr)\n");
+    emit(&cg, "declare i32 @strcmp(ptr, ptr)\n");
     emit(&cg, "declare i64 @strlen(ptr)\n");
     emit(&cg, "declare ptr @malloc(i64)\n");
     emit(&cg, "declare ptr @realloc(ptr, i64)\n");

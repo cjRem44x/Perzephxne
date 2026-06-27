@@ -1,0 +1,85 @@
+fn main() -> i32 {
+    # --- valid numeric strings ---
+    s_42:  str = "42"
+    s_big: str = "32767"
+    s_mil: str = "1000000"
+    s_big64: str = "9876543210"
+    s_pi:  str = "3.14159"
+    s_neg: str = "-7"
+
+    # --- non-numeric / partial strings (fallback → 0, err ≠ 0) ---
+    s_bad:    str = "hello"
+    s_empty:  str = ""
+    s_mixed:  str = "12abc"
+
+    @pf("=== integer casts (plain) ===\n")
+    v_i8:  i8  = @i8(s_42)
+    v_u8:  u8  = @u8(s_42)
+    @pf("i8  (\"42\") = %d\n", v_i8)
+    @pf("u8  (\"42\") = %d\n", v_u8)
+
+    v_i16: i16 = @i16(s_big)
+    v_u16: u16 = @u16(s_big)
+    @pf("i16 (\"32767\") = %d\n", v_i16)
+    @pf("u16 (\"32767\") = %d\n", v_u16)
+
+    v_i32: i32 = @i32(s_mil)
+    v_u32: u32 = @u32(s_mil)
+    @pf("i32 (\"1000000\") = %d\n", v_i32)
+    @pf("u32 (\"1000000\") = %d\n", v_u32)
+
+    v_i64:   i64   = @i64(s_big64)
+    v_u64:   u64   = @u64(s_big64)
+    v_usize: usize = @usize(s_big64)
+    @pf("i64   (\"9876543210\") = %ld\n", v_i64)
+    @pf("u64   (\"9876543210\") = %ld\n", v_u64)
+    @pf("usize (\"9876543210\") = %ld\n", v_usize)
+
+    v_neg: i32 = @i32(s_neg)
+    @pf("i32 (\"-7\") = %d\n", v_neg)
+
+    @pf("\n=== float casts (plain) ===\n")
+    v_f32: f32 = @f32(s_pi)
+    v_f64: f64 = @f64(s_pi)
+    @pf("f64 (\"3.14159\") = %f\n", v_f64)
+
+    @pf("\n=== fallback to zero (air value) ===\n")
+    z_i32:  i32  = @i32(s_bad)
+    z_i64:  i64  = @i64(s_bad)
+    z_f64:  f64  = @f64(s_bad)
+    z_empty: i32 = @i32(s_empty)
+    z_mixed: i32 = @i32(s_mixed)
+    @pf("i32 (\"hello\")  = %d (expect 0)\n", z_i32)
+    @pf("i64 (\"hello\")  = %ld (expect 0)\n", z_i64)
+    @pf("f64 (\"hello\")  = %f (expect 0.0)\n", z_f64)
+    @pf("i32 (\"\")       = %d (expect 0)\n", z_empty)
+    @pf("i32 (\"12abc\")  = %d (expect 0)\n", z_mixed)
+
+    @pf("\n=== failable destructure (air flag) ===\n")
+    good_val, good_err: !i32 = @i32(s_42)
+    @pf("i32 (\"42\") val=%d err=%d (expect 42 0)\n", good_val, good_err)
+
+    bad_val, bad_err: !i32 = @i32(s_bad)
+    @pf("i32 (\"hello\") val=%d err=%d (expect 0 1)\n", bad_val, bad_err)
+
+    mixed_val, mixed_err: !i32 = @i32(s_mixed)
+    @pf("i32 (\"12abc\") val=%d err=%d (expect 0 1)\n", mixed_val, mixed_err)
+
+    pi_val, pi_err: !f64 = @f64(s_pi)
+    @pf("f64 (\"3.14159\") val=%f err=%d (expect 3.14159 0)\n", pi_val, pi_err)
+
+    bad_f, bad_f_err: !f64 = @f64(s_bad)
+    @pf("f64 (\"hello\") val=%f err=%d (expect 0.0 1)\n", bad_f, bad_f_err)
+
+    @pf("\n=== bool casts ===\n")
+    b_true:  bool = @bool("true")
+    b_one:   bool = @bool("1")
+    b_false: bool = @bool("hello")
+    b_empty: bool = @bool("")
+    @pf("bool (\"true\")  = %d (expect 1)\n", b_true)
+    @pf("bool (\"1\")     = %d (expect 1)\n", b_one)
+    @pf("bool (\"hello\") = %d (expect 0)\n", b_false)
+    @pf("bool (\"\")      = %d (expect 0)\n", b_empty)
+
+    ret 0
+}

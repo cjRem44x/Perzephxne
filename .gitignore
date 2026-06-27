@@ -1,0 +1,7 @@
+# compiled project outputs (no extension = ELF binary)
+**/main
+*.o
+*.out
+
+# build artifacts
+compiler/przp.dSYM/
