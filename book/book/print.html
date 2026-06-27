@@ -36,10 +36,10 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-c7c4a1ff.js";
+            window.path_to_searchindex_js = "searchindex-9395ba1b.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-d2cdd05f.js"></script>
+        <script src="toc-15562ee1.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -573,7 +573,7 @@ fn find[T](s: []T, pred: fn(T) -&gt; bool) -&gt; Option[T] {
 <p>Generics are compiled to concrete, specialized versions at the call site — the same approach as C++ templates, with no runtime overhead.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="functions"><a class="header" href="#functions">Functions</a></h1>
-<h2 id="basic-syntax"><a class="header" href="#basic-syntax">Basic Syntax</a></h2>
+<h2 id="declaration"><a class="header" href="#declaration-1">Declaration</a></h2>
 <pre><code>fn add(a: i32, b: i32) -&gt; i32 {
     ret a + b
 }
@@ -603,7 +603,7 @@ q, r: i32 = divmod(17, 5)
     ret (sum / @f64(@len(s)), mx)
 }
 </code></pre>
-<h2 id="failable-functions"><a class="header" href="#failable-functions">Failable Functions</a></h2>
+<h2 id="failable-return"><a class="header" href="#failable-return">Failable Return</a></h2>
 <p>Use <code>!T</code> as the return type to indicate the function might return an error. Return <code>@ok(val)</code> on success or <code>@err(code)</code> on failure:</p>
 <pre><code>fn parse_port(s: str) -&gt; !i32 {
     val, err: !i32 = @i32(s)
@@ -639,17 +639,17 @@ result: i32 = op(3, 4)
 fn double(x: i32) -&gt; i32 { ret x * 2 }
 y: i32 = apply(double, 5)   # 10
 </code></pre>
-<h2 id="function-pointers-vs-closures"><a class="header" href="#function-pointers-vs-closures">Function Pointers vs Closures</a></h2>
+<h2 id="function-pointers"><a class="header" href="#function-pointers-1">Function Pointers</a></h2>
 <p>Bare function references (like <code>double</code> above) are plain pointers — zero overhead.</p>
 <p>Closures that capture the environment are not yet supported (planned for a future version).</p>
-<h2 id="extern-functions"><a class="header" href="#extern-functions">Extern Functions</a></h2>
+<h2 id="extern--ffi"><a class="header" href="#extern--ffi-1">Extern / FFI</a></h2>
 <p>To call C functions, declare them with <code>extern</code>:</p>
 <pre><code>extern fn printf(fmt: *u8, ...) -&gt; i32
 extern fn malloc(size: usize) -&gt; *u8
 extern fn free(p: *u8)
 </code></pre>
 <p>Variadic <code>...</code> is allowed in extern declarations only.</p>
-<h2 id="inline-and-no-inline-hints"><a class="header" href="#inline-and-no-inline-hints">Inline and No-Inline Hints</a></h2>
+<h2 id="inline-and-variadic"><a class="header" href="#inline-and-variadic">Inline and Variadic</a></h2>
 <pre><code>@inline fn fast_path(x: i32) -&gt; i32 { ret x * 2 }
 @noinline fn slow_path(x: i32) -&gt; i32 { ... }
 </code></pre>
@@ -662,18 +662,18 @@ extern fn free(p: *u8)
 </code></pre>
 <p>Mutual recursion is supported because <code>przp</code> does a two-pass compilation — all top-level names are visible regardless of source order.</p>
 <div style="break-before: page; page-break-before: always;"></div>
-<h1 id="declaration"><a class="header" href="#declaration">Declaration</a></h1>
+<h1 id="declaration-1"><a class="header" href="#declaration-1">Declaration</a></h1>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="failable-return-"><a class="header" href="#failable-return-">Failable Return (!)</a></h1>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="inline--variadic"><a class="header" href="#inline--variadic">Inline &amp; Variadic</a></h1>
 <div style="break-before: page; page-break-before: always;"></div>
-<h1 id="function-pointers"><a class="header" href="#function-pointers">Function Pointers</a></h1>
+<h1 id="function-pointers-1"><a class="header" href="#function-pointers-1">Function Pointers</a></h1>
 <div style="break-before: page; page-break-before: always;"></div>
-<h1 id="extern--ffi"><a class="header" href="#extern--ffi">Extern / FFI</a></h1>
+<h1 id="extern--ffi-1"><a class="header" href="#extern--ffi-1">Extern / FFI</a></h1>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="control-flow"><a class="header" href="#control-flow">Control Flow</a></h1>
-<h2 id="if--elif--else"><a class="header" href="#if--elif--else-1"><code>if</code> / <code>elif</code> / <code>else</code></a></h2>
+<h2 id="if-elif-else"><a class="header" href="#if-elif-else">if, elif, else</a></h2>
 <pre><code>x: i32 = 42
 
 if x &gt; 100 {
@@ -685,7 +685,8 @@ if x &gt; 100 {
 }
 </code></pre>
 <p>Braces are required. Conditions do not need parentheses.</p>
-<h2 id="loop"><a class="header" href="#loop"><code>loop</code></a></h2>
+<h2 id="loops"><a class="header" href="#loops-1">Loops</a></h2>
+<h3 id="loop"><a class="header" href="#loop"><code>loop</code></a></h3>
 <p>Infinite loop:</p>
 <pre><code>i: i32 = 0
 loop {
@@ -694,14 +695,14 @@ loop {
     i += 1
 }
 </code></pre>
-<h2 id="while"><a class="header" href="#while"><code>while</code></a></h2>
+<h3 id="while"><a class="header" href="#while"><code>while</code></a></h3>
 <pre><code>i: i32 = 0
 while i &lt; 10 {
     @pf("{i}\n")
     i += 1
 }
 </code></pre>
-<h2 id="for--range"><a class="header" href="#for--range"><code>for</code> — Range</a></h2>
+<h3 id="for--range"><a class="header" href="#for--range"><code>for</code> — Range</a></h3>
 <pre><code>for i =&gt; 0..10 {      # 0, 1, ..., 9
     @pf("{i}\n")
 }
@@ -710,7 +711,7 @@ for i =&gt; 0..=10 {     # 0, 1, ..., 10
     @pf("{i}\n")
 }
 </code></pre>
-<h2 id="for--iterator-slice--array"><a class="header" href="#for--iterator-slice--array"><code>for</code> — Iterator (slice / array)</a></h2>
+<h3 id="for--iterator-slice--array"><a class="header" href="#for--iterator-slice--array"><code>for</code> — Iterator (slice / array)</a></h3>
 <pre><code>nums: [5]i32 = [10, 20, 30, 40, 50]
 
 for v =&gt; nums {
@@ -722,14 +723,14 @@ for v =&gt; nums {
     @pf("[{i}] = {v}\n")
 }
 </code></pre>
-<h2 id="break-and-continue"><a class="header" href="#break-and-continue"><code>break</code> and <code>continue</code></a></h2>
+<h3 id="break-and-continue"><a class="header" href="#break-and-continue"><code>break</code> and <code>continue</code></a></h3>
 <pre><code>for i =&gt; 0..100 {
     if i == 5  { continue }   # skip 5
     if i == 10 { break }      # stop at 10
     @pf("{i}\n")
 }
 </code></pre>
-<h2 id="when--pattern-match"><a class="header" href="#when--pattern-match"><code>when</code> — Pattern Match</a></h2>
+<h2 id="when"><a class="header" href="#when">when</a></h2>
 <p><code>when</code> is exhaustive — the compiler enforces all cases are covered.</p>
 <pre><code>x: i32 = 3
 
@@ -784,11 +785,11 @@ when s {
 }
 </code></pre>
 <div style="break-before: page; page-break-before: always;"></div>
-<h1 id="if--elif--else-1"><a class="header" href="#if--elif--else-1">if / elif / else</a></h1>
+<h1 id="if--elif--else"><a class="header" href="#if--elif--else">if / elif / else</a></h1>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="when-pattern-match"><a class="header" href="#when-pattern-match">when (Pattern Match)</a></h1>
 <div style="break-before: page; page-break-before: always;"></div>
-<h1 id="loops"><a class="header" href="#loops">Loops</a></h1>
+<h1 id="loops-1"><a class="header" href="#loops-1">Loops</a></h1>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="defer"><a class="header" href="#defer">Defer</a></h1>
 <p><code>defer</code> pushes a statement onto a LIFO stack that runs when the enclosing scope exits — whether by <code>ret</code>, <code>break</code>, <code>continue</code>, or falling off the end.</p>
@@ -846,7 +847,7 @@ defer @pf("3\n")
 </ul>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="structs--impl"><a class="header" href="#structs--impl">Structs &amp; Impl</a></h1>
-<h2 id="defining-a-struct"><a class="header" href="#defining-a-struct">Defining a Struct</a></h2>
+<h2 id="structs"><a class="header" href="#structs-1">Structs</a></h2>
 <pre><code>struct Vec2 {
     x: f64,
     y: f64,
@@ -876,7 +877,7 @@ l: Line = Line{
 
 dx: f64 = l.end.x - l.start.x
 </code></pre>
-<h2 id="impl-blocks"><a class="header" href="#impl-blocks-1"><code>impl</code> Blocks</a></h2>
+<h2 id="impl-blocks"><a class="header" href="#impl-blocks-1">Impl Blocks</a></h2>
 <p><code>impl</code> attaches functions to a struct. They are called with dot syntax. The first parameter conventionally named <code>self</code> receives the struct by value; use <code>*Self</code> for mutation.</p>
 <pre><code>impl Vec2 {
     fn len(self: Vec2) -&gt; f64 {
@@ -887,10 +888,6 @@ dx: f64 = l.end.x - l.start.x
         self.*.x *= factor
         self.*.y *= factor
     }
-
-    fn add(a: Vec2, b: Vec2) -&gt; Vec2 {
-        ret Vec2{.x=a.x+b.x, .y=a.y+b.y}
-    }
 }
 
 v: Vec2 = Vec2{.x=3.0, .y=4.0}
@@ -898,10 +895,17 @@ v: Vec2 = Vec2{.x=3.0, .y=4.0}
 
 v.scale(2.0)
 @pf("{v.x}\n")         # 6.0
+</code></pre>
+<h2 id="static-methods"><a class="header" href="#static-methods-1">Static Methods</a></h2>
+<p>Methods with no <code>self</code> parameter are static — called on the type directly:</p>
+<pre><code>impl Vec2 {
+    fn add(a: Vec2, b: Vec2) -&gt; Vec2 {
+        ret Vec2{.x=a.x+b.x, .y=a.y+b.y}
+    }
+}
 
 sum: Vec2 = Vec2.add(v, Vec2{.x=1.0, .y=0.0})
 </code></pre>
-<p><code>impl</code> methods without a <code>self</code> parameter are called on the type directly: <code>Vec2.add(...)</code>.</p>
 <h2 id="anonymous-structs-tuples"><a class="header" href="#anonymous-structs-tuples">Anonymous Structs (Tuples)</a></h2>
 <pre><code>pair: {i32, str} = {42, "hello"}
 n: i32  = pair.0
@@ -935,14 +939,14 @@ struct CacheLine {
 }
 </code></pre>
 <div style="break-before: page; page-break-before: always;"></div>
-<h1 id="structs"><a class="header" href="#structs">Structs</a></h1>
+<h1 id="structs-1"><a class="header" href="#structs-1">Structs</a></h1>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="impl-blocks-1"><a class="header" href="#impl-blocks-1">Impl Blocks</a></h1>
 <div style="break-before: page; page-break-before: always;"></div>
-<h1 id="static-methods"><a class="header" href="#static-methods">Static Methods</a></h1>
+<h1 id="static-methods-1"><a class="header" href="#static-methods-1">Static Methods</a></h1>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="enums--unions"><a class="header" href="#enums--unions">Enums &amp; Unions</a></h1>
-<h2 id="basic-enum"><a class="header" href="#basic-enum">Basic Enum</a></h2>
+<h2 id="enums"><a class="header" href="#enums-1">Enums</a></h2>
 <pre><code>enum Direction {
     North,
     South,
@@ -959,7 +963,7 @@ when d {
     Direction.West  =&gt; @pf("going west\n"),
 }
 </code></pre>
-<h2 id="enum-with-data-tagged-union"><a class="header" href="#enum-with-data-tagged-union">Enum with Data (Tagged Union)</a></h2>
+<h2 id="tagged-unions"><a class="header" href="#tagged-unions-1">Tagged Unions</a></h2>
 <p>Each variant can carry a value:</p>
 <pre><code>enum Shape {
     Circle(f64),
@@ -1024,7 +1028,7 @@ c2: Color = @Color(2)   # Color.Blue
     EIO    = 5,
 }
 </code></pre>
-<h2 id="raw-unions"><a class="header" href="#raw-unions">Raw Unions</a></h2>
+<h2 id="unions"><a class="header" href="#unions-1">Unions</a></h2>
 <p><code>union</code> overlays all fields at the same memory address (unsafe):</p>
 <pre><code>union FloatBits {
     f: f32,
@@ -1043,13 +1047,13 @@ enum Option[T] { Some(T), None }
 # generic Result
 enum Result[T, E] { Ok(T), Err(E) }
 </code></pre>
-<p>These interact with the <code>?</code> propagation operator and <code>!T</code> failable return syntax.</p>
+<p>These work alongside the <code>!T</code> failable return syntax.</p>
 <div style="break-before: page; page-break-before: always;"></div>
-<h1 id="enums"><a class="header" href="#enums">Enums</a></h1>
+<h1 id="enums-1"><a class="header" href="#enums-1">Enums</a></h1>
 <div style="break-before: page; page-break-before: always;"></div>
-<h1 id="unions"><a class="header" href="#unions">Unions</a></h1>
+<h1 id="unions-1"><a class="header" href="#unions-1">Unions</a></h1>
 <div style="break-before: page; page-break-before: always;"></div>
-<h1 id="tagged-unions"><a class="header" href="#tagged-unions">Tagged Unions</a></h1>
+<h1 id="tagged-unions-1"><a class="header" href="#tagged-unions-1">Tagged Unions</a></h1>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="pointers--memory"><a class="header" href="#pointers--memory">Pointers &amp; Memory</a></h1>
 <p>Perzephxne has no garbage collector. Memory is managed manually or with smart pointers from the standard library.</p>
@@ -1059,7 +1063,7 @@ p: *i32 = &amp;x      # address-of
 v: i32  = p.*     # dereference
 p.* = 100         # write through pointer
 </code></pre>
-<p>Pointer arithmetic:</p>
+<h2 id="pointer-arithmetic"><a class="header" href="#pointer-arithmetic-1">Pointer Arithmetic</a></h2>
 <pre><code>arr: [5]i32 = [1, 2, 3, 4, 5]
 p: *i32 = &amp;arr[0]
 q: *i32 = p + 2    # points to arr[2]
@@ -1133,9 +1137,7 @@ type WindowHandle = *SDL_Window
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="raw-pointers-"><a class="header" href="#raw-pointers-">Raw Pointers (*)</a></h1>
 <div style="break-before: page; page-break-before: always;"></div>
-<h1 id="smart-pointers-"><a class="header" href="#smart-pointers-">Smart Pointers (^)</a></h1>
-<div style="break-before: page; page-break-before: always;"></div>
-<h1 id="pointer-arithmetic"><a class="header" href="#pointer-arithmetic">Pointer Arithmetic</a></h1>
+<h1 id="pointer-arithmetic-1"><a class="header" href="#pointer-arithmetic-1">Pointer Arithmetic</a></h1>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="error-handling"><a class="header" href="#error-handling">Error Handling</a></h1>
 <p>Errors in Perzephxne are values — not exceptions. There are no <code>try/catch</code> blocks.</p>
@@ -1307,7 +1309,7 @@ if @release { fast_path() }
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="inline-assembly"><a class="header" href="#inline-assembly">Inline Assembly</a></h1>
 <p>Inline assembly lets you embed target-specific instructions directly in a function body. The syntax mirrors LLVM’s inline assembly format.</p>
-<h2 id="basic-syntax-1"><a class="header" href="#basic-syntax-1">Basic Syntax</a></h2>
+<h2 id="basic-syntax"><a class="header" href="#basic-syntax">Basic Syntax</a></h2>
 <pre><code>@asm("instruction", constraints, operands)
 </code></pre>
 <h2 id="example--read-the-cycle-counter"><a class="header" href="#example--read-the-cycle-counter">Example — Read the Cycle Counter</a></h2>

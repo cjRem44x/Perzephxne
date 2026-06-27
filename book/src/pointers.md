@@ -11,7 +11,7 @@ v: i32  = p.*     # dereference
 p.* = 100         # write through pointer
 ```
 
-Pointer arithmetic:
+## Pointer Arithmetic
 
 ```
 arr: [5]i32 = [1, 2, 3, 4, 5]

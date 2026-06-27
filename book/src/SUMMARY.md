@@ -40,7 +40,6 @@
   - [Tagged Unions](./enums-unions.md#tagged-unions)
 - [Pointers & Memory](./pointers.md)
   - [Raw Pointers (`*`)](./pointers.md#raw-pointers)
-  - [Smart Pointers (`^`)](./pointers.md#smart-pointers)
   - [Pointer Arithmetic](./pointers.md#pointer-arithmetic)
 - [Error Handling](./errors.md)
 - [Modules](./modules.md)
