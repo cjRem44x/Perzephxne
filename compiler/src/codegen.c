@@ -798,13 +798,19 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                 int buf2 = new_tmp(cg);
                 emit(cg, "  %%t%d = call ptr @malloc(i64 4096)\n", buf2);
                 int sp2 = new_tmp(cg);
-                /* pre-emit fpext coercions before the sprintf call */
+                /* pre-emit fpext coercions before the sprintf call;
+                   str args are already raw ptr from the extraction loop above */
                 Val         *fmt_final = malloc(sizeof(Val)        * na2);
                 const char **fmt_llts  = malloc(sizeof(const char*)* na2);
                 for (size_t i = 1; i < na2; i++) {
-                    const char *llt2;
-                    fmt_final[i] = promote_vararg(cg, fv[i], fty[i], &llt2);
-                    fmt_llts[i]  = llt2;
+                    if (fty[i] && fty[i]->kind == TY_STR) {
+                        fmt_final[i] = fv[i];
+                        fmt_llts[i]  = "ptr";
+                    } else {
+                        const char *llt2;
+                        fmt_final[i] = promote_vararg(cg, fv[i], fty[i], &llt2);
+                        fmt_llts[i]  = llt2;
+                    }
                 }
                 emit(cg, "  %%t%d = call i32 (ptr, ptr, ...) @sprintf(ptr %%t%d, ptr %%t%d", sp2, buf2, ft2);
                 for (size_t i = 1; i < na2; i++) {
@@ -1078,9 +1084,23 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                 emit(cg, "  %%t%d = extractvalue { %s, i1 } %%t%d, 0\n", val, llt, res);
                 int ovf = new_tmp(cg);
                 emit(cg, "  %%t%d = extractvalue { %s, i1 } %%t%d, 1\n", ovf, llt, res);
-                /* return value; error code stored in the overflow check result (caller checks) */
-                if (out_ty) *out_ty = ta;
-                return val_tmp(val);
+                /* convert i1 overflow flag to i32 error code */
+                int ec = new_tmp(cg);
+                emit(cg, "  %%t%d = zext i1 %%t%d to i32\n", ec, ovf);
+                /* return !T failable: { val, err_code } */
+                char fail_llt2[64];
+                snprintf(fail_llt2, sizeof(fail_llt2), "{ %s, i32 }", llt);
+                int fa = new_tmp(cg);
+                emit(cg, "  %%t%d = insertvalue %s undef, %s %%t%d, 0\n", fa, fail_llt2, llt, val);
+                int fb = new_tmp(cg);
+                emit(cg, "  %%t%d = insertvalue %s %%t%d, i32 %%t%d, 1\n", fb, fail_llt2, fa, ec);
+                if (out_ty && ta) {
+                    Type *ft = ARENA_NEW(cg->arena, Type);
+                    ft->kind = TY_FAILABLE;
+                    ft->ptr.inner = ta;
+                    *out_ty = ft;
+                }
+                return val_tmp(fb);
             }
 
             /* @size(T) — compile-time sizeof via GEP-from-null trick */
@@ -1097,6 +1117,22 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                     return val_tmp(t);
                 }
                 return val_str("0");
+            }
+
+            /* @align(T) — alignment of T in bytes: offset of T in { i8, T } from null */
+            if (!strcmp(name, "align")) {
+                if (out_ty) {
+                    Type *ut = ARENA_NEW(cg->arena, Type); ut->kind = TY_USIZE; *out_ty = ut;
+                }
+                if (e->builtin.args.len >= 1) {
+                    Type *ta = e->builtin.args.data[0]->ty;
+                    const char *llt = ta ? llvm_type(ta) : "i8";
+                    int t = new_tmp(cg);
+                    emit(cg, "  %%t%d = ptrtoint ptr getelementptr ({ i8, %s }, ptr null, i32 0, i32 1) to i64\n",
+                         t, llt);
+                    return val_tmp(t);
+                }
+                return val_str("1");
             }
 
             /* @len — always returns i64 */
@@ -1326,6 +1362,21 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                 fatal_at(e->span, "unknown @err.%s", errname);
             }
 
+            /* @bitcast(DstType, val) — reinterpret bits of val as DstType (same size) */
+            if (!strcmp(name, "bitcast")) {
+                if (e->builtin.args.len < 2)
+                    fatal_at(e->span, "@bitcast requires two arguments: @bitcast(Type, val)");
+                Type *dst_ty = e->builtin.args.data[0]->ty;
+                Type *src_ty2 = NULL;
+                Val src2 = cg_expr(cg, e->builtin.args.data[1], &src_ty2);
+                const char *src_llt2 = src_ty2 ? llvm_type(src_ty2) : "i32";
+                const char *dst_llt2 = dst_ty  ? llvm_type(dst_ty)  : "i32";
+                int tb = new_tmp(cg);
+                emit(cg, "  %%t%d = bitcast %s %s to %s\n", tb, src_llt2, src2.buf, dst_llt2);
+                if (out_ty && dst_ty) *out_ty = dst_ty;
+                return val_tmp(tb);
+            }
+
             fatal_at(e->span, "unknown builtin '@%s'", name);
         }
 
@@ -1336,13 +1387,32 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
             int t = new_tmp(cg);
 
             if (!strcmp(dst, "str")) {
-                /* int/float → string: call sprintf into a temp buffer — simplified */
+                /* int/float → string via sprintf into a 32-byte stack buffer;
+                   returns a { ptr, i64 } str fat pointer. */
                 int buf = new_tmp(cg);
                 emit(cg, "  %%t%d = alloca [32 x i8]\n", buf);
-                emit(cg, "  call i32 (ptr, ptr, ...) @sprintf("
-                         "ptr %%t%d, ptr @.fmt.d, i32 %s)\n", buf, src.buf);
-                emit(cg, "  %%t%d = getelementptr [32 x i8], ptr %%t%d, i32 0, i32 0\n",
-                     t, buf);
+                int cptr = new_tmp(cg);
+                emit(cg, "  %%t%d = getelementptr [32 x i8], ptr %%t%d, i32 0, i32 0\n", cptr, buf);
+                int is_src_float = src_ty && (src_ty->kind == TY_F32 || src_ty->kind == TY_F64);
+                if (is_src_float) {
+                    Val sv = src;
+                    if (src_ty->kind == TY_F32) {
+                        int tp = new_tmp(cg);
+                        emit(cg, "  %%t%d = fpext float %s to double\n", tp, src.buf);
+                        sv = val_tmp(tp);
+                    }
+                    emit(cg, "  call i32 (ptr, ptr, ...) @sprintf("
+                             "ptr %%t%d, ptr @.fmt.f, double %s)\n", cptr, sv.buf);
+                } else {
+                    emit(cg, "  call i32 (ptr, ptr, ...) @sprintf("
+                             "ptr %%t%d, ptr @.fmt.d, i32 %s)\n", cptr, src.buf);
+                }
+                int slen = new_tmp(cg);
+                emit(cg, "  %%t%d = call i64 @strlen(ptr %%t%d)\n", slen, cptr);
+                int f1 = new_tmp(cg);
+                emit(cg, "  %%t%d = insertvalue { ptr, i64 } undef, ptr %%t%d, 0\n", f1, cptr);
+                emit(cg, "  %%t%d = insertvalue { ptr, i64 } %%t%d, i64 %%t%d, 1\n", t, f1, slen);
+                if (out_ty) { Type *st = ARENA_NEW(cg->arena, Type); st->kind = TY_STR; *out_ty = st; }
             } else if (src_ty && src_ty->kind == TY_STR && !strcmp(dst, "bool")) {
                 /* str → bool: "true" or "1" → true, anything else → false (no failable) */
                 int dp2 = new_tmp(cg);
@@ -2255,22 +2325,31 @@ static void cg_stmt(CG *cg, Stmt *s) {
                         emit(cg, "  store i32 %%t%d, ptr %%t%d\n", ev, alloca);
                     } else {
                         const char *store_ty = init_ty ? effective_llvm_type(cg, init_ty) : llt;
-                        /* coerce integer width if alloca type differs from init type */
+                        /* coerce type if alloca type differs from init type */
                         if (strcmp(store_ty, llt) != 0) {
-                            int sv = 0, lv = 0;
-                            if (!strcmp(store_ty,"i8"))  sv=8; else if (!strcmp(store_ty,"i16")) sv=16;
-                            else if (!strcmp(store_ty,"i32")) sv=32; else if (!strcmp(store_ty,"i64")) sv=64;
-                            if (!strcmp(llt,"i8"))  lv=8; else if (!strcmp(llt,"i16")) lv=16;
-                            else if (!strcmp(llt,"i32")) lv=32; else if (!strcmp(llt,"i64")) lv=64;
-                            if (sv && lv && sv != lv) {
+                            /* float width coercion: double → float */
+                            if (!strcmp(store_ty,"double") && !strcmp(llt,"float")) {
                                 int ct = new_tmp(cg);
-                                int is_signed = init_ty ? type_is_signed(init_ty) : 0;
-                                const char *op = (lv < sv) ? "trunc"
-                                               : (is_signed ? "sext" : "zext");
-                                emit(cg, "  %%t%d = %s %s %s to %s\n",
-                                     ct, op, store_ty, init.buf, llt);
+                                emit(cg, "  %%t%d = fptrunc double %s to float\n", ct, init.buf);
                                 init = val_tmp(ct);
                                 store_ty = llt;
+                            /* integer width coercion */
+                            } else {
+                                int sv = 0, lv = 0;
+                                if (!strcmp(store_ty,"i8"))  sv=8; else if (!strcmp(store_ty,"i16")) sv=16;
+                                else if (!strcmp(store_ty,"i32")) sv=32; else if (!strcmp(store_ty,"i64")) sv=64;
+                                if (!strcmp(llt,"i8"))  lv=8; else if (!strcmp(llt,"i16")) lv=16;
+                                else if (!strcmp(llt,"i32")) lv=32; else if (!strcmp(llt,"i64")) lv=64;
+                                if (sv && lv && sv != lv) {
+                                    int ct = new_tmp(cg);
+                                    int is_signed = init_ty ? type_is_signed(init_ty) : 0;
+                                    const char *op = (lv < sv) ? "trunc"
+                                                   : (is_signed ? "sext" : "zext");
+                                    emit(cg, "  %%t%d = %s %s %s to %s\n",
+                                         ct, op, store_ty, init.buf, llt);
+                                    init = val_tmp(ct);
+                                    store_ty = llt;
+                                }
                             }
                         }
                         emit(cg, "  store %s %s, ptr %%t%d\n", store_ty, init.buf, alloca);
@@ -2331,6 +2410,22 @@ static void cg_stmt(CG *cg, Stmt *s) {
                     }
                     emit(cg, "  store %s %s, ptr %s\n", llt, rhs.buf, sym->llvm_name);
                 } else {
+                    /* coerce rhs integer/float width to match lhs for compound assignment */
+                    if (vty && strcmp(llvm_type(vty), llt) != 0) {
+                        const char *src_llt5 = llvm_type(vty);
+                        int sv5 = 0, lv5 = 0;
+                        if (!strcmp(src_llt5,"i8"))  sv5=8; else if (!strcmp(src_llt5,"i16")) sv5=16;
+                        else if (!strcmp(src_llt5,"i32")) sv5=32; else if (!strcmp(src_llt5,"i64")) sv5=64;
+                        if (!strcmp(llt,"i8"))  lv5=8; else if (!strcmp(llt,"i16")) lv5=16;
+                        else if (!strcmp(llt,"i32")) lv5=32; else if (!strcmp(llt,"i64")) lv5=64;
+                        if (sv5 && lv5 && sv5 != lv5) {
+                            int ct5 = new_tmp(cg);
+                            const char *op5 = (lv5 < sv5) ? "trunc"
+                                            : (type_is_signed(vty) ? "sext" : "zext");
+                            emit(cg, "  %%t%d = %s %s %s to %s\n", ct5, op5, src_llt5, rhs.buf, llt);
+                            rhs = val_tmp(ct5);
+                        }
+                    }
                     /* load, operate, store */
                     int cur_t = new_tmp(cg);
                     emit(cg, "  %%t%d = load %s, ptr %s\n", cur_t, llt, sym->llvm_name);
@@ -3193,7 +3288,8 @@ int codegen(Module *mod, FILE *out, int release) {
     emit(&cg, "@__przp_argv = internal global ptr null\n\n");
 
     /* format string constants */
-    emit(&cg, "@.fmt.d = private constant [3 x i8] c\"%%d\\00\"\n\n");
+    emit(&cg, "@.fmt.d = private constant [3 x i8] c\"%%d\\00\"\n");
+    emit(&cg, "@.fmt.f = private constant [3 x i8] c\"%%f\\00\"\n\n");
 
     /* enum variant tables (no IR to emit — enums are integer constants) */
     for (size_t i = 0; i < mod->items.len; i++) {
