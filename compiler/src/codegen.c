@@ -6,6 +6,9 @@
 #include <stdarg.h>
 #include <inttypes.h>
 
+/* ── Val forward declaration (defined fully below) ───────────────────────── */
+typedef struct { char buf[64]; } Val;
+
 /* ── Codegen state ────────────────────────────────────────────────────────── */
 
 typedef struct StrConst {
@@ -86,6 +89,15 @@ typedef struct {
     int          had_error;
     int          release;      /* 1 = --release build (@debug=false, @release=true) */
     int          cur_label;    /* -1 = entry block, else the current l%d label id */
+    /* dedup tracker for extern fn declarations/wrappers */
+    const char  *declared_fns[512];
+    size_t       n_declared_fns;
+    /* failable destructure cache: val, err: !T = expr() */
+    const Expr  *last_fail_init;   /* init expr pointer from the val-side let */
+    Val          last_fail_val;    /* aggregate value returned by cg_expr for it */
+    Type        *last_fail_ty;     /* TY_FAILABLE type (needed for extractvalue) */
+    /* current function return type (for @ok/@err builtins in STMT_RET) */
+    Type        *cur_fn_ret_ty;
 } CG;
 
 /* ── Utilities ────────────────────────────────────────────────────────────── */
@@ -242,7 +254,13 @@ static const char *llvm_type(Type *ty) {
         case TY_PTR:       return "ptr";
         case TY_SMART_PTR: return "ptr";
         case TY_SLICE:     return "{ ptr, i64 }";
-        case TY_FAILABLE:  return llvm_type(ty->ptr.inner); /* value part */
+        case TY_FAILABLE: {
+            static char fbufs[4][256];
+            static int  fbi = 0;
+            fbi = (fbi + 1) % 4;
+            snprintf(fbufs[fbi], sizeof(fbufs[fbi]), "{ %s, i32 }", llvm_type(ty->ptr.inner));
+            return fbufs[fbi];
+        }
         case TY_NAMED: {
             /* Round-robin static buffers — safe for up to 8 concurrent uses */
             static char bufs[8][128];
@@ -372,8 +390,7 @@ static void emit_str_constants(CG *cg) {
 
 /* ── Expression codegen ───────────────────────────────────────────────────── */
 
-/* Returns the LLVM value string representing the result (e.g. "%t3", "42", "@.str.0") */
-typedef struct { char buf[64]; } Val;
+/* Val is defined at top of file (forward decl) for use in CG struct */
 
 static Val val_tmp(int id)  { Val v; snprintf(v.buf, sizeof(v.buf), "%%t%d", id); return v; }
 static Val val_str(const char *s) { Val v; snprintf(v.buf, sizeof(v.buf), "%s", s); return v; }
@@ -1191,6 +1208,50 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                 return val_tmp(rv);
             }
 
+            /* @ok(val) — wrap a value in a failable success result */
+            if (!strcmp(name, "ok")) {
+                if (e->builtin.args.len < 1)
+                    fatal_at(e->span, "@ok requires one argument");
+                Type *vty = NULL;
+                Val val = cg_expr(cg, e->builtin.args.data[0], &vty);
+                const char *val_llt = vty ? effective_llvm_type(cg, vty) : "i32";
+                /* build { val_llt, i32 } aggregate */
+                char fail_llt[256];
+                snprintf(fail_llt, sizeof(fail_llt), "{ %s, i32 }", val_llt);
+                int f1 = new_tmp(cg);
+                emit(cg, "  %%t%d = insertvalue %s undef, %s %s, 0\n",
+                     f1, fail_llt, val_llt, val.buf);
+                int f2 = new_tmp(cg);
+                emit(cg, "  %%t%d = insertvalue %s %%t%d, i32 0, 1\n", f2, fail_llt, f1);
+                if (out_ty && vty) {
+                    Type *ft = ARENA_NEW(cg->arena, Type);
+                    ft->kind = TY_FAILABLE;
+                    ft->ptr.inner = vty;
+                    *out_ty = ft;
+                }
+                return val_tmp(f2);
+            }
+
+            /* @err(code) — wrap an error code in a failable failure result */
+            if (!strcmp(name, "err")) {
+                if (e->builtin.args.len < 1)
+                    fatal_at(e->span, "@err requires one argument (error code)");
+                Type *cty = NULL;
+                Val code = cg_expr(cg, e->builtin.args.data[0], &cty);
+                /* determine inner value type from context (function return type) */
+                const char *val_llt = "i32"; /* default inner type */
+                if (cg->cur_fn_ret_ty && cg->cur_fn_ret_ty->kind == TY_FAILABLE)
+                    val_llt = llvm_type(cg->cur_fn_ret_ty->ptr.inner);
+                char fail_llt[256];
+                snprintf(fail_llt, sizeof(fail_llt), "{ %s, i32 }", val_llt);
+                int f1 = new_tmp(cg);
+                emit(cg, "  %%t%d = insertvalue %s undef, i32 %s, 1\n", f1, fail_llt, code.buf);
+                if (out_ty && cg->cur_fn_ret_ty && cg->cur_fn_ret_ty->kind == TY_FAILABLE) {
+                    *out_ty = cg->cur_fn_ret_ty;
+                }
+                return val_tmp(f1);
+            }
+
             /* @debug / @release — compile-time build mode booleans */
             if (!strcmp(name, "debug")) {
                 if (out_ty) { Type *bt = ARENA_NEW(cg->arena, Type); bt->kind = TY_BOOL; *out_ty = bt; }
@@ -1422,8 +1483,13 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                 case UNOP_NOT:    emit(cg, "  %%t%d = xor i1 %s, true\n", t, o.buf); break;
                 case UNOP_BITNOT: emit(cg, "  %%t%d = xor %s %s, -1\n", t, llt, o.buf); break;
                 case UNOP_ADDROF: {
-                    /* For address-of we need the alloca pointer of the var.
-                       We stored the alloca name directly. */
+                    /* &var must return the alloca pointer, not a loaded value.
+                       For struct types cg_expr already returns the alloca ptr.
+                       For scalar types we need to bypass the load and get the alloca. */
+                    if (e->unop.operand->kind == EXPR_IDENT) {
+                        Symbol *sym = lookup(cg, e->unop.operand->ident.name);
+                        if (sym) return val_str(sym->llvm_name);
+                    }
                     return val_str(o.buf);
                 }
             }
@@ -1434,16 +1500,15 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
             /* Method call: callee is EXPR_FIELD with is_method flag set by sema */
             if (e->call.callee->kind == EXPR_FIELD && e->call.callee->field.is_method) {
                 const char *mangled = e->call.callee->field.mangled_name;
+                int is_static = (e->call.callee->field.is_method == 2);
                 Type *ret_ty = e->ty;
                 int is_void = (ret_ty == NULL || ret_ty->kind == TY_VOID);
                 const char *ret_llt = is_void ? "void" : effective_llvm_type(cg, ret_ty);
 
-                /* evaluate self:
-                   - struct p (TY_NAMED): EXPR_IDENT returns the alloca ptr directly
-                   - ptr *p (TY_PTR):     EXPR_IDENT loads the ptr from its alloca
-                   in both cases the result is already the ptr to the struct */
                 Type *obj_ty = NULL;
-                Val self_val = cg_expr(cg, e->call.callee->field.obj, &obj_ty);
+                Val self_val;
+                if (!is_static)
+                    self_val = cg_expr(cg, e->call.callee->field.obj, &obj_ty);
 
                 size_t nargs = e->call.args.len;
                 Val   *arg_vals = nargs ? malloc(sizeof(Val)   * nargs) : NULL;
@@ -1454,13 +1519,25 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                 }
 
                 int t = new_tmp(cg);
-                if (is_void)
-                    emit(cg, "  call void @%s(ptr %s", mangled, self_val.buf);
-                else
-                    emit(cg, "  %%t%d = call %s @%s(ptr %s", t, ret_llt, mangled, self_val.buf);
-                for (size_t i = 0; i < nargs; i++) {
-                    const char *llt = effective_llvm_type(cg, arg_tys[i]);
-                    emit(cg, ", %s %s", llt, arg_vals[i].buf);
+                if (is_static) {
+                    if (is_void)
+                        emit(cg, "  call void @%s(", mangled);
+                    else
+                        emit(cg, "  %%t%d = call %s @%s(", t, ret_llt, mangled);
+                    for (size_t i = 0; i < nargs; i++) {
+                        if (i) emit(cg, ", ");
+                        const char *llt = effective_llvm_type(cg, arg_tys[i]);
+                        emit(cg, "%s %s", llt, arg_vals[i].buf);
+                    }
+                } else {
+                    if (is_void)
+                        emit(cg, "  call void @%s(ptr %s", mangled, self_val.buf);
+                    else
+                        emit(cg, "  %%t%d = call %s @%s(ptr %s", t, ret_llt, mangled, self_val.buf);
+                    for (size_t i = 0; i < nargs; i++) {
+                        const char *llt = effective_llvm_type(cg, arg_tys[i]);
+                        emit(cg, ", %s %s", llt, arg_vals[i].buf);
+                    }
                 }
                 emit(cg, ")\n");
                 free(arg_vals);
@@ -1915,12 +1992,29 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
             emit(cg, "  %%t%d = alloca %%%s\n", t, e->struct_lit.ty_name);
             for (size_t i = 0; i < e->struct_lit.fields.len; i++) {
                 FieldInit *fi = &e->struct_lit.fields.data[i];
-                Type *fty = NULL;
-                Val fv = cg_expr(cg, fi->val, &fty);
+                Type *val_ty = NULL;
+                Val fv = cg_expr(cg, fi->val, &val_ty);
                 int fidx = si ? struct_field_index(si, fi->name) : (int)i;
                 if (fidx < 0) fidx = (int)i;
-                if (!fty && si) fty = struct_field_type(si, fi->name);
-                const char *store_llt = fty ? llvm_type(fty) : "i64";
+                /* use field type for store; coerce value if integer widths differ */
+                Type *field_ty = (si && fi->name) ? struct_field_type(si, fi->name) : val_ty;
+                const char *store_llt = field_ty ? effective_llvm_type(cg, field_ty)
+                                                  : (val_ty ? llvm_type(val_ty) : "i64");
+                const char *val_llt   = val_ty ? llvm_type(val_ty) : store_llt;
+                if (strcmp(val_llt, store_llt) != 0) {
+                    int sv = 0, lv = 0;
+                    if (!strcmp(val_llt,"i8"))   sv=8;  else if (!strcmp(val_llt,"i16"))  sv=16;
+                    else if (!strcmp(val_llt,"i32")) sv=32; else if (!strcmp(val_llt,"i64")) sv=64;
+                    if (!strcmp(store_llt,"i8"))  lv=8;  else if (!strcmp(store_llt,"i16")) lv=16;
+                    else if (!strcmp(store_llt,"i32")) lv=32; else if (!strcmp(store_llt,"i64")) lv=64;
+                    if (sv && lv && sv != lv) {
+                        int ct = new_tmp(cg);
+                        int is_signed = val_ty ? type_is_signed(val_ty) : 0;
+                        const char *op = (lv < sv) ? "trunc" : (is_signed ? "sext" : "zext");
+                        emit(cg, "  %%t%d = %s %s %s to %s\n", ct, op, val_llt, fv.buf, store_llt);
+                        fv = val_tmp(ct);
+                    }
+                }
                 int fp = new_tmp(cg);
                 emit(cg, "  %%t%d = getelementptr %%%s, ptr %%t%d, i32 0, i32 %d\n",
                      fp, e->struct_lit.ty_name, t, fidx);
@@ -1990,17 +2084,17 @@ static void cg_stmt(CG *cg, Stmt *s) {
         }
 
         case STMT_LET: {
+            int is_fail_err = s->let.ty && s->let.ty->kind == TY_FAILABLE;
             /* allocate storage */
             int alloca = new_tmp(cg);
             const char *llt = s->let.ty ? effective_llvm_type(cg, s->let.ty) : "i32";
-            if (s->let.ty && s->let.ty->kind == TY_FAILABLE)
-                llt = llvm_type(s->let.ty->ptr.inner);
+            if (is_fail_err) llt = "i32"; /* error code slot */
             emit(cg, "  %%t%d = alloca %s\n", alloca, llt);
 
             if (s->let.init && s->let.init->kind == EXPR_UNDEF) {
                 /* undef: zero-initialize based on declared type */
                 const char *zero = "0";
-                if (s->let.ty) {
+                if (s->let.ty && !is_fail_err) {
                     switch (s->let.ty->kind) {
                         case TY_BOOL: zero = "false"; break;
                         case TY_F16: case TY_F32: case TY_F64: zero = "0.0"; break;
@@ -2012,43 +2106,72 @@ static void cg_stmt(CG *cg, Stmt *s) {
                 }
                 emit(cg, "  store %s %s, ptr %%t%d\n", llt, zero, alloca);
             } else if (s->let.init) {
-                Type *init_ty = NULL;
-                Val init = cg_expr(cg, s->let.init, &init_ty);
-                int is_struct = init_ty && init_ty->kind == TY_NAMED
-                                && !find_enum(cg, init_ty->named.name);
-                /* ^T copy: auto-increment RC when source is an identifier
-                   (EXPR_CALL and builtins @new/@clone manage RC themselves) */
-                int is_rc_copy = init_ty && init_ty->kind == TY_SMART_PTR
-                                 && s->let.init->kind == EXPR_IDENT;
-                if (is_rc_copy) emit_rc_inc(cg, init.buf);
-                if (is_struct) {
-                    /* struct init returns a ptr — copy via load+store */
-                    int loaded = new_tmp(cg);
-                    emit(cg, "  %%t%d = load %s, ptr %s\n", loaded, llvm_type(init_ty), init.buf);
-                    emit(cg, "  store %s %%t%d, ptr %%t%d\n", llvm_type(init_ty), loaded, alloca);
+                /* failable error variable: reuse cached aggregate from val-side let */
+                if (is_fail_err && s->let.init == cg->last_fail_init && cg->last_fail_ty) {
+                    const char *fail_llt = llvm_type(cg->last_fail_ty);
+                    int ev = new_tmp(cg);
+                    emit(cg, "  %%t%d = extractvalue %s %s, 1\n",
+                         ev, fail_llt, cg->last_fail_val.buf);
+                    emit(cg, "  store i32 %%t%d, ptr %%t%d\n", ev, alloca);
                 } else {
-                    const char *store_ty = init_ty ? effective_llvm_type(cg, init_ty) : llt;
-                    if (init_ty && init_ty->kind == TY_FAILABLE)
-                        store_ty = llvm_type(init_ty->ptr.inner);
-                    /* coerce integer width if alloca type differs from init type */
-                    if (strcmp(store_ty, llt) != 0) {
-                        int sv = 0, lv = 0;
-                        if (!strcmp(store_ty,"i8"))  sv=8; else if (!strcmp(store_ty,"i16")) sv=16;
-                        else if (!strcmp(store_ty,"i32")) sv=32; else if (!strcmp(store_ty,"i64")) sv=64;
-                        if (!strcmp(llt,"i8"))  lv=8; else if (!strcmp(llt,"i16")) lv=16;
-                        else if (!strcmp(llt,"i32")) lv=32; else if (!strcmp(llt,"i64")) lv=64;
-                        if (sv && lv && sv != lv) {
-                            int ct = new_tmp(cg);
-                            int is_signed = init_ty ? type_is_signed(init_ty) : 0;
-                            const char *op = (lv < sv) ? "trunc"
-                                           : (is_signed ? "sext" : "zext");
-                            emit(cg, "  %%t%d = %s %s %s to %s\n",
-                                 ct, op, store_ty, init.buf, llt);
-                            init = val_tmp(ct);
-                            store_ty = llt;
+                    Type *init_ty = NULL;
+                    Val init = cg_expr(cg, s->let.init, &init_ty);
+                    /* is_struct: TY_NAMED that is NOT an enum */
+                    int is_struct = init_ty && init_ty->kind == TY_NAMED
+                                    && !find_enum(cg, init_ty->named.name);
+                    /* init_is_ptr: expressions that return a ptr to the struct (not the value) */
+                    int init_is_ptr = is_struct &&
+                                      (s->let.init->kind == EXPR_IDENT
+                                       || s->let.init->kind == EXPR_STRUCT_LIT);
+                    /* ^T copy: auto-increment RC when source is an identifier */
+                    int is_rc_copy = init_ty && init_ty->kind == TY_SMART_PTR
+                                     && s->let.init->kind == EXPR_IDENT;
+                    if (is_rc_copy) emit_rc_inc(cg, init.buf);
+                    if (is_struct && init_is_ptr) {
+                        /* struct init returns a ptr — copy via load+store */
+                        int loaded = new_tmp(cg);
+                        emit(cg, "  %%t%d = load %s, ptr %s\n", loaded, llvm_type(init_ty), init.buf);
+                        emit(cg, "  store %s %%t%d, ptr %%t%d\n", llvm_type(init_ty), loaded, alloca);
+                    } else if (is_struct) {
+                        /* struct returned by value from a call — store directly */
+                        emit(cg, "  store %s %s, ptr %%t%d\n", llvm_type(init_ty), init.buf, alloca);
+                    } else if (!is_fail_err && init_ty && init_ty->kind == TY_FAILABLE) {
+                        /* val-side of failable destructure: extract field 0, cache aggregate */
+                        cg->last_fail_init = s->let.init;
+                        cg->last_fail_val  = init;
+                        cg->last_fail_ty   = init_ty;
+                        const char *fail_llt = llvm_type(init_ty);
+                        int vv = new_tmp(cg);
+                        emit(cg, "  %%t%d = extractvalue %s %s, 0\n", vv, fail_llt, init.buf);
+                        emit(cg, "  store %s %%t%d, ptr %%t%d\n", llt, vv, alloca);
+                    } else if (is_fail_err && init_ty && init_ty->kind == TY_FAILABLE) {
+                        /* err-side without cache (standalone failable let) */
+                        const char *fail_llt = llvm_type(init_ty);
+                        int ev = new_tmp(cg);
+                        emit(cg, "  %%t%d = extractvalue %s %s, 1\n", ev, fail_llt, init.buf);
+                        emit(cg, "  store i32 %%t%d, ptr %%t%d\n", ev, alloca);
+                    } else {
+                        const char *store_ty = init_ty ? effective_llvm_type(cg, init_ty) : llt;
+                        /* coerce integer width if alloca type differs from init type */
+                        if (strcmp(store_ty, llt) != 0) {
+                            int sv = 0, lv = 0;
+                            if (!strcmp(store_ty,"i8"))  sv=8; else if (!strcmp(store_ty,"i16")) sv=16;
+                            else if (!strcmp(store_ty,"i32")) sv=32; else if (!strcmp(store_ty,"i64")) sv=64;
+                            if (!strcmp(llt,"i8"))  lv=8; else if (!strcmp(llt,"i16")) lv=16;
+                            else if (!strcmp(llt,"i32")) lv=32; else if (!strcmp(llt,"i64")) lv=64;
+                            if (sv && lv && sv != lv) {
+                                int ct = new_tmp(cg);
+                                int is_signed = init_ty ? type_is_signed(init_ty) : 0;
+                                const char *op = (lv < sv) ? "trunc"
+                                               : (is_signed ? "sext" : "zext");
+                                emit(cg, "  %%t%d = %s %s %s to %s\n",
+                                     ct, op, store_ty, init.buf, llt);
+                                init = val_tmp(ct);
+                                store_ty = llt;
+                            }
                         }
+                        emit(cg, "  store %s %s, ptr %%t%d\n", store_ty, init.buf, alloca);
                     }
-                    emit(cg, "  store %s %s, ptr %%t%d\n", store_ty, init.buf, alloca);
                 }
             }
 
@@ -2056,7 +2179,13 @@ static void cg_stmt(CG *cg, Stmt *s) {
             char llvm_name[32];
             snprintf(llvm_name, sizeof(llvm_name), "%%t%d", alloca);
             const char *sym_llvm = arena_strdup(cg->arena, llvm_name);
-            define_sym(cg, s->let.name, sym_llvm, 0, s->let.ty);
+            /* error variable of a failable destructure: register as i32, not !T */
+            Type *sym_ty = s->let.ty;
+            if (is_fail_err) {
+                sym_ty = ARENA_NEW(cg->arena, Type);
+                sym_ty->kind = TY_I32;
+            }
+            define_sym(cg, s->let.name, sym_llvm, 0, sym_ty);
 
             /* ^T local: register for auto-drop at scope exit */
             if (s->let.ty && s->let.ty->kind == TY_SMART_PTR)
@@ -2081,6 +2210,22 @@ static void cg_stmt(CG *cg, Stmt *s) {
                     emit(cg, "  %%t%d = load %s, ptr %s\n", loaded, llt, rhs.buf);
                     emit(cg, "  store %s %%t%d, ptr %s\n", llt, loaded, sym->llvm_name);
                 } else if (s->assign.op == ASSIGN_EQ) {
+                    /* coerce rhs integer width to match lhs type */
+                    if (vty && strcmp(llvm_type(vty), llt) != 0) {
+                        int sv4 = 0, lv4 = 0;
+                        const char *src_llt4 = llvm_type(vty);
+                        if (!strcmp(src_llt4,"i8"))  sv4=8; else if (!strcmp(src_llt4,"i16")) sv4=16;
+                        else if (!strcmp(src_llt4,"i32")) sv4=32; else if (!strcmp(src_llt4,"i64")) sv4=64;
+                        if (!strcmp(llt,"i8"))  lv4=8; else if (!strcmp(llt,"i16")) lv4=16;
+                        else if (!strcmp(llt,"i32")) lv4=32; else if (!strcmp(llt,"i64")) lv4=64;
+                        if (sv4 && lv4 && sv4 != lv4) {
+                            int ct4 = new_tmp(cg);
+                            const char *op4 = (lv4 < sv4) ? "trunc"
+                                            : (type_is_signed(vty) ? "sext" : "zext");
+                            emit(cg, "  %%t%d = %s %s %s to %s\n", ct4, op4, src_llt4, rhs.buf, llt);
+                            rhs = val_tmp(ct4);
+                        }
+                    }
                     emit(cg, "  store %s %s, ptr %s\n", llt, rhs.buf, sym->llvm_name);
                 } else {
                     /* load, operate, store */
@@ -2223,8 +2368,30 @@ static void cg_stmt(CG *cg, Stmt *s) {
                     Symbol *sym = lookup(cg, s->ret.val->ident.name);
                     if (sym) cg->skip_rc_drop = sym->llvm_name;
                 }
+                /* load struct from alloca when returning named struct by value */
+                if (rt && rt->kind == TY_NAMED && !find_enum(cg, rt->named.name)
+                        && (s->ret.val->kind == EXPR_IDENT
+                            || s->ret.val->kind == EXPR_STRUCT_LIT)) {
+                    int loaded = new_tmp(cg);
+                    emit(cg, "  %%t%d = load %s, ptr %s\n",
+                         loaded, llvm_type(rt), rv.buf);
+                    rv = val_tmp(loaded);
+                }
+                /* auto-wrap plain T as @ok(T) when returning from a !T function */
+                if (cg->cur_fn_ret_ty && cg->cur_fn_ret_ty->kind == TY_FAILABLE
+                        && rt && rt->kind != TY_FAILABLE) {
+                    const char *inner_llt = rt ? effective_llvm_type(cg, rt) : "i32";
+                    char fail_llt[256];
+                    snprintf(fail_llt, sizeof(fail_llt), "{ %s, i32 }", inner_llt);
+                    int f1 = new_tmp(cg);
+                    emit(cg, "  %%t%d = insertvalue %s undef, %s %s, 0\n",
+                         f1, fail_llt, inner_llt, rv.buf);
+                    int f2 = new_tmp(cg);
+                    emit(cg, "  %%t%d = insertvalue %s %%t%d, i32 0, 1\n", f2, fail_llt, f1);
+                    rv = val_tmp(f2);
+                }
                 /* coerce integer literals to declared return width if needed */
-                if (rt && llt && strcmp(llvm_type(rt), llt) != 0) {
+                else if (rt && llt && strcmp(llvm_type(rt), llt) != 0) {
                     const char *val_llt = llvm_type(rt);
                     /* integer widening: sext or zext */
                     int val_is_int = (strcmp(val_llt,"i8")==0||strcmp(val_llt,"i16")==0||
@@ -2618,10 +2785,16 @@ static void cg_stmt(CG *cg, Stmt *s) {
         }
 
         case STMT_BLOCK: {
-            push_scope(cg);
+            /* failable destructure: two lets where second has !T — no new scope */
+            int is_fail = (s->block.len == 2
+                && s->block.data[0]->kind == STMT_LET
+                && s->block.data[1]->kind == STMT_LET
+                && s->block.data[1]->let.ty
+                && s->block.data[1]->let.ty->kind == TY_FAILABLE);
+            if (!is_fail) push_scope(cg);
             for (size_t i = 0; i < s->block.len; i++)
                 cg_stmt(cg, s->block.data[i]);
-            pop_scope(cg);
+            if (!is_fail) pop_scope(cg);
             break;
         }
 
@@ -2679,8 +2852,9 @@ static void cg_fn(CG *cg, Item *item) {
     }
     emit(cg, ") {\nentry:\n");
 
-    cg->cur_fn_ret  = ret_llt;
-    cg->cur_label   = -1; /* -1 = entry block */
+    cg->cur_fn_ret    = ret_llt;
+    cg->cur_fn_ret_ty = item->fn.ret;
+    cg->cur_label     = -1; /* -1 = entry block */
     push_scope(cg);
 
     /* spill parameters to allocas so they're addressable */
@@ -2730,8 +2904,18 @@ static int is_preamble_decl(const char *name) {
     return 0;
 }
 
+static int mark_declared(CG *cg, const char *name) {
+    for (size_t i = 0; i < cg->n_declared_fns; i++)
+        if (!strcmp(cg->declared_fns[i], name)) return 0; /* already done */
+    if (cg->n_declared_fns < 512)
+        cg->declared_fns[cg->n_declared_fns++] = name;
+    return 1; /* first time */
+}
+
 static void cg_extern_fn(CG *cg, Item *item) {
     const char *c_name = item->extern_fn.c_name ? item->extern_fn.c_name : item->name;
+    /* skip if this exact declaration (by mangled name) was already emitted */
+    if (!mark_declared(cg, item->name)) return;
     if (is_preamble_decl(c_name)) {
         /* preamble already declares the real C function; just emit a wrapper alias */
         if (item->extern_fn.c_name) {
@@ -2766,17 +2950,19 @@ static void cg_extern_fn(CG *cg, Item *item) {
 
     if (item->extern_fn.c_name) {
         /* Imported extern fn: declare C function + emit thin wrapper with mangled name */
-        /* First declare the original C function (if not already done) */
-        emit(cg, "declare %s @%s(", ret_llt, c_name);
-        for (size_t i = 0; i < item->extern_fn.params.len; i++) {
-            if (i) emit(cg, ", ");
-            emit(cg, "%s", llvm_type(item->extern_fn.params.data[i].ty));
+        /* First declare the original C function (if not already declared) */
+        if (mark_declared(cg, c_name)) {
+            emit(cg, "declare %s @%s(", ret_llt, c_name);
+            for (size_t i = 0; i < item->extern_fn.params.len; i++) {
+                if (i) emit(cg, ", ");
+                emit(cg, "%s", llvm_type(item->extern_fn.params.data[i].ty));
+            }
+            if (item->extern_fn.variadic) {
+                if (item->extern_fn.params.len) emit(cg, ", ");
+                emit(cg, "...");
+            }
+            emit(cg, ")\n");
         }
-        if (item->extern_fn.variadic) {
-            if (item->extern_fn.params.len) emit(cg, ", ");
-            emit(cg, "...");
-        }
-        emit(cg, ")\n");
         /* Then emit a thin define wrapper with the mangled name */
         int is_void = !strcmp(ret_llt, "void");
         emit(cg, "define %s @%s(", ret_llt, item->name);

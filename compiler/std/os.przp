@@ -7,10 +7,6 @@ extern fn malloc(n: usize) -> *u8
 extern fn free(p: *u8)
 extern fn strlen(s: *u8) -> usize
 
-# argc and argv globals injected by the Perzephxne runtime
-@__przp_argc: i32 = undef
-@__przp_argv: *u8 = undef
-
 # exit with a status code
 fn quit(code: i32) {
     exit(code)
@@ -29,7 +25,3 @@ fn run(cmd: str) -> i32 {
     ret system(cmd.data)
 }
 
-# argc: return the program argument count
-fn argc() -> i32 {
-    ret @__przp_argc
-}

@@ -227,6 +227,14 @@ static void rw_ident_expr(Expr *e, const char **orig, size_t n_orig,
             rw_ident_expr(e->field.obj, orig, n_orig, alias, a);
             break;
         case EXPR_STRUCT_LIT:
+            for (size_t i = 0; i < n_orig; i++) {
+                if (!strcmp(e->struct_lit.ty_name, orig[i])) {
+                    char buf[512];
+                    snprintf(buf, sizeof(buf), "%s__%s", alias, orig[i]);
+                    e->struct_lit.ty_name = arena_strdup(a, buf);
+                    break;
+                }
+            }
             for (size_t i = 0; i < e->struct_lit.fields.len; i++)
                 rw_ident_expr(e->struct_lit.fields.data[i].val, orig, n_orig, alias, a);
             break;

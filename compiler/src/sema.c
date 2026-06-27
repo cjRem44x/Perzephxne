@@ -235,7 +235,10 @@ static int ty_coerces(Type *from, Type *to) {
     /* enum ↔ integer: integer types coerce into enum named types and vice versa */
     if (ty_is_int(from) && to->kind   == TY_NAMED) return 1;
     if (from->kind == TY_NAMED && ty_is_int(to))   return 1;
-    /* enum ↔ enum (same name already caught by ty_eq) */
+    /* T coerces to !T (auto-wrap as @ok on return) */
+    if (to->kind == TY_FAILABLE && ty_coerces(from, to->ptr.inner)) return 1;
+    /* !T coerces to T (extract value part in failable destructure) */
+    if (from->kind == TY_FAILABLE && ty_coerces(from->ptr.inner, to)) return 1;
     return 0;
 }
 
@@ -559,19 +562,27 @@ static Type *check_expr(Sema *s, Expr *e) {
                              obj_ty->named.name, e->field.field);
                     Sym *method_sym = lookup(s, mangled);
                     if (method_sym && method_sym->ty && method_sym->ty->kind == TY_FN) {
-                        /* build a reduced TY_FN without the self param for arity checking */
                         Type *full = method_sym->ty;
                         size_t np = full->fn.params.len;
+                        /* detect static call: obj is a type-name identifier */
+                        int is_static = 0;
+                        if (e->field.obj->kind == EXPR_IDENT) {
+                            Sym *obj_sym = lookup(s, e->field.obj->ident.name);
+                            is_static = obj_sym && obj_sym->is_type;
+                        }
+                        /* build reduced TY_FN: drop self param for instance calls */
                         Type *reduced = make_ty(s, TY_FN);
                         reduced->fn.ret = full->fn.ret;
-                        if (np > 1) {
-                            reduced->fn.params.len  = np - 1;
-                            reduced->fn.params.data = ARENA_ALLOC(s->arena, Type *, np - 1);
-                            for (size_t k = 1; k < np; k++)
-                                reduced->fn.params.data[k - 1] = full->fn.params.data[k];
+                        size_t skip = is_static ? 0 : 1;
+                        if (np > skip) {
+                            reduced->fn.params.len  = np - skip;
+                            reduced->fn.params.data = ARENA_ALLOC(s->arena, Type *, np - skip);
+                            for (size_t k = skip; k < np; k++)
+                                reduced->fn.params.data[k - skip] = full->fn.params.data[k];
                         }
                         e->ty = reduced;
-                        e->field.is_method    = 1;
+                        /* is_method: 1=instance, 2=static */
+                        e->field.is_method    = is_static ? 2 : 1;
                         e->field.mangled_name = arena_strdup(s->arena, mangled);
                     } else {
                         sema_error(s, e->span, "type '%s' has no field or method '%s'",
@@ -749,9 +760,10 @@ static void check_stmt(Sema *s, Stmt *st) {
 
             /* handle failable: val, err: !T = func() */
             if (ty && ty->kind == TY_FAILABLE) {
-                /* the actual value type is the inner */
-                define(s, st->span, st->let.name, ty->ptr.inner, st->let.mutable, 0);
-                /* err binding handled at parse time as a sibling let */
+                /* This let is the err variable: define as i32 error code */
+                Type *err_ty = ARENA_NEW(s->arena, Type);
+                err_ty->kind = TY_I32;
+                define(s, st->span, st->let.name, err_ty, st->let.mutable, 0);
             } else {
                 define(s, st->span, st->let.name, ty, st->let.mutable, 0);
             }
@@ -926,12 +938,19 @@ static void check_stmt(Sema *s, Stmt *st) {
                 check_stmt(s, st->defer.data[i]);
             break;
 
-        case STMT_BLOCK:
-            push_scope(s);
+        case STMT_BLOCK: {
+            /* failable destructure block: two lets where second has !T — no new scope */
+            int is_fail = (st->block.len == 2
+                && st->block.data[0]->kind == STMT_LET
+                && st->block.data[1]->kind == STMT_LET
+                && st->block.data[1]->let.ty
+                && st->block.data[1]->let.ty->kind == TY_FAILABLE);
+            if (!is_fail) push_scope(s);
             for (size_t i = 0; i < st->block.len; i++)
                 check_stmt(s, st->block.data[i]);
-            pop_scope(s);
+            if (!is_fail) pop_scope(s);
             break;
+        }
 
         case STMT_BREAK:
         case STMT_CONTINUE:

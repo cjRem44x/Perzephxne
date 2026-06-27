@@ -1,0 +1,82 @@
+# std/collections — dynamic array (Vec) and basic data structures
+
+extern fn malloc(n: usize) -> *u8
+extern fn realloc(p: *u8, n: usize) -> *u8
+extern fn free(p: *u8)
+extern fn memcpy(dst: *u8, src: *u8, n: usize) -> *u8
+
+# Vec: growable array of i64 values
+struct Vec {
+    data: *u8
+    len:  usize
+    cap:  usize
+}
+
+impl Vec {
+    # new: create an empty Vec
+    fn new() -> Vec {
+        v: Vec = Vec{.data = null, .len = 0, .cap = 0}
+        ret v
+    }
+
+    # free_vec: release heap memory
+    fn free_vec(self: *Vec) {
+        if self.data != null {
+            free(self.data)
+            self.data = null
+        }
+        self.len = 0
+        self.cap = 0
+    }
+
+    # push: append an i64 value
+    fn push(self: *Vec, val: i64) {
+        if self.len == self.cap {
+            new_cap: usize = self.cap * 2 + 8
+            self.data = realloc(self.data, new_cap * 8)
+            self.cap = new_cap
+        }
+        slot: *u8 = self.data + self.len * 8
+        memcpy(slot, &val, 8)
+        self.len = self.len + 1
+    }
+
+    # get: return element at index i (no bounds check)
+    fn get(self: *Vec, i: usize) -> i64 {
+        result: i64 = 0
+        src: *u8 = self.data + i * 8
+        memcpy(&result, src, 8)
+        ret result
+    }
+
+    # set: overwrite element at index i
+    fn set(self: *Vec, i: usize, val: i64) {
+        slot: *u8 = self.data + i * 8
+        memcpy(slot, &val, 8)
+    }
+
+    # len_of: return number of elements
+    fn len_of(self: *Vec) -> usize {
+        ret self.len
+    }
+
+    # is_empty: return true if no elements
+    fn is_empty(self: *Vec) -> bool {
+        ret self.len == 0
+    }
+
+    # pop: remove and return last element; returns 0 if empty
+    fn pop(self: *Vec) -> i64 {
+        if self.len == 0 { ret 0 }
+        self.len = self.len - 1
+        result: i64 = 0
+        src: *u8 = self.data + self.len * 8
+        memcpy(&result, src, 8)
+        ret result
+    }
+
+    # clear: reset length to 0 (does not free memory)
+    fn clear(self: *Vec) {
+        self.len = 0
+    }
+}
