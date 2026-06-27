@@ -924,9 +924,9 @@ static Stmt *mkstmt(Parser *p, StmtKind k, Span span) {
 
 /* variable declaration: name: type = expr  or  name: type : expr  or  name, name: !type = expr */
 static int is_var_decl(Parser *p) {
-    /* simple heuristic: ident followed by ':', possibly followed by '_' */
+    /* heuristic: ident (or _) followed by ':' or ',' (two-name failable form) */
     return (check(p, TOK_IDENT) || check(p, TOK_UNDER)) &&
-           (check2(p, TOK_COLON));
+           (check2(p, TOK_COLON) || check2(p, TOK_COMMA));
 }
 
 static Stmt *parse_let(Parser *p) {

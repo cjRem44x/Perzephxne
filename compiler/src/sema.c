@@ -299,6 +299,7 @@ static Type *builtin_ret_ty(Sema *s, const char *name) {
         Type *sl = make_ptr(s, TY_SLICE, s->ty_str);
         return sl;
     }
+    if (!strcmp(name, "str_raw"))  return s->ty_str;
     return NULL;
 }
 
@@ -405,7 +406,19 @@ static Type *check_expr(Sema *s, Expr *e) {
         case EXPR_BINOP: {
             Type *lt = check_expr(s, e->binop.l);
             Type *rt = check_expr(s, e->binop.r);
-            switch (e->binop.op) {
+            /* pointer arithmetic: *T +/- integer → *T */
+            int ptr_arith = 0;
+            if ((e->binop.op == BINOP_ADD || e->binop.op == BINOP_SUB)) {
+                if (lt && lt->kind == TY_PTR && rt && ty_is_int(rt)) {
+                    e->ty = lt; ptr_arith = 1;
+                } else if (rt && rt->kind == TY_PTR && lt && ty_is_int(lt)) {
+                    e->ty = rt; ptr_arith = 1;
+                } else if (lt && lt->kind == TY_PTR && rt && rt->kind == TY_PTR) {
+                    /* ptr - ptr → usize */
+                    e->ty = s->ty_usize; ptr_arith = 1;
+                }
+            }
+            if (!ptr_arith) switch (e->binop.op) {
                 case BINOP_EQ: case BINOP_NE:
                 case BINOP_LT: case BINOP_GT:
                 case BINOP_LE: case BINOP_GE:
@@ -422,8 +435,9 @@ static Type *check_expr(Sema *s, Expr *e) {
                     else e->ty = s->ty_i32;
                     break;
             }
-            /* type compatibility check */
-            if (lt && rt && !ty_eq(lt, rt) && !ty_coerces(lt, rt) && !ty_coerces(rt, lt)) {
+            /* type compatibility check (skip pointer arithmetic cases) */
+            if (!ptr_arith && lt && rt && !ty_eq(lt, rt)
+                    && !ty_coerces(lt, rt) && !ty_coerces(rt, lt)) {
                 switch (e->binop.op) {
                     case BINOP_EQ: case BINOP_NE:
                     case BINOP_LT: case BINOP_GT:
@@ -470,8 +484,11 @@ static Type *check_expr(Sema *s, Expr *e) {
             for (size_t i = 0; i < e->call.args.len; i++)
                 check_expr(s, e->call.args.data[i]);
             if (callee_ty && callee_ty->kind == TY_FN) {
-                /* check arg count */
-                if (e->call.args.len != callee_ty->fn.params.len) {
+                /* check arg count (variadic fns accept any number >= param count) */
+                int arg_ok = callee_ty->fn.variadic
+                             ? (e->call.args.len >= callee_ty->fn.params.len)
+                             : (e->call.args.len == callee_ty->fn.params.len);
+                if (!arg_ok) {
                     sema_error(s, e->span, "expected %zu arguments, got %zu",
                                callee_ty->fn.params.len, e->call.args.len);
                 }
@@ -560,6 +577,20 @@ static Type *check_expr(Sema *s, Expr *e) {
                         sema_error(s, e->span, "type '%s' has no field or method '%s'",
                                    obj_ty->named.name, e->field.field);
                     }
+                }
+            } else if (obj_ty && (obj_ty->kind == TY_STR || obj_ty->kind == TY_SLICE)) {
+                /* str/slice pseudo-fields: .len -> usize, .data -> *u8 / *T */
+                if (!strcmp(e->field.field, "len")) {
+                    e->ty = s->ty_usize;
+                } else if (!strcmp(e->field.field, "data") || !strcmp(e->field.field, "ptr")) {
+                    Type *inner = (obj_ty->kind == TY_STR)
+                                  ? make_ty(s, TY_U8)
+                                  : (obj_ty->ptr.inner ? obj_ty->ptr.inner : make_ty(s, TY_U8));
+                    Type *pt = make_ty(s, TY_PTR); pt->ptr.inner = inner;
+                    e->ty = pt;
+                } else {
+                    sema_error(s, e->span, "type '%s' has no field '%s'",
+                               ty_str(obj_ty), e->field.field);
                 }
             } else if (obj_ty) {
                 sema_error(s, e->span, "field access on non-struct type '%s'", ty_str(obj_ty));
@@ -990,6 +1021,7 @@ static void check_extern_fn(Sema *s, Item *item) {
             ty->fn.params.data[i] = p->ty;
         }
     }
+    ty->fn.variadic = item->extern_fn.variadic;
     /* update existing sym from first pass rather than re-defining */
     for (Sym *sym = s->scope->syms; sym; sym = sym->next) {
         if (!strcmp(sym->name, item->name)) { sym->ty = ty; return; }
@@ -1331,6 +1363,14 @@ static void register_item(Sema *s, Item *item) {
         case ITEM_EXTERN_FN: {
             Type *ty = make_ty(s, TY_FN);
             ty->fn.ret = item->extern_fn.ret;
+            size_t np = item->extern_fn.params.len;
+            if (np) {
+                ty->fn.params.data = ARENA_ALLOC(s->arena, Type *, np);
+                ty->fn.params.len  = np;
+                for (size_t i = 0; i < np; i++)
+                    ty->fn.params.data[i] = item->extern_fn.params.data[i].ty;
+            }
+            ty->fn.variadic = item->extern_fn.variadic;
             define(s, item->span, item->name, ty, 0, 0);
             break;
         }

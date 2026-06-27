@@ -85,6 +85,7 @@ typedef struct {
     int          terminated;   /* 1 = current block already has a terminator */
     int          had_error;
     int          release;      /* 1 = --release build (@debug=false, @release=true) */
+    int          cur_label;    /* -1 = entry block, else the current l%d label id */
 } CG;
 
 /* ── Utilities ────────────────────────────────────────────────────────────── */
@@ -112,6 +113,13 @@ static void emit_br(CG *cg, const char *fmt, ...) {
 static void emit_label(CG *cg, int id) {
     emit(cg, "l%d:\n", id);
     cg->terminated = 0;
+    cg->cur_label  = id;
+}
+
+/* write the current label name for phi predecessors */
+static void emit_cur_label(CG *cg) {
+    if (cg->cur_label < 0) emit(cg, "%%entry");
+    else emit(cg, "%%l%d", cg->cur_label);
 }
 
 static void push_scope(CG *cg) {
@@ -370,12 +378,25 @@ typedef struct { char buf[64]; } Val;
 static Val val_tmp(int id)  { Val v; snprintf(v.buf, sizeof(v.buf), "%%t%d", id); return v; }
 static Val val_str(const char *s) { Val v; snprintf(v.buf, sizeof(v.buf), "%s", s); return v; }
 
-/* C ABI: float args to variadic functions must be widened to double */
+/* C ABI: small int/float args to variadic functions must be widened */
 static Val promote_vararg(CG *cg, Val v, Type *ty, const char **llt_out) {
     if (ty && ty->kind == TY_F32) {
         int t = new_tmp(cg);
         emit(cg, "  %%t%d = fpext float %s to double\n", t, v.buf);
         if (llt_out) *llt_out = "double";
+        return val_tmp(t);
+    }
+    /* C integer promotion: i8/i16/u8/u16/bool/char → i32 */
+    if (ty && (ty->kind == TY_I8 || ty->kind == TY_I16
+            || ty->kind == TY_U8 || ty->kind == TY_U16
+            || ty->kind == TY_BOOL || ty->kind == TY_CHAR)) {
+        int t = new_tmp(cg);
+        int is_signed = (ty->kind == TY_I8 || ty->kind == TY_I16);
+        if (is_signed)
+            emit(cg, "  %%t%d = sext %s %s to i32\n", t, llvm_type(ty), v.buf);
+        else
+            emit(cg, "  %%t%d = zext %s %s to i32\n", t, llvm_type(ty), v.buf);
+        if (llt_out) *llt_out = "i32";
         return val_tmp(t);
     }
     if (llt_out) *llt_out = ty ? llvm_type(ty) : "i32";
@@ -406,7 +427,8 @@ static void emit_defers_for_scope(CG *cg, Scope *sc) {
 }
 
 static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
-    if (out_ty) *out_ty = NULL;
+    /* default: use sema-annotated type; individual cases may override */
+    if (out_ty) *out_ty = e->ty;
 
     switch (e->kind) {
         case EXPR_INT: {
@@ -825,6 +847,10 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                 int clnl = new_tmp(cg);
                 emit(cg, "  %%t%d = icmp eq i8 %%t%d, 10\n", clnl, clc);
                 int cl_strip = new_label(cg), cl_done = new_label(cg);
+                /* capture predecessor label before the branch for the phi */
+                char pred_lbl[32];
+                if (cg->cur_label < 0) snprintf(pred_lbl, sizeof(pred_lbl), "%%entry");
+                else snprintf(pred_lbl, sizeof(pred_lbl), "%%l%d", cg->cur_label);
                 emit_br(cg, "  br i1 %%t%d, label %%l%d, label %%l%d\n", clnl, cl_strip, cl_done);
                 emit_label(cg, cl_strip);
                 emit(cg, "  store i8 0, ptr %%t%d\n", clp);
@@ -834,8 +860,8 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                 emit_label(cg, cl_done);
                 /* phi to pick length */
                 int clen_f = new_tmp(cg);
-                emit(cg, "  %%t%d = phi i64 [ %%t%d, %%l%d ], [ %%t%d, %%l%d ]\n",
-                     clen_f, clen2, cl_strip, clen, cl_done - 1);
+                emit(cg, "  %%t%d = phi i64 [ %%t%d, %%l%d ], [ %%t%d, %s ]\n",
+                     clen_f, clen2, cl_strip, clen, pred_lbl);
                 int csa = new_tmp(cg);
                 emit(cg, "  %%t%d = alloca { ptr, i64 }\n", csa);
                 int cp0 = new_tmp(cg);
@@ -1080,6 +1106,20 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                 return val_tmp(t);
             }
 
+            /* @str_raw(ptr, len) — construct a str fat pointer from raw pointer and length */
+            if (!strcmp(name, "str_raw")) {
+                if (e->builtin.args.len < 2)
+                    fatal_at(e->span, "@str_raw requires two arguments: @str_raw(ptr, len)");
+                Val raw_ptr = cg_expr(cg, e->builtin.args.data[0], NULL);
+                Val raw_len = cg_expr(cg, e->builtin.args.data[1], NULL);
+                int f1 = new_tmp(cg);
+                emit(cg, "  %%t%d = insertvalue { ptr, i64 } undef, ptr %s, 0\n", f1, raw_ptr.buf);
+                int f2 = new_tmp(cg);
+                emit(cg, "  %%t%d = insertvalue { ptr, i64 } %%t%d, i64 %s, 1\n", f2, f1, raw_len.buf);
+                if (out_ty) { Type *st = ARENA_NEW(cg->arena, Type); st->kind = TY_STR; *out_ty = st; }
+                return val_tmp(f2);
+            }
+
             /* @offsetof(T, field) — byte offset of a struct field */
             if (!strcmp(name, "offsetof")) {
                 if (e->builtin.args.len < 2)
@@ -1246,16 +1286,30 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                        (src_ty->kind == TY_STR)) {
                 emit(cg, "  %%t%d = call i32 @atoi(ptr %s)\n", t, src.buf);
             } else {
-                /* numeric cast */
+                /* numeric cast — choose trunc/sext/zext based on bit widths */
                 const char *src_llt = src_ty ? llvm_type(src_ty) : "i32";
-                if (!strcmp(dst,"i8"))    emit(cg, "  %%t%d = trunc %s %s to i8\n",  t, src_llt, src.buf);
-                else if (!strcmp(dst,"i16")) emit(cg, "  %%t%d = trunc %s %s to i16\n", t, src_llt, src.buf);
-                else if (!strcmp(dst,"i32")) emit(cg, "  %%t%d = trunc %s %s to i32\n", t, src_llt, src.buf);
-                else if (!strcmp(dst,"i64")) emit(cg, "  %%t%d = sext %s %s to i64\n",  t, src_llt, src.buf);
-                else if (!strcmp(dst,"u8"))  emit(cg, "  %%t%d = trunc %s %s to i8\n",  t, src_llt, src.buf);
-                else if (!strcmp(dst,"u16")) emit(cg, "  %%t%d = trunc %s %s to i16\n", t, src_llt, src.buf);
-                else if (!strcmp(dst,"u32")) emit(cg, "  %%t%d = trunc %s %s to i32\n", t, src_llt, src.buf);
-                else if (!strcmp(dst,"u64")) emit(cg, "  %%t%d = zext %s %s to i64\n",  t, src_llt, src.buf);
+                int src_bits = 32; /* default */
+                if (!strcmp(src_llt,"i8"))  src_bits=8;
+                else if (!strcmp(src_llt,"i16")) src_bits=16;
+                else if (!strcmp(src_llt,"i32")) src_bits=32;
+                else if (!strcmp(src_llt,"i64")) src_bits=64;
+                int is_src_signed = type_is_signed(src_ty);
+                #define INT_CAST(dst_llt, dst_bits) do { \
+                    const char *op = (dst_bits < src_bits) ? "trunc" \
+                                   : (dst_bits > src_bits) ? (is_src_signed ? "sext" : "zext") \
+                                   : NULL; \
+                    if (op) emit(cg, "  %%t%d = %s %s %s to %s\n", t, op, src_llt, src.buf, dst_llt); \
+                    else    emit(cg, "  %%t%d = bitcast %s %s to %s\n", t, src_llt, src.buf, dst_llt); \
+                } while(0)
+                if (!strcmp(dst,"i8"))         INT_CAST("i8",  8);
+                else if (!strcmp(dst,"i16"))   INT_CAST("i16",16);
+                else if (!strcmp(dst,"i32"))   INT_CAST("i32",32);
+                else if (!strcmp(dst,"i64"))   INT_CAST("i64",64);
+                else if (!strcmp(dst,"u8"))    INT_CAST("i8",  8);
+                else if (!strcmp(dst,"u16"))   INT_CAST("i16",16);
+                else if (!strcmp(dst,"u32"))   INT_CAST("i32",32);
+                else if (!strcmp(dst,"u64"))   INT_CAST("i64",64);
+                #undef INT_CAST
                 else if (!strcmp(dst,"f32")) {
                     if (type_is_float(src_ty))
                         emit(cg, "  %%t%d = fptrunc %s %s to float\n", t, src_llt, src.buf);
@@ -1286,6 +1340,49 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
             Type *ty = lt ? lt : rt;
             /* use sema type for out_ty — comparisons return bool, not operand type */
             if (out_ty) *out_ty = e->ty ? e->ty : ty;
+            /* pointer arithmetic: emit GEP instead of add/sub */
+            if (e->binop.op == BINOP_ADD || e->binop.op == BINOP_SUB) {
+                Type *ptr_ty = (lt && lt->kind == TY_PTR) ? lt
+                             : (rt && rt->kind == TY_PTR) ? rt : NULL;
+                if (ptr_ty) {
+                    Val ptr_v = (lt && lt->kind == TY_PTR) ? l : r;
+                    Val off_v = (lt && lt->kind == TY_PTR) ? r : l;
+                    Type *off_ty = (lt && lt->kind == TY_PTR) ? rt : lt;
+                    /* ptr - ptr → ptrdiff as usize */
+                    if (lt && lt->kind == TY_PTR && rt && rt->kind == TY_PTR) {
+                        int t2 = new_tmp(cg);
+                        emit(cg, "  %%t%d = ptrtoint ptr %s to i64\n", t2, l.buf);
+                        int t3 = new_tmp(cg);
+                        emit(cg, "  %%t%d = ptrtoint ptr %s to i64\n", t3, r.buf);
+                        int t4 = new_tmp(cg);
+                        emit(cg, "  %%t%d = sub i64 %%t%d, %%t%d\n", t4, t2, t3);
+                        return val_tmp(t4);
+                    }
+                    /* sign-extend offset to i64 if needed */
+                    Val idx = off_v;
+                    if (off_ty && llvm_type(off_ty)[0] != 'i') {
+                        /* non-int offset, unlikely; just use as-is */
+                    } else if (off_ty && strcmp(llvm_type(off_ty), "i64") != 0) {
+                        int ext = new_tmp(cg);
+                        int is_signed_off = type_is_signed(off_ty);
+                        emit(cg, "  %%t%d = %sext %s %s to i64\n",
+                             ext, is_signed_off ? "s" : "z", llvm_type(off_ty), off_v.buf);
+                        idx = val_tmp(ext);
+                    }
+                    /* negative offset for subtraction */
+                    if (e->binop.op == BINOP_SUB) {
+                        int neg = new_tmp(cg);
+                        emit(cg, "  %%t%d = sub i64 0, %s\n", neg, idx.buf);
+                        idx = val_tmp(neg);
+                    }
+                    Type *elem_ty = ptr_ty->ptr.inner;
+                    const char *elem_llt = elem_ty ? llvm_type(elem_ty) : "i8";
+                    int t2 = new_tmp(cg);
+                    emit(cg, "  %%t%d = getelementptr %s, ptr %s, i64 %s\n",
+                         t2, elem_llt, ptr_v.buf, idx.buf);
+                    return val_tmp(t2);
+                }
+            }
             const char *llt = ty ? llvm_type(ty) : "i32";
             int t = new_tmp(cg);
             int is_flt = type_is_float(ty);
@@ -1403,6 +1500,41 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                 arg_vals[i] = cg_expr(cg, e->call.args.data[i], &arg_tys[i]);
             }
 
+            /* coerce arguments to callee param types when known */
+            if (callee_ty && callee_ty->kind == TY_FN) {
+                size_t np = callee_ty->fn.params.len;
+                for (size_t i = 0; i < nargs && i < np; i++) {
+                    Type *param_ty = callee_ty->fn.params.data[i];
+                    Type *arg_ty   = arg_tys[i];
+                    if (!param_ty || !arg_ty) continue;
+                    const char *pt = llvm_type(param_ty);
+                    const char *at = arg_ty ? effective_llvm_type(cg, arg_ty) : "i32";
+                    if (!strcmp(pt, at)) continue;
+                    /* str arg → *u8 param: extract .data pointer */
+                    if (arg_ty->kind == TY_STR && param_ty->kind == TY_PTR) {
+                        int ep = new_tmp(cg);
+                        emit(cg, "  %%t%d = extractvalue { ptr, i64 } %s, 0\n",
+                             ep, arg_vals[i].buf);
+                        arg_vals[i] = val_tmp(ep);
+                        arg_tys[i]  = param_ty;
+                        continue;
+                    }
+                    /* integer width coercion */
+                    int sv3 = 0, lv3 = 0;
+                    if (!strcmp(at,"i8"))  sv3=8; else if (!strcmp(at,"i16")) sv3=16;
+                    else if (!strcmp(at,"i32")) sv3=32; else if (!strcmp(at,"i64")) sv3=64;
+                    if (!strcmp(pt,"i8"))  lv3=8; else if (!strcmp(pt,"i16")) lv3=16;
+                    else if (!strcmp(pt,"i32")) lv3=32; else if (!strcmp(pt,"i64")) lv3=64;
+                    if (sv3 && lv3 && sv3 != lv3) {
+                        int ct = new_tmp(cg);
+                        const char *op = (lv3 < sv3) ? "trunc"
+                                       : (type_is_signed(arg_ty) ? "sext" : "zext");
+                        emit(cg, "  %%t%d = %s %s %s to %s\n", ct, op, at, arg_vals[i].buf, pt);
+                        arg_vals[i] = val_tmp(ct);
+                        arg_tys[i]  = param_ty;
+                    }
+                }
+            }
             int is_void_call = !strcmp(ret_llt, "void");
             int t = new_tmp(cg);
             if (is_void_call)
@@ -1454,6 +1586,20 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                     }
                     fatal_at(e->span, "enum '%s' has no variant '%s'",
                              ei->name, e->field.field);
+                }
+            }
+            /* str / slice pseudo-fields: .len -> i64, .data/.ptr -> ptr */
+            {
+                Type *peek_ty = e->field.obj->ty;
+                if (peek_ty && (peek_ty->kind == TY_STR || peek_ty->kind == TY_SLICE)) {
+                    Type *pobj_ty = NULL;
+                    Val fat = cg_expr(cg, e->field.obj, &pobj_ty);
+                    int field_idx = (!strcmp(e->field.field, "len")) ? 1 : 0;
+                    int t = new_tmp(cg);
+                    emit(cg, "  %%t%d = extractvalue { ptr, i64 } %s, %d\n",
+                         t, fat.buf, field_idx);
+                    if (out_ty) *out_ty = e->ty;
+                    return val_tmp(t);
                 }
             }
             /* Struct field access */
@@ -1884,6 +2030,24 @@ static void cg_stmt(CG *cg, Stmt *s) {
                     const char *store_ty = init_ty ? effective_llvm_type(cg, init_ty) : llt;
                     if (init_ty && init_ty->kind == TY_FAILABLE)
                         store_ty = llvm_type(init_ty->ptr.inner);
+                    /* coerce integer width if alloca type differs from init type */
+                    if (strcmp(store_ty, llt) != 0) {
+                        int sv = 0, lv = 0;
+                        if (!strcmp(store_ty,"i8"))  sv=8; else if (!strcmp(store_ty,"i16")) sv=16;
+                        else if (!strcmp(store_ty,"i32")) sv=32; else if (!strcmp(store_ty,"i64")) sv=64;
+                        if (!strcmp(llt,"i8"))  lv=8; else if (!strcmp(llt,"i16")) lv=16;
+                        else if (!strcmp(llt,"i32")) lv=32; else if (!strcmp(llt,"i64")) lv=64;
+                        if (sv && lv && sv != lv) {
+                            int ct = new_tmp(cg);
+                            int is_signed = init_ty ? type_is_signed(init_ty) : 0;
+                            const char *op = (lv < sv) ? "trunc"
+                                           : (is_signed ? "sext" : "zext");
+                            emit(cg, "  %%t%d = %s %s %s to %s\n",
+                                 ct, op, store_ty, init.buf, llt);
+                            init = val_tmp(ct);
+                            store_ty = llt;
+                        }
+                    }
                     emit(cg, "  store %s %s, ptr %%t%d\n", store_ty, init.buf, alloca);
                 }
             }
@@ -2000,11 +2164,31 @@ static void cg_stmt(CG *cg, Stmt *s) {
                     emit(cg, "  store %s %%t%d, ptr %%t%d\n", elem_llt, res, ep);
                 }
             } else if (s->assign.target->kind == EXPR_DEREF) {
-                Val ptr = cg_expr(cg, s->assign.target->deref.operand, NULL);
+                Type *ptr_ty = NULL;
+                Val ptr = cg_expr(cg, s->assign.target->deref.operand, &ptr_ty);
+                Type *inner_ty = (ptr_ty && ptr_ty->kind == TY_PTR) ? ptr_ty->ptr.inner : NULL;
                 Type *vty = NULL;
                 Val rhs = cg_expr(cg, s->assign.val, &vty);
-                const char *llt = vty ? llvm_type(vty) : "i32";
-                emit(cg, "  store %s %s, ptr %s\n", llt, rhs.buf, ptr.buf);
+                /* prefer the pointer's inner type so narrowing stores (e.g. *u8 = 0) use i8 */
+                const char *store_ty = inner_ty ? llvm_type(inner_ty)
+                                                : (vty ? llvm_type(vty) : "i32");
+                /* coerce rhs to store_ty if widths differ */
+                if (vty && strcmp(llvm_type(vty), store_ty) != 0) {
+                    int sv2 = 0, lv2 = 0;
+                    const char *src_llt = llvm_type(vty);
+                    if (!strcmp(src_llt,"i8"))  sv2=8; else if (!strcmp(src_llt,"i16")) sv2=16;
+                    else if (!strcmp(src_llt,"i32")) sv2=32; else if (!strcmp(src_llt,"i64")) sv2=64;
+                    if (!strcmp(store_ty,"i8"))  lv2=8; else if (!strcmp(store_ty,"i16")) lv2=16;
+                    else if (!strcmp(store_ty,"i32")) lv2=32; else if (!strcmp(store_ty,"i64")) lv2=64;
+                    if (sv2 && lv2 && sv2 != lv2) {
+                        int ct = new_tmp(cg);
+                        const char *op = (lv2 < sv2) ? "trunc"
+                                       : (type_is_signed(vty) ? "sext" : "zext");
+                        emit(cg, "  %%t%d = %s %s %s to %s\n", ct, op, src_llt, rhs.buf, store_ty);
+                        rhs = val_tmp(ct);
+                    }
+                }
+                emit(cg, "  store %s %s, ptr %s\n", store_ty, rhs.buf, ptr.buf);
             } else if (s->assign.target->kind == EXPR_SMARTDEREF) {
                 /* p.^ = val : store into data portion of the RC block */
                 Type *pt = NULL;
@@ -2026,18 +2210,37 @@ static void cg_stmt(CG *cg, Stmt *s) {
         case STMT_RET: {
             /* evaluate return value before flushing defers */
             Val rv = val_str("0");
+            /* use declared function return type as the ret instruction type */
             const char *llt = cg->cur_fn_ret ? cg->cur_fn_ret : "void";
             int has_val = s->ret.val != NULL;
             if (has_val) {
                 Type *rt = NULL;
                 rv = cg_expr(cg, s->ret.val, &rt);
-                if (rt) llt = llvm_type(rt);
                 /* if returning a ^T identifier, exempt it from scope RC drops
                    (ownership is transferred to caller; RC stays at current value) */
                 if (rt && rt->kind == TY_SMART_PTR
                         && s->ret.val->kind == EXPR_IDENT) {
                     Symbol *sym = lookup(cg, s->ret.val->ident.name);
                     if (sym) cg->skip_rc_drop = sym->llvm_name;
+                }
+                /* coerce integer literals to declared return width if needed */
+                if (rt && llt && strcmp(llvm_type(rt), llt) != 0) {
+                    const char *val_llt = llvm_type(rt);
+                    /* integer widening: sext or zext */
+                    int val_is_int = (strcmp(val_llt,"i8")==0||strcmp(val_llt,"i16")==0||
+                                      strcmp(val_llt,"i32")==0||strcmp(val_llt,"i64")==0);
+                    int ret_is_int = (strcmp(llt,"i8")==0||strcmp(llt,"i16")==0||
+                                      strcmp(llt,"i32")==0||strcmp(llt,"i64")==0||
+                                      strcmp(llt,"i64")==0);
+                    if (val_is_int && ret_is_int) {
+                        int t = new_tmp(cg);
+                        int is_signed = (rt->kind==TY_I8||rt->kind==TY_I16||rt->kind==TY_I32||rt->kind==TY_I64);
+                        if (is_signed)
+                            emit(cg, "  %%t%d = sext %s %s to %s\n", t, val_llt, rv.buf, llt);
+                        else
+                            emit(cg, "  %%t%d = zext %s %s to %s\n", t, val_llt, rv.buf, llt);
+                        rv = val_tmp(t);
+                    }
                 }
             }
             /* flush all scopes: defers first, then RC drops */
@@ -2476,7 +2679,8 @@ static void cg_fn(CG *cg, Item *item) {
     }
     emit(cg, ") {\nentry:\n");
 
-    cg->cur_fn_ret = ret_llt;
+    cg->cur_fn_ret  = ret_llt;
+    cg->cur_label   = -1; /* -1 = entry block */
     push_scope(cg);
 
     /* spill parameters to allocas so they're addressable */
@@ -2514,8 +2718,93 @@ static void cg_fn(CG *cg, Item *item) {
     emit(cg, "}\n\n");
 }
 
+/* Names declared in the preamble — skip re-declaration from extern fn */
+static const char *g_preamble_decls[] = {
+    "printf", "fprintf", "sprintf", "atoi", "strlen",
+    "malloc", "realloc", "free", "exit", "fgets",
+    NULL
+};
+static int is_preamble_decl(const char *name) {
+    for (const char **p = g_preamble_decls; *p; p++)
+        if (!strcmp(name, *p)) return 1;
+    return 0;
+}
+
 static void cg_extern_fn(CG *cg, Item *item) {
+    const char *c_name = item->extern_fn.c_name ? item->extern_fn.c_name : item->name;
+    if (is_preamble_decl(c_name)) {
+        /* preamble already declares the real C function; just emit a wrapper alias */
+        if (item->extern_fn.c_name) {
+            const char *ret_llt = item->extern_fn.ret ? llvm_type(item->extern_fn.ret) : "void";
+            int is_void = !strcmp(ret_llt, "void");
+            /* emit define wrapper: alias__fn(...) -> fn(...) */
+            emit(cg, "define %s @%s(", ret_llt, item->name);
+            for (size_t i = 0; i < item->extern_fn.params.len; i++) {
+                if (i) emit(cg, ", ");
+                emit(cg, "%s %%p%zu", llvm_type(item->extern_fn.params.data[i].ty), i);
+            }
+            emit(cg, ") {\nentry:\n");
+            if (is_void) {
+                emit(cg, "  call void @%s(", c_name);
+            } else {
+                emit(cg, "  %%r = call %s @%s(", ret_llt, c_name);
+            }
+            for (size_t i = 0; i < item->extern_fn.params.len; i++) {
+                if (i) emit(cg, ", ");
+                emit(cg, "%s %%p%zu", llvm_type(item->extern_fn.params.data[i].ty), i);
+            }
+            if (item->extern_fn.variadic) {
+                /* variadic wrappers aren't straightforward; just call the C fn directly */
+            }
+            emit(cg, ")\n");
+            if (is_void) emit(cg, "  ret void\n}\n");
+            else         emit(cg, "  ret %s %%r\n}\n", ret_llt);
+        }
+        return;
+    }
     const char *ret_llt = item->extern_fn.ret ? llvm_type(item->extern_fn.ret) : "void";
+
+    if (item->extern_fn.c_name) {
+        /* Imported extern fn: declare C function + emit thin wrapper with mangled name */
+        /* First declare the original C function (if not already done) */
+        emit(cg, "declare %s @%s(", ret_llt, c_name);
+        for (size_t i = 0; i < item->extern_fn.params.len; i++) {
+            if (i) emit(cg, ", ");
+            emit(cg, "%s", llvm_type(item->extern_fn.params.data[i].ty));
+        }
+        if (item->extern_fn.variadic) {
+            if (item->extern_fn.params.len) emit(cg, ", ");
+            emit(cg, "...");
+        }
+        emit(cg, ")\n");
+        /* Then emit a thin define wrapper with the mangled name */
+        int is_void = !strcmp(ret_llt, "void");
+        emit(cg, "define %s @%s(", ret_llt, item->name);
+        for (size_t i = 0; i < item->extern_fn.params.len; i++) {
+            if (i) emit(cg, ", ");
+            emit(cg, "%s %%p%zu", llvm_type(item->extern_fn.params.data[i].ty), i);
+        }
+        if (item->extern_fn.variadic) {
+            if (item->extern_fn.params.len) emit(cg, ", ");
+            emit(cg, "...");
+        }
+        emit(cg, ") {\nentry:\n");
+        if (is_void) {
+            emit(cg, "  call void @%s(", c_name);
+        } else {
+            emit(cg, "  %%r = call %s @%s(", ret_llt, c_name);
+        }
+        for (size_t i = 0; i < item->extern_fn.params.len; i++) {
+            if (i) emit(cg, ", ");
+            emit(cg, "%s %%p%zu", llvm_type(item->extern_fn.params.data[i].ty), i);
+        }
+        emit(cg, ")\n");
+        if (is_void) emit(cg, "  ret void\n}\n");
+        else         emit(cg, "  ret %s %%r\n}\n", ret_llt);
+        return;
+    }
+
+    /* Normal extern fn declaration */
     emit(cg, "declare %s @%s(", ret_llt, item->name);
     for (size_t i = 0; i < item->extern_fn.params.len; i++) {
         Param *par = &item->extern_fn.params.data[i];
@@ -2531,14 +2820,32 @@ static void cg_extern_fn(CG *cg, Item *item) {
 
 static void cg_global(CG *cg, Item *item) {
     const char *llt = llvm_type(item->global.ty);
-    emit(cg, "@%s = %s global %s ",
-         item->name,
-         item->global.mutable ? "" : "constant",
-         llt);
+    /* LLVM syntax: @name = [constant|global] type value */
+    const char *linkage = item->global.mutable ? "global" : "constant";
+
+    /* str globals: emit a { ptr, i64 } constant using a string literal */
+    if (item->global.ty && item->global.ty->kind == TY_STR
+            && item->global.init && item->global.init->kind == EXPR_STR) {
+        const char *sv = item->global.init->sval;
+        size_t slen = strlen(sv);
+        int sid = intern_str(cg, sv);
+        emit(cg, "@%s = %s { ptr, i64 } { ptr getelementptr inbounds ([%zu x i8], ptr @.str.%d, i32 0, i32 0), i64 %zu }\n",
+             item->name, linkage, slen + 1, sid, slen);
+        char llvm_name[128];
+        snprintf(llvm_name, sizeof(llvm_name), "@%s", item->name);
+        define_sym(cg, item->name, arena_strdup(cg->arena, llvm_name), 1, item->global.ty);
+        return;
+    }
+
+    emit(cg, "@%s = %s %s ", item->name, linkage, llt);
     if (item->global.init) {
         switch (item->global.init->kind) {
             case EXPR_INT:  emit(cg, "%" PRIu64, item->global.init->ival); break;
-            case EXPR_FLOAT:emit(cg, "%a", item->global.init->fval); break;
+            case EXPR_FLOAT: {
+                union { double d; uint64_t u; } bits; bits.d = item->global.init->fval;
+                emit(cg, "0x%016" PRIX64, bits.u);
+                break;
+            }
             case EXPR_BOOL: emit(cg, "%d", item->global.init->bval); break;
             default:        emit(cg, "zeroinitializer"); break;
         }

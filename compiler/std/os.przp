@@ -1,0 +1,35 @@
+# std/os — process and environment operations
+
+extern fn exit(code: i32)
+extern fn getenv(name: *u8) -> *u8
+extern fn system(cmd: *u8) -> i32
+extern fn malloc(n: usize) -> *u8
+extern fn free(p: *u8)
+extern fn strlen(s: *u8) -> usize
+
+# argc and argv globals injected by the Perzephxne runtime
+@__przp_argc: i32 = undef
+@__przp_argv: *u8 = undef
+
+# exit with a status code
+fn quit(code: i32) {
+    exit(code)
+}
+
+# getenv_str: look up an environment variable; returns empty str if not set
+fn getenv_str(name: str) -> str {
+    val: *u8 = getenv(name.data)
+    if val == null { ret @str_raw(name.data, 0) }
+    n: usize = strlen(val)
+    ret @str_raw(val, n)
+}
+
+# run: execute a shell command, return exit status
+fn run(cmd: str) -> i32 {
+    ret system(cmd.data)
+}
+
+# argc: return the program argument count
+fn argc() -> i32 {
+    ret @__przp_argc
+}
