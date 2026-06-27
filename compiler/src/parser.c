@@ -574,7 +574,7 @@ static Expr *parse_primary(Parser *p) {
             if (check(p, TOK_LPAREN)) {
                 args = parse_args(p);
             }
-            if ((!strcmp(name, "pf") || !strcmp(name, "epf")) &&
+            if ((!strcmp(name, "pf") || !strcmp(name, "epf") || !strcmp(name, "fmt")) &&
                 args.len > 0 && args.data[0]->kind == EXPR_STR) {
                 args = desugar_pf_interp(p, args);
             }

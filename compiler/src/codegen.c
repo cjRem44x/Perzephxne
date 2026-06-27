@@ -798,13 +798,19 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                 int buf2 = new_tmp(cg);
                 emit(cg, "  %%t%d = call ptr @malloc(i64 4096)\n", buf2);
                 int sp2 = new_tmp(cg);
-                /* pre-emit fpext coercions before the sprintf call */
+                /* pre-emit fpext coercions before the sprintf call;
+                   str args are already raw ptr from the extraction loop above */
                 Val         *fmt_final = malloc(sizeof(Val)        * na2);
                 const char **fmt_llts  = malloc(sizeof(const char*)* na2);
                 for (size_t i = 1; i < na2; i++) {
-                    const char *llt2;
-                    fmt_final[i] = promote_vararg(cg, fv[i], fty[i], &llt2);
-                    fmt_llts[i]  = llt2;
+                    if (fty[i] && fty[i]->kind == TY_STR) {
+                        fmt_final[i] = fv[i];
+                        fmt_llts[i]  = "ptr";
+                    } else {
+                        const char *llt2;
+                        fmt_final[i] = promote_vararg(cg, fv[i], fty[i], &llt2);
+                        fmt_llts[i]  = llt2;
+                    }
                 }
                 emit(cg, "  %%t%d = call i32 (ptr, ptr, ...) @sprintf(ptr %%t%d, ptr %%t%d", sp2, buf2, ft2);
                 for (size_t i = 1; i < na2; i++) {
@@ -1078,9 +1084,23 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                 emit(cg, "  %%t%d = extractvalue { %s, i1 } %%t%d, 0\n", val, llt, res);
                 int ovf = new_tmp(cg);
                 emit(cg, "  %%t%d = extractvalue { %s, i1 } %%t%d, 1\n", ovf, llt, res);
-                /* return value; error code stored in the overflow check result (caller checks) */
-                if (out_ty) *out_ty = ta;
-                return val_tmp(val);
+                /* convert i1 overflow flag to i32 error code */
+                int ec = new_tmp(cg);
+                emit(cg, "  %%t%d = zext i1 %%t%d to i32\n", ec, ovf);
+                /* return !T failable: { val, err_code } */
+                char fail_llt2[64];
+                snprintf(fail_llt2, sizeof(fail_llt2), "{ %s, i32 }", llt);
+                int fa = new_tmp(cg);
+                emit(cg, "  %%t%d = insertvalue %s undef, %s %%t%d, 0\n", fa, fail_llt2, llt, val);
+                int fb = new_tmp(cg);
+                emit(cg, "  %%t%d = insertvalue %s %%t%d, i32 %%t%d, 1\n", fb, fail_llt2, fa, ec);
+                if (out_ty && ta) {
+                    Type *ft = ARENA_NEW(cg->arena, Type);
+                    ft->kind = TY_FAILABLE;
+                    ft->ptr.inner = ta;
+                    *out_ty = ft;
+                }
+                return val_tmp(fb);
             }
 
             /* @size(T) — compile-time sizeof via GEP-from-null trick */
@@ -2390,6 +2410,22 @@ static void cg_stmt(CG *cg, Stmt *s) {
                     }
                     emit(cg, "  store %s %s, ptr %s\n", llt, rhs.buf, sym->llvm_name);
                 } else {
+                    /* coerce rhs integer/float width to match lhs for compound assignment */
+                    if (vty && strcmp(llvm_type(vty), llt) != 0) {
+                        const char *src_llt5 = llvm_type(vty);
+                        int sv5 = 0, lv5 = 0;
+                        if (!strcmp(src_llt5,"i8"))  sv5=8; else if (!strcmp(src_llt5,"i16")) sv5=16;
+                        else if (!strcmp(src_llt5,"i32")) sv5=32; else if (!strcmp(src_llt5,"i64")) sv5=64;
+                        if (!strcmp(llt,"i8"))  lv5=8; else if (!strcmp(llt,"i16")) lv5=16;
+                        else if (!strcmp(llt,"i32")) lv5=32; else if (!strcmp(llt,"i64")) lv5=64;
+                        if (sv5 && lv5 && sv5 != lv5) {
+                            int ct5 = new_tmp(cg);
+                            const char *op5 = (lv5 < sv5) ? "trunc"
+                                            : (type_is_signed(vty) ? "sext" : "zext");
+                            emit(cg, "  %%t%d = %s %s %s to %s\n", ct5, op5, src_llt5, rhs.buf, llt);
+                            rhs = val_tmp(ct5);
+                        }
+                    }
                     /* load, operate, store */
                     int cur_t = new_tmp(cg);
                     emit(cg, "  %%t%d = load %s, ptr %s\n", cur_t, llt, sym->llvm_name);
