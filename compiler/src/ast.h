@@ -43,7 +43,7 @@ struct Type {
     union {
         struct { Type *inner; }                       ptr;       /* PTR, SMART_PTR, SLICE, FAILABLE */
         struct { Type *inner; Expr *size; }           array;     /* ARRAY */
-        struct { TypeList params; Type *ret; }        fn;        /* FN */
+        struct { TypeList params; Type *ret; int variadic; } fn; /* FN */
         struct { const char *name; }                  named;     /* NAMED, GENERIC */
     };
 };
@@ -293,9 +293,10 @@ struct Item {
         ImportList imports;
 
         struct {
-            ParamList params;
-            Type     *ret;
-            int       variadic;
+            ParamList    params;
+            Type        *ret;
+            int          variadic;
+            const char  *c_name; /* original C symbol name when imported (NULL otherwise) */
         } extern_fn;
     };
 };

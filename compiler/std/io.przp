@@ -1,0 +1,57 @@
+# std/io — file I/O via libc
+
+extern fn fopen(path: *u8, mode: *u8) -> *u8
+extern fn fclose(f: *u8) -> i32
+extern fn fread(buf: *u8, size: usize, n: usize, f: *u8) -> usize
+extern fn fwrite(buf: *u8, size: usize, n: usize, f: *u8) -> usize
+extern fn fgets(buf: *u8, n: i32, f: *u8) -> *u8
+extern fn fputs(s: *u8, f: *u8) -> i32
+extern fn fprintf(f: *u8, fmt: *u8, ..) -> i32
+extern fn feof(f: *u8) -> i32
+extern fn ferror(f: *u8) -> i32
+extern fn fflush(f: *u8) -> i32
+extern fn fseek(f: *u8, off: i64, whence: i32) -> i32
+extern fn ftell(f: *u8) -> i64
+extern fn rewind(f: *u8)
+extern fn remove(path: *u8) -> i32
+extern fn rename(oldp: *u8, newp: *u8) -> i32
+extern fn malloc(n: usize) -> *u8
+extern fn free(p: *u8)
+extern fn strlen(s: *u8) -> usize
+
+# SEEK constants
+SEEK_SET: i32 = 0
+SEEK_CUR: i32 = 1
+SEEK_END: i32 = 2
+
+# open: open a file, return null on failure
+fn open(path: str, mode: str) -> *u8 {
+    ret fopen(path.data, mode.data)
+}
+
+# close: close a file handle
+fn close(f: *u8) -> i32 {
+    ret fclose(f)
+}
+
+# write_str: write a str to a file handle
+fn write_str(f: *u8, s: str) -> usize {
+    ret fwrite(s.data, 1, s.len, f)
+}
+
+# read_line: read one line from f into a 4096-byte heap buffer, return str view
+fn read_line(f: *u8) -> str {
+    buf: *u8 = malloc(4097)
+    got: *u8 = fgets(buf, 4096, f)
+    if got == null { ret @str_raw(buf, 0) }
+    n: usize = strlen(buf)
+    ret @str_raw(buf, n)
+}
+
+# file_size: return byte size of an open file (repositions to start on return)
+fn file_size(f: *u8) -> i64 {
+    fseek(f, 0, SEEK_END)
+    sz: i64 = ftell(f)
+    rewind(f)
+    ret sz
+}

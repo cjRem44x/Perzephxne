@@ -147,6 +147,8 @@ static Token lex_number(Lexer *l, Pos start) {
         }
     }
 
+    /* record end of numeric portion before consuming the type suffix */
+    const char *num_end = l->cur;
     /* optional type suffix — just consume, type inference handles it */
     if (peek(l) == 'u' || peek(l) == 'i' || peek(l) == 'f') {
         while (isalnum((unsigned char)peek(l))) advance(l);
@@ -154,10 +156,10 @@ static Token lex_number(Lexer *l, Pos start) {
 
     Span span = make_span(l, start);
 
-    /* build a clean copy without underscores */
+    /* build a clean copy without underscores, stopping at num_end */
     char clean[128]; size_t ci = 0;
-    for (const char *p = begin; p < l->cur; p++) {
-        if (*p != '_' && !isalpha((unsigned char)*p)) {
+    for (const char *p = begin; p < num_end; p++) {
+        if (*p != '_') {
             if (ci < sizeof(clean) - 1) clean[ci++] = *p;
         }
     }

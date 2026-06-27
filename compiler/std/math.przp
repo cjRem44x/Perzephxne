@@ -1,0 +1,74 @@
+# std/math — basic math via libm
+
+extern fn sqrt(x: f64) -> f64
+extern fn sqrtf(x: f32) -> f32
+extern fn pow(base: f64, exp: f64) -> f64
+extern fn powf(base: f32, exp: f32) -> f32
+extern fn fabs(x: f64) -> f64
+extern fn fabsf(x: f32) -> f32
+extern fn floor(x: f64) -> f64
+extern fn ceil(x: f64) -> f64
+extern fn round(x: f64) -> f64
+extern fn fmod(x: f64, y: f64) -> f64
+extern fn log(x: f64) -> f64
+extern fn log2(x: f64) -> f64
+extern fn log10(x: f64) -> f64
+extern fn exp(x: f64) -> f64
+extern fn sin(x: f64) -> f64
+extern fn cos(x: f64) -> f64
+extern fn tan(x: f64) -> f64
+extern fn atan2(y: f64, x: f64) -> f64
+
+# PI and E constants
+PI: f64 = 3.141592653589793
+E: f64 = 2.718281828459045
+
+# abs_i32: absolute value of i32
+fn abs_i32(x: i32) -> i32 {
+    if x < 0 { ret -x }
+    ret x
+}
+
+# abs_i64: absolute value of i64
+fn abs_i64(x: i64) -> i64 {
+    if x < 0 { ret -x }
+    ret x
+}
+
+# min_i32: minimum of two i32 values
+fn min_i32(a: i32, b: i32) -> i32 {
+    if a < b { ret a }
+    ret b
+}
+
+# max_i32: maximum of two i32 values
+fn max_i32(a: i32, b: i32) -> i32 {
+    if a > b { ret a }
+    ret b
+}
+
+# min_i64: minimum of two i64 values
+fn min_i64(a: i64, b: i64) -> i64 {
+    if a < b { ret a }
+    ret b
+}
+
+# max_i64: maximum of two i64 values
+fn max_i64(a: i64, b: i64) -> i64 {
+    if a > b { ret a }
+    ret b
+}
+
+# clamp_i32: clamp x to [lo, hi]
+fn clamp_i32(x: i32, lo: i32, hi: i32) -> i32 {
+    if x < lo { ret lo }
+    if x > hi { ret hi }
+    ret x
+}
+
+# clamp_f64: clamp x to [lo, hi]
+fn clamp_f64(x: f64, lo: f64, hi: f64) -> f64 {
+    if x < lo { ret lo }
+    if x > hi { ret hi }
+    ret x
+}

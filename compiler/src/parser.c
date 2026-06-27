@@ -13,6 +13,7 @@ typedef struct {
     Token       peek2;     /* 3-token lookahead for generic disambiguation */
     Arena      *arena;
     GenInstList gen_insts; /* generic instantiations seen during parse */
+    int         no_struct_lit; /* suppress struct-literal parsing in conditions */
 } Parser;
 
 /* ── helpers ──────────────────────────────────────────────────────────────── */
@@ -601,15 +602,19 @@ static Expr *parse_primary(Parser *p) {
                 Type **args = arena_alloc(p->arena, sizeof(Type *));
                 args[0] = arg;
                 record_gen_inst(p, mangled, name, args, 1);
-                if (check(p, TOK_LBRACE) && peek(p).kind == TOK_DOT) {
+                if (!p->no_struct_lit && check(p, TOK_LBRACE) && peek(p).kind == TOK_DOT) {
                     /* generic struct literal */
                     advance(p); /* consume '{' */
                     FieldInitList fields = {0};
                     while (!check(p, TOK_RBRACE) && !check(p, TOK_EOF)) {
                         expect(p, TOK_DOT);
                         Token fn = expect(p, TOK_IDENT);
-                        expect(p, TOK_EQ);
-                        Expr *val = parse_expr(p);
+                        Expr *val;
+                        if (eat(p, TOK_EQ)) {
+                            val = parse_expr(p);
+                        } else {
+                            val = mkexpr(p, EXPR_UNDEF, fn.span);
+                        }
                         FieldInit fi = { .name = fn.sval, .val = val };
                         SLICE_PUSH(p->arena, &fields, FieldInit, fi);
                         eat(p, TOK_COMMA);
@@ -627,17 +632,22 @@ static Expr *parse_primary(Parser *p) {
                     return parse_postfix(p, e);
                 }
             }
-            /* struct literal: Foo{.x=1, ...} */
-            if (check(p, TOK_LBRACE) && !check2(p, TOK_RBRACE)) {
-                /* peek for .field = to distinguish from block */
+            /* struct literal: Foo{.x=1, ...} or union unit variant: Foo{.tag} */
+            if (!p->no_struct_lit && check(p, TOK_LBRACE) && !check2(p, TOK_RBRACE)) {
+                /* peek for .field to distinguish from block */
                 if (peek(p).kind == TOK_DOT) {
                     advance(p); /* { */
                     FieldInitList fields = {0};
                     while (!check(p, TOK_RBRACE) && !check(p, TOK_EOF)) {
                         expect(p, TOK_DOT);
                         Token fn = expect(p, TOK_IDENT);
-                        expect(p, TOK_EQ);
-                        Expr *val = parse_expr(p);
+                        Expr *val;
+                        if (eat(p, TOK_EQ)) {
+                            val = parse_expr(p);
+                        } else {
+                            /* unit variant: no payload — use undef as placeholder */
+                            val = mkexpr(p, EXPR_UNDEF, fn.span);
+                        }
                         FieldInit fi = { .name = fn.sval, .val = val };
                         SLICE_PUSH(p->arena, &fields, FieldInit, fi);
                         eat(p, TOK_COMMA);
@@ -723,7 +733,9 @@ static Expr *parse_primary(Parser *p) {
         /* if-as-expression */
         case TOK_IF: {
             advance(p);
+            p->no_struct_lit = 1;
             Expr *cond  = parse_expr(p);
+            p->no_struct_lit = 0;
             StmtList tb = parse_block(p);
             StmtList eb = {0};
             if (eat(p, TOK_ELSE)) eb = parse_block(p);
@@ -745,7 +757,9 @@ static Expr *parse_primary(Parser *p) {
         /* when-as-expression */
         case TOK_WHEN: {
             advance(p);
+            p->no_struct_lit = 1;
             Expr *val = parse_expr(p);
+            p->no_struct_lit = 0;
             expect(p, TOK_LBRACE);
             WhenArmList arms = {0};
             while (!check(p, TOK_RBRACE) && !check(p, TOK_EOF)) {
@@ -773,6 +787,18 @@ static Expr *parse_primary(Parser *p) {
             Expr *e = mkexpr(p, EXPR_WHEN, span_merge(span, end));
             e->when.cond = val;
             e->when.arms = arms;
+            return e;
+        }
+
+        /* tagged union variant pattern: .variantName */
+        case TOK_DOT: {
+            advance(p);
+            Token vtok = expect(p, TOK_IDENT);
+            char *buf = arena_alloc(p->arena, strlen(vtok.sval) + 2);
+            buf[0] = '.';
+            strcpy(buf + 1, vtok.sval);
+            Expr *e = mkexpr(p, EXPR_IDENT, span_merge(span, vtok.span));
+            e->ident.name = buf;
             return e;
         }
 
@@ -814,7 +840,7 @@ static Expr *parse_postfix(Parser *p, Expr *e) {
             advance(p);
             Token fname = expect(p, TOK_IDENT);
             /* qualified struct literal: alias.TypeName { .x = ... } */
-            if (e->kind == EXPR_IDENT
+            if (!p->no_struct_lit && e->kind == EXPR_IDENT
                     && check(p, TOK_LBRACE) && peek(p).kind == TOK_DOT) {
                 advance(p); /* consume '{' */
                 FieldInitList fields = {0};
@@ -898,9 +924,9 @@ static Stmt *mkstmt(Parser *p, StmtKind k, Span span) {
 
 /* variable declaration: name: type = expr  or  name: type : expr  or  name, name: !type = expr */
 static int is_var_decl(Parser *p) {
-    /* simple heuristic: ident followed by ':', possibly followed by '_' */
+    /* heuristic: ident (or _) followed by ':' or ',' (two-name failable form) */
     return (check(p, TOK_IDENT) || check(p, TOK_UNDER)) &&
-           (check2(p, TOK_COLON));
+           (check2(p, TOK_COLON) || check2(p, TOK_COMMA));
 }
 
 static Stmt *parse_let(Parser *p) {
@@ -995,14 +1021,18 @@ static Stmt *parse_stmt(Parser *p) {
     if (check(p, TOK_IF)) {
         advance(p);
         IfBranchList branches = {0};
+        p->no_struct_lit = 1;
         Expr    *cond = parse_expr(p);
+        p->no_struct_lit = 0;
         StmtList body = parse_block(p);
         IfBranch branch = { .cond = cond, .body = body };
         SLICE_PUSH(p->arena, &branches, IfBranch, branch);
 
         while (check(p, TOK_ELIF)) {
             advance(p);
+            p->no_struct_lit = 1;
             Expr    *ec = parse_expr(p);
+            p->no_struct_lit = 0;
             StmtList eb = parse_block(p);
             IfBranch eb2 = { .cond = ec, .body = eb };
             SLICE_PUSH(p->arena, &branches, IfBranch, eb2);
@@ -1020,7 +1050,9 @@ static Stmt *parse_stmt(Parser *p) {
     /* while */
     if (check(p, TOK_WHILE)) {
         advance(p);
+        p->no_struct_lit = 1;
         Expr *cond = parse_expr(p);
+        p->no_struct_lit = 0;
         const char *do_fn = NULL;
         if (eat(p, TOK_FATARROW)) {
             do_fn = expect(p, TOK_IDENT).sval;
@@ -1038,7 +1070,9 @@ static Stmt *parse_stmt(Parser *p) {
     /* when (statement) */
     if (check(p, TOK_WHEN)) {
         advance(p);
+        p->no_struct_lit = 1;
         Expr *val = parse_expr(p);
+        p->no_struct_lit = 0;
         expect(p, TOK_LBRACE);
         WhenArmList arms = {0};
         while (!check(p, TOK_RBRACE) && !check(p, TOK_EOF)) {
@@ -1108,8 +1142,8 @@ static Stmt *parse_stmt(Parser *p) {
                     clause.iter = rhs;
                 }
             } else {
-                /* anonymous range: for 0..N */
-                Expr *start = parse_expr_bp(p, 1);
+                /* anonymous range: for 0..N — parse start without consuming '..' (lbp=20) */
+                Expr *start = parse_expr_bp(p, 21);
                 if (check(p, TOK_DOTDOT) || check(p, TOK_DOTDOTEQ)) {
                     clause.kind      = FOR_RANGE;
                     clause.inclusive = check(p, TOK_DOTDOTEQ);

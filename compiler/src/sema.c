@@ -40,6 +40,17 @@ typedef struct EnumInfo {
     EnumVariantVal  *variants;
 } EnumInfo;
 
+/* ── Tagged union variant table ───────────────────────────────────────────── */
+
+typedef struct { const char *name; Type *ty; } UnionVariantInfo; /* ty=NULL → unit variant */
+
+typedef struct UnionInfo {
+    struct UnionInfo *next;
+    const char       *name;
+    size_t            n_variants;
+    UnionVariantInfo *variants;
+} UnionInfo;
+
 /* ── Generic template table ───────────────────────────────────────────────── */
 
 typedef struct GenericTemplate {
@@ -57,6 +68,7 @@ typedef struct {
     int               errors;
     StructEntry      *structs;   /* name → field list for struct lookup */
     EnumInfo         *enums;     /* name → variant values for enum lookup */
+    UnionInfo        *unions;    /* name → tagged union variant table */
     GenericTemplate  *generics;  /* uninstantiated generic templates */
     /* built-in types — interned once */
     Type   *ty_void, *ty_bool, *ty_i8, *ty_i16, *ty_i32, *ty_i64;
@@ -223,7 +235,10 @@ static int ty_coerces(Type *from, Type *to) {
     /* enum ↔ integer: integer types coerce into enum named types and vice versa */
     if (ty_is_int(from) && to->kind   == TY_NAMED) return 1;
     if (from->kind == TY_NAMED && ty_is_int(to))   return 1;
-    /* enum ↔ enum (same name already caught by ty_eq) */
+    /* T coerces to !T (auto-wrap as @ok on return) */
+    if (to->kind == TY_FAILABLE && ty_coerces(from, to->ptr.inner)) return 1;
+    /* !T coerces to T (extract value part in failable destructure) */
+    if (from->kind == TY_FAILABLE && ty_coerces(from->ptr.inner, to)) return 1;
     return 0;
 }
 
@@ -275,7 +290,11 @@ static Type *builtin_ret_ty(Sema *s, const char *name) {
     if (!strcmp(name, "min") || !strcmp(name, "max")) return NULL; /* inferred from args */
     if (!strcmp(name, "abs"))                         return NULL;
     if (!strcmp(name, "sqrt"))                        return s->ty_f64;
+    if (!strcmp(name, "zeroed"))                      return NULL; /* inferred from arg */
     if (!strcmp(name, "memcpy") || !strcmp(name, "memset")) return s->ty_void;
+    if (!strcmp(name, "debug") || !strcmp(name, "release")) return s->ty_bool;
+    if (!strcmp(name, "offsetof"))  return s->ty_usize;
+    if (!strcmp(name, "typeof"))    return s->ty_str;
     if (!strcmp(name, "os.linux") || !strcmp(name, "os.windows") ||
         !strcmp(name, "os.mac"))                      return s->ty_bool;
     if (!strncmp(name, "arch.", 5))                   return s->ty_bool;
@@ -283,6 +302,7 @@ static Type *builtin_ret_ty(Sema *s, const char *name) {
         Type *sl = make_ptr(s, TY_SLICE, s->ty_str);
         return sl;
     }
+    if (!strcmp(name, "str_raw"))  return s->ty_str;
     return NULL;
 }
 
@@ -306,17 +326,39 @@ static Type *check_expr(Sema *s, Expr *e) {
         case EXPR_DISCARD:e->ty = NULL; break;
 
         case EXPR_IDENT: {
-            Sym *sym = lookup(s, e->ident.name);
-            if (!sym) {
-                sema_error(s, e->span, "undefined identifier '%s'", e->ident.name);
-                e->ty = s->ty_i32; /* recover */
-            } else {
-                e->ty = sym->ty;
+            /* primitive type names used as type arguments to builtins (@alo, @zeroed, etc.) */
+            static const struct { const char *name; TypeKind k; } type_names[] = {
+                {"i8",TY_I8},{"i16",TY_I16},{"i32",TY_I32},{"i64",TY_I64},
+                {"u8",TY_U8},{"u16",TY_U16},{"u32",TY_U32},{"u64",TY_U64},
+                {"f16",TY_F16},{"f32",TY_F32},{"f64",TY_F64},
+                {"usize",TY_USIZE},{"bool",TY_BOOL},{"char",TY_CHAR},{"str",TY_STR},{NULL,0}
+            };
+            int resolved = 0;
+            for (int i = 0; type_names[i].name; i++) {
+                if (!strcmp(e->ident.name, type_names[i].name)) {
+                    e->ty = make_ty(s, type_names[i].k);
+                    resolved = 1;
+                    break;
+                }
+            }
+            if (!resolved) {
+                Sym *sym = lookup(s, e->ident.name);
+                if (!sym) {
+                    sema_error(s, e->span, "undefined identifier '%s'", e->ident.name);
+                    e->ty = s->ty_i32; /* recover */
+                } else {
+                    e->ty = sym->ty;
+                }
             }
             break;
         }
 
         case EXPR_BUILTIN: {
+            /* @offsetof(T, field) — both args are names, not expressions */
+            if (!strcmp(e->builtin.name, "offsetof")) {
+                e->ty = s->ty_usize;
+                break;
+            }
             /* check all args */
             for (size_t i = 0; i < e->builtin.args.len; i++)
                 check_expr(s, e->builtin.args.data[i]);
@@ -367,7 +409,19 @@ static Type *check_expr(Sema *s, Expr *e) {
         case EXPR_BINOP: {
             Type *lt = check_expr(s, e->binop.l);
             Type *rt = check_expr(s, e->binop.r);
-            switch (e->binop.op) {
+            /* pointer arithmetic: *T +/- integer → *T */
+            int ptr_arith = 0;
+            if ((e->binop.op == BINOP_ADD || e->binop.op == BINOP_SUB)) {
+                if (lt && lt->kind == TY_PTR && rt && ty_is_int(rt)) {
+                    e->ty = lt; ptr_arith = 1;
+                } else if (rt && rt->kind == TY_PTR && lt && ty_is_int(lt)) {
+                    e->ty = rt; ptr_arith = 1;
+                } else if (lt && lt->kind == TY_PTR && rt && rt->kind == TY_PTR) {
+                    /* ptr - ptr → usize */
+                    e->ty = s->ty_usize; ptr_arith = 1;
+                }
+            }
+            if (!ptr_arith) switch (e->binop.op) {
                 case BINOP_EQ: case BINOP_NE:
                 case BINOP_LT: case BINOP_GT:
                 case BINOP_LE: case BINOP_GE:
@@ -384,8 +438,9 @@ static Type *check_expr(Sema *s, Expr *e) {
                     else e->ty = s->ty_i32;
                     break;
             }
-            /* type compatibility check */
-            if (lt && rt && !ty_eq(lt, rt) && !ty_coerces(lt, rt) && !ty_coerces(rt, lt)) {
+            /* type compatibility check (skip pointer arithmetic cases) */
+            if (!ptr_arith && lt && rt && !ty_eq(lt, rt)
+                    && !ty_coerces(lt, rt) && !ty_coerces(rt, lt)) {
                 switch (e->binop.op) {
                     case BINOP_EQ: case BINOP_NE:
                     case BINOP_LT: case BINOP_GT:
@@ -432,8 +487,11 @@ static Type *check_expr(Sema *s, Expr *e) {
             for (size_t i = 0; i < e->call.args.len; i++)
                 check_expr(s, e->call.args.data[i]);
             if (callee_ty && callee_ty->kind == TY_FN) {
-                /* check arg count */
-                if (e->call.args.len != callee_ty->fn.params.len) {
+                /* check arg count (variadic fns accept any number >= param count) */
+                int arg_ok = callee_ty->fn.variadic
+                             ? (e->call.args.len >= callee_ty->fn.params.len)
+                             : (e->call.args.len == callee_ty->fn.params.len);
+                if (!arg_ok) {
                     sema_error(s, e->span, "expected %zu arguments, got %zu",
                                callee_ty->fn.params.len, e->call.args.len);
                 }
@@ -504,24 +562,46 @@ static Type *check_expr(Sema *s, Expr *e) {
                              obj_ty->named.name, e->field.field);
                     Sym *method_sym = lookup(s, mangled);
                     if (method_sym && method_sym->ty && method_sym->ty->kind == TY_FN) {
-                        /* build a reduced TY_FN without the self param for arity checking */
                         Type *full = method_sym->ty;
                         size_t np = full->fn.params.len;
+                        /* detect static call: obj is a type-name identifier */
+                        int is_static = 0;
+                        if (e->field.obj->kind == EXPR_IDENT) {
+                            Sym *obj_sym = lookup(s, e->field.obj->ident.name);
+                            is_static = obj_sym && obj_sym->is_type;
+                        }
+                        /* build reduced TY_FN: drop self param for instance calls */
                         Type *reduced = make_ty(s, TY_FN);
                         reduced->fn.ret = full->fn.ret;
-                        if (np > 1) {
-                            reduced->fn.params.len  = np - 1;
-                            reduced->fn.params.data = ARENA_ALLOC(s->arena, Type *, np - 1);
-                            for (size_t k = 1; k < np; k++)
-                                reduced->fn.params.data[k - 1] = full->fn.params.data[k];
+                        size_t skip = is_static ? 0 : 1;
+                        if (np > skip) {
+                            reduced->fn.params.len  = np - skip;
+                            reduced->fn.params.data = ARENA_ALLOC(s->arena, Type *, np - skip);
+                            for (size_t k = skip; k < np; k++)
+                                reduced->fn.params.data[k - skip] = full->fn.params.data[k];
                         }
                         e->ty = reduced;
-                        e->field.is_method    = 1;
+                        /* is_method: 1=instance, 2=static */
+                        e->field.is_method    = is_static ? 2 : 1;
                         e->field.mangled_name = arena_strdup(s->arena, mangled);
                     } else {
                         sema_error(s, e->span, "type '%s' has no field or method '%s'",
                                    obj_ty->named.name, e->field.field);
                     }
+                }
+            } else if (obj_ty && (obj_ty->kind == TY_STR || obj_ty->kind == TY_SLICE)) {
+                /* str/slice pseudo-fields: .len -> usize, .data -> *u8 / *T */
+                if (!strcmp(e->field.field, "len")) {
+                    e->ty = s->ty_usize;
+                } else if (!strcmp(e->field.field, "data") || !strcmp(e->field.field, "ptr")) {
+                    Type *inner = (obj_ty->kind == TY_STR)
+                                  ? make_ty(s, TY_U8)
+                                  : (obj_ty->ptr.inner ? obj_ty->ptr.inner : make_ty(s, TY_U8));
+                    Type *pt = make_ty(s, TY_PTR); pt->ptr.inner = inner;
+                    e->ty = pt;
+                } else {
+                    sema_error(s, e->span, "type '%s' has no field '%s'",
+                               ty_str(obj_ty), e->field.field);
                 }
             } else if (obj_ty) {
                 sema_error(s, e->span, "field access on non-struct type '%s'", ty_str(obj_ty));
@@ -553,22 +633,55 @@ static Type *check_expr(Sema *s, Expr *e) {
 
         case EXPR_WHEN: {
             Type *vt = check_expr(s, e->when.cond);
+            /* check if subject is a tagged union */
+            UnionInfo *wui = NULL;
+            if (vt && vt->kind == TY_NAMED) {
+                for (UnionInfo *u = s->unions; u; u = u->next)
+                    if (!strcmp(u->name, vt->named.name)) { wui = u; break; }
+            }
             for (size_t i = 0; i < e->when.arms.len; i++) {
                 WhenArm *arm = &e->when.arms.data[i];
-                for (size_t pi = 0; pi < arm->pats.len; pi++) {
-                    Type *pt = check_expr(s, arm->pats.data[pi]);
-                    if (vt && pt && !ty_coerces(pt, vt))
-                        sema_error(s, arm->span, "pattern type '%s' doesn't match value type '%s'",
-                                   ty_str(pt), ty_str(vt));
+                push_scope(s);
+                if (wui) {
+                    for (size_t pi = 0; pi < arm->pats.len; pi++) {
+                        Expr *pat = arm->pats.data[pi];
+                        if (pat->kind == EXPR_DISCARD) continue;
+                        if (pat->kind == EXPR_IDENT && pat->ident.name[0] == '.') {
+                            const char *vname = pat->ident.name + 1;
+                            int found = 0;
+                            for (size_t vi = 0; vi < wui->n_variants; vi++) {
+                                if (!strcmp(wui->variants[vi].name, vname)) {
+                                    found = 1;
+                                    if (arm->bind && wui->variants[vi].ty)
+                                        define(s, arm->span, arm->bind,
+                                               wui->variants[vi].ty, 0, 0);
+                                    break;
+                                }
+                            }
+                            if (!found)
+                                sema_error(s, arm->span, "union '%s' has no variant '%s'",
+                                           wui->name, vname);
+                            pat->ty = vt;
+                        } else {
+                            check_expr(s, pat);
+                        }
+                    }
+                } else {
+                    if (arm->bind && vt) define(s, arm->span, arm->bind, vt, 0, 0);
+                    for (size_t pi = 0; pi < arm->pats.len; pi++)
+                        check_expr(s, arm->pats.data[pi]);
                 }
                 check_stmt(s, arm->body);
+                /* infer result type from the first arm that is a bare expression */
+                if (!e->ty && arm->body && arm->body->kind == STMT_EXPR && arm->body->expr)
+                    e->ty = arm->body->expr->ty;
+                pop_scope(s);
             }
-            e->ty = NULL;
             break;
         }
 
         case EXPR_STRUCT_LIT: {
-            /* check field values; leave e->ty as the named struct type */
+            /* check field values; leave e->ty as the named struct/union type */
             for (size_t i = 0; i < e->struct_lit.fields.len; i++)
                 check_expr(s, e->struct_lit.fields.data[i].val);
             Sym *sym = lookup(s, e->struct_lit.ty_name);
@@ -577,6 +690,26 @@ static Type *check_expr(Sema *s, Expr *e) {
                 Type *t = make_ty(s, TY_NAMED);
                 t->named.name = e->struct_lit.ty_name;
                 e->ty = t;
+            }
+            /* validate tagged union construction: exactly one field, valid variant */
+            for (UnionInfo *ui = s->unions; ui; ui = ui->next) {
+                if (!strcmp(ui->name, e->struct_lit.ty_name)) {
+                    if (e->struct_lit.fields.len != 1) {
+                        sema_error(s, e->span,
+                            "tagged union literal for '%s' must set exactly one variant",
+                            ui->name);
+                    } else {
+                        const char *fname = e->struct_lit.fields.data[0].name;
+                        int found = 0;
+                        for (size_t vi = 0; vi < ui->n_variants; vi++) {
+                            if (!strcmp(ui->variants[vi].name, fname)) { found = 1; break; }
+                        }
+                        if (!found)
+                            sema_error(s, e->span, "union '%s' has no variant '%s'",
+                                       ui->name, fname);
+                    }
+                    break;
+                }
             }
             break;
         }
@@ -589,8 +722,12 @@ static Type *check_expr(Sema *s, Expr *e) {
                 else if (et && !ty_coerces(et, elem_ty))
                     sema_error(s, e->span, "inconsistent element types in array literal");
             }
-            Type *arr = make_ty(s, TY_SLICE);
-            arr->ptr.inner = elem_ty;
+            /* type as [N]T, not []T — length is known at compile time */
+            Type *arr = make_ty(s, TY_ARRAY);
+            arr->array.inner = elem_ty;
+            Expr *sz = ARENA_NEW(s->arena, Expr);
+            sz->kind = EXPR_INT; sz->ival = e->array_lit.len;
+            arr->array.size  = sz;
             e->ty = arr;
             break;
         }
@@ -623,9 +760,10 @@ static void check_stmt(Sema *s, Stmt *st) {
 
             /* handle failable: val, err: !T = func() */
             if (ty && ty->kind == TY_FAILABLE) {
-                /* the actual value type is the inner */
-                define(s, st->span, st->let.name, ty->ptr.inner, st->let.mutable, 0);
-                /* err binding handled at parse time as a sibling let */
+                /* This let is the err variable: define as i32 error code */
+                Type *err_ty = ARENA_NEW(s->arena, Type);
+                err_ty->kind = TY_I32;
+                define(s, st->span, st->let.name, err_ty, st->let.mutable, 0);
             } else {
                 define(s, st->span, st->let.name, ty, st->let.mutable, 0);
             }
@@ -747,14 +885,48 @@ static void check_stmt(Sema *s, Stmt *st) {
 
         case STMT_WHEN: {
             Type *vt = check_expr(s, st->when.val);
+            /* check if subject is a tagged union */
+            UnionInfo *ui = NULL;
+            if (vt && vt->kind == TY_NAMED) {
+                for (UnionInfo *u = s->unions; u; u = u->next)
+                    if (!strcmp(u->name, vt->named.name)) { ui = u; break; }
+            }
             for (size_t i = 0; i < st->when.arms.len; i++) {
                 WhenArm *arm = &st->when.arms.data[i];
                 push_scope(s);
-                /* bind name for `any` arms */
-                if (arm->bind && vt)
-                    define(s, arm->span, arm->bind, vt, 0, 0);
-                for (size_t pi = 0; pi < arm->pats.len; pi++)
-                    check_expr(s, arm->pats.data[pi]);
+                if (ui) {
+                    /* tagged union: patterns are ".variantName" dot-prefixed idents */
+                    for (size_t pi = 0; pi < arm->pats.len; pi++) {
+                        Expr *pat = arm->pats.data[pi];
+                        if (pat->kind == EXPR_DISCARD) continue;
+                        if (pat->kind == EXPR_IDENT && pat->ident.name[0] == '.') {
+                            const char *vname = pat->ident.name + 1;
+                            int found = 0;
+                            for (size_t vi = 0; vi < ui->n_variants; vi++) {
+                                if (!strcmp(ui->variants[vi].name, vname)) {
+                                    found = 1;
+                                    /* bind payload type if arm has a binding name */
+                                    if (arm->bind && ui->variants[vi].ty)
+                                        define(s, arm->span, arm->bind,
+                                               ui->variants[vi].ty, 0, 0);
+                                    break;
+                                }
+                            }
+                            if (!found)
+                                sema_error(s, arm->span,
+                                    "union '%s' has no variant '%s'", ui->name, vname);
+                            pat->ty = vt;
+                        } else {
+                            check_expr(s, pat);
+                        }
+                    }
+                } else {
+                    /* regular when: bind name for `any` arms */
+                    if (arm->bind && vt)
+                        define(s, arm->span, arm->bind, vt, 0, 0);
+                    for (size_t pi = 0; pi < arm->pats.len; pi++)
+                        check_expr(s, arm->pats.data[pi]);
+                }
                 check_stmt(s, arm->body);
                 pop_scope(s);
             }
@@ -766,12 +938,19 @@ static void check_stmt(Sema *s, Stmt *st) {
                 check_stmt(s, st->defer.data[i]);
             break;
 
-        case STMT_BLOCK:
-            push_scope(s);
+        case STMT_BLOCK: {
+            /* failable destructure block: two lets where second has !T — no new scope */
+            int is_fail = (st->block.len == 2
+                && st->block.data[0]->kind == STMT_LET
+                && st->block.data[1]->kind == STMT_LET
+                && st->block.data[1]->let.ty
+                && st->block.data[1]->let.ty->kind == TY_FAILABLE);
+            if (!is_fail) push_scope(s);
             for (size_t i = 0; i < st->block.len; i++)
                 check_stmt(s, st->block.data[i]);
-            pop_scope(s);
+            if (!is_fail) pop_scope(s);
             break;
+        }
 
         case STMT_BREAK:
         case STMT_CONTINUE:
@@ -822,6 +1001,13 @@ static void check_enum(Sema *s, Item *item) {
     }
 }
 
+static void check_union(Sema *s, Item *item) {
+    for (size_t i = 0; i < item->union_.fields.len; i++) {
+        Field *f = &item->union_.fields.data[i];
+        if (f->ty) f->ty = check_type(s, f->ty);
+    }
+}
+
 static void check_impl(Sema *s, Item *item) {
     /* check each method as a function */
     for (size_t i = 0; i < item->impl.methods.len; i++)
@@ -841,12 +1027,23 @@ static void check_global(Sema *s, Item *item) {
 }
 
 static void check_extern_fn(Sema *s, Item *item) {
-    /* build a fn type and register the name */
+    /* build a fn type with resolved param types */
     Type *ty = make_ty(s, TY_FN);
     ty->fn.ret = check_type(s, item->extern_fn.ret);
-    for (size_t i = 0; i < item->extern_fn.params.len; i++) {
-        Param *p = &item->extern_fn.params.data[i];
-        p->ty = check_type(s, p->ty);
+    size_t np = item->extern_fn.params.len;
+    if (np) {
+        ty->fn.params.data = ARENA_ALLOC(s->arena, Type *, np);
+        ty->fn.params.len  = np;
+        for (size_t i = 0; i < np; i++) {
+            Param *p = &item->extern_fn.params.data[i];
+            p->ty = check_type(s, p->ty);
+            ty->fn.params.data[i] = p->ty;
+        }
+    }
+    ty->fn.variadic = item->extern_fn.variadic;
+    /* update existing sym from first pass rather than re-defining */
+    for (Sym *sym = s->scope->syms; sym; sym = sym->next) {
+        if (!strcmp(sym->name, item->name)) { sym->ty = ty; return; }
     }
     define(s, item->span, item->name, ty, 0, 0);
 }
@@ -1157,6 +1354,26 @@ static void register_item(Sema *s, Item *item) {
             s->enums        = ei;
             break;
         }
+        case ITEM_UNION: {
+            if (!item->union_.tagged) break; /* untagged unions: no type registration yet */
+            Type *ty = make_ty(s, TY_NAMED);
+            ty->named.name = item->name;
+            define(s, item->span, item->name, ty, 0, 1);
+            /* build variant info table */
+            size_t n = item->union_.fields.len;
+            UnionVariantInfo *vars = ARENA_ALLOC(s->arena, UnionVariantInfo, n);
+            for (size_t i = 0; i < n; i++) {
+                vars[i].name = item->union_.fields.data[i].name;
+                vars[i].ty   = item->union_.fields.data[i].ty;
+            }
+            UnionInfo *ui  = ARENA_NEW(s->arena, UnionInfo);
+            ui->name       = item->name;
+            ui->n_variants = n;
+            ui->variants   = vars;
+            ui->next       = s->unions;
+            s->unions      = ui;
+            break;
+        }
         case ITEM_TYPE_ALIAS: {
             /* register placeholder; will be resolved in second pass */
             define(s, item->span, item->name, item->type_alias.ty, 0, 1);
@@ -1165,6 +1382,14 @@ static void register_item(Sema *s, Item *item) {
         case ITEM_EXTERN_FN: {
             Type *ty = make_ty(s, TY_FN);
             ty->fn.ret = item->extern_fn.ret;
+            size_t np = item->extern_fn.params.len;
+            if (np) {
+                ty->fn.params.data = ARENA_ALLOC(s->arena, Type *, np);
+                ty->fn.params.len  = np;
+                for (size_t i = 0; i < np; i++)
+                    ty->fn.params.data[i] = item->extern_fn.params.data[i].ty;
+            }
+            ty->fn.variadic = item->extern_fn.variadic;
             define(s, item->span, item->name, ty, 0, 0);
             break;
         }
@@ -1270,7 +1495,7 @@ int sema_check(Module *mod) {
             case ITEM_GLOBAL:     check_global(&s, item);     break;
             case ITEM_EXTERN_FN:  check_extern_fn(&s, item);  break;
             case ITEM_TYPE_ALIAS: check_type_alias(&s, item); break;
-            case ITEM_UNION:      break; /* TODO */
+            case ITEM_UNION:      check_union(&s, item); break;
             case ITEM_IMPORT:     break; /* resolved by module loader */
             default:              break;
         }

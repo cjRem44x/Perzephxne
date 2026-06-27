@@ -11,6 +11,9 @@
 #include <unistd.h>
 #include <sys/wait.h>
 
+/* explicit POSIX declaration for readlink (required under -std=c11 -Wpedantic) */
+extern ssize_t readlink(const char *path, char *buf, size_t bufsiz);
+
 /* ── Utilities ────────────────────────────────────────────────────────────── */
 
 static char *read_file(const char *path) {
@@ -28,6 +31,34 @@ static char *read_file(const char *path) {
 }
 
 /* ── Module system ─────────────────────────────────────────────────────────── */
+
+/* stdlib root — resolved once at startup */
+static char g_stdlib_root[1024] = "";
+
+static void stdlib_root_init(const char *argv0) {
+    const char *env = getenv("PRZP_STDLIB");
+    if (env) {
+        snprintf(g_stdlib_root, sizeof(g_stdlib_root), "%s", env);
+        return;
+    }
+    /* try /proc/self/exe (Linux) to find binary dir */
+    char exe[1024];
+    ssize_t n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
+    if (n > 0) {
+        exe[n] = '\0';
+        const char *slash = strrchr(exe, '/');
+        if (slash) {
+            size_t len = (size_t)(slash - exe);
+            if (len + 5 < sizeof(g_stdlib_root)) {
+                memcpy(g_stdlib_root, exe, len);
+                memcpy(g_stdlib_root + len, "/std", 5);
+                return;
+            }
+        }
+    }
+    /* fallback: relative to cwd */
+    snprintf(g_stdlib_root, sizeof(g_stdlib_root), "./std");
+}
 
 static void src_dir_of(const char *path, char *out, size_t outsz) {
     const char *slash = strrchr(path, '/');
@@ -94,20 +125,163 @@ static void rw_types_in_stmts(StmtList sl, const char **orig, size_t n, const ch
     }
 }
 
+/* Rewrite EXPR_IDENT references inside function bodies: if the ident name
+   matches one of the module's own (non-extern) items, prefix it with alias__.
+   This handles intra-module calls like `slice(...)` inside `trim`'s body. */
+static void rw_ident_expr(Expr *e, const char **orig, size_t n_orig,
+                          const char *alias, Arena *a);
+static void rw_ident_stmts(StmtList sl, const char **orig, size_t n_orig,
+                            const char *alias, Arena *a);
+static void rw_ident_stmt(Stmt *s, const char **orig, size_t n_orig,
+                           const char *alias, Arena *a);
+
+static void rw_ident_stmts(StmtList sl, const char **orig, size_t n_orig,
+                            const char *alias, Arena *a) {
+    for (size_t i = 0; i < sl.len; i++) {
+        Stmt *s = sl.data[i];
+        if (!s) continue;
+        switch (s->kind) {
+            case STMT_EXPR:   rw_ident_expr(s->expr, orig, n_orig, alias, a); break;
+            case STMT_LET:    rw_ident_expr(s->let.init, orig, n_orig, alias, a); break;
+            case STMT_ASSIGN:
+                rw_ident_expr(s->assign.target, orig, n_orig, alias, a);
+                rw_ident_expr(s->assign.val, orig, n_orig, alias, a);
+                break;
+            case STMT_RET:    rw_ident_expr(s->ret.val, orig, n_orig, alias, a); break;
+            case STMT_IF:
+                for (size_t j = 0; j < s->if_.branches.len; j++) {
+                    rw_ident_expr(s->if_.branches.data[j].cond, orig, n_orig, alias, a);
+                    rw_ident_stmts(s->if_.branches.data[j].body, orig, n_orig, alias, a);
+                }
+                rw_ident_stmts(s->if_.else_body, orig, n_orig, alias, a);
+                break;
+            case STMT_WHILE:
+                rw_ident_expr(s->while_.cond, orig, n_orig, alias, a);
+                rw_ident_stmts(s->while_.body, orig, n_orig, alias, a);
+                break;
+            case STMT_FOR:
+                rw_ident_expr(s->for_.clause.iter, orig, n_orig, alias, a);
+                rw_ident_expr(s->for_.clause.range_end, orig, n_orig, alias, a);
+                rw_ident_expr(s->for_.clause.cond, orig, n_orig, alias, a);
+                rw_ident_stmt(s->for_.clause.init, orig, n_orig, alias, a);
+                rw_ident_stmt(s->for_.clause.step, orig, n_orig, alias, a);
+                rw_ident_stmts(s->for_.body, orig, n_orig, alias, a);
+                break;
+            case STMT_BLOCK:  rw_ident_stmts(s->block, orig, n_orig, alias, a); break;
+            case STMT_DEFER:  rw_ident_stmts(s->defer, orig, n_orig, alias, a); break;
+            default: break;
+        }
+    }
+}
+
+static void rw_ident_stmt(Stmt *s, const char **orig, size_t n_orig,
+                           const char *alias, Arena *a) {
+    if (!s) return;
+    StmtList sl = {.data = &s, .len = 1};
+    rw_ident_stmts(sl, orig, n_orig, alias, a);
+}
+
+static void rw_ident_expr(Expr *e, const char **orig, size_t n_orig,
+                          const char *alias, Arena *a) {
+    if (!e) return;
+    switch (e->kind) {
+        case EXPR_IDENT: {
+            for (size_t i = 0; i < n_orig; i++) {
+                if (!strcmp(e->ident.name, orig[i])) {
+                    char buf[512];
+                    snprintf(buf, sizeof(buf), "%s__%s", alias, orig[i]);
+                    e->ident.name = arena_strdup(a, buf);
+                    break;
+                }
+            }
+            break;
+        }
+        case EXPR_CALL:
+            rw_ident_expr(e->call.callee, orig, n_orig, alias, a);
+            for (size_t i = 0; i < e->call.args.len; i++)
+                rw_ident_expr(e->call.args.data[i], orig, n_orig, alias, a);
+            break;
+        case EXPR_BINOP:
+            rw_ident_expr(e->binop.l, orig, n_orig, alias, a);
+            rw_ident_expr(e->binop.r, orig, n_orig, alias, a);
+            break;
+        case EXPR_UNOP:
+            rw_ident_expr(e->unop.operand, orig, n_orig, alias, a);
+            break;
+        case EXPR_INDEX:
+            rw_ident_expr(e->index.arr, orig, n_orig, alias, a);
+            rw_ident_expr(e->index.idx, orig, n_orig, alias, a);
+            break;
+        case EXPR_DEREF:
+        case EXPR_SMARTDEREF:
+            rw_ident_expr(e->deref.operand, orig, n_orig, alias, a);
+            break;
+        case EXPR_CAST:
+            rw_ident_expr(e->cast.val, orig, n_orig, alias, a);
+            break;
+        case EXPR_BUILTIN:
+            for (size_t i = 0; i < e->builtin.args.len; i++)
+                rw_ident_expr(e->builtin.args.data[i], orig, n_orig, alias, a);
+            break;
+        case EXPR_FIELD:
+            rw_ident_expr(e->field.obj, orig, n_orig, alias, a);
+            break;
+        case EXPR_STRUCT_LIT:
+            for (size_t i = 0; i < n_orig; i++) {
+                if (!strcmp(e->struct_lit.ty_name, orig[i])) {
+                    char buf[512];
+                    snprintf(buf, sizeof(buf), "%s__%s", alias, orig[i]);
+                    e->struct_lit.ty_name = arena_strdup(a, buf);
+                    break;
+                }
+            }
+            for (size_t i = 0; i < e->struct_lit.fields.len; i++)
+                rw_ident_expr(e->struct_lit.fields.data[i].val, orig, n_orig, alias, a);
+            break;
+        case EXPR_ARRAY_LIT:
+            for (size_t i = 0; i < e->array_lit.len; i++)
+                rw_ident_expr(e->array_lit.data[i], orig, n_orig, alias, a);
+            break;
+        case EXPR_IF:
+            rw_ident_expr(e->if_expr.cond, orig, n_orig, alias, a);
+            rw_ident_stmt(e->if_expr.then_, orig, n_orig, alias, a);
+            rw_ident_stmt(e->if_expr.else_, orig, n_orig, alias, a);
+            break;
+        default: break;
+    }
+}
+
 /* Prefix all item names in mod with "alias__", and rewrite type references */
 static void mangle_items(Module *mod, const char *alias, Arena *arena) {
-    /* collect original names before mangling (for type rewriting) */
+    /* Collect all item names — both extern fns and regular fns get prefixed.
+       Extern fn names in function bodies also need rewriting to call the wrapper. */
     const char *orig[256];
     size_t n_orig = 0;
     for (size_t i = 0; i < mod->items.len && n_orig < 256; i++) {
         Item *item = mod->items.data[i];
-        if (item->name) orig[n_orig++] = item->name;
+        if (item->name)
+            orig[n_orig++] = item->name;
+    }
+
+    /* collect ALL original names for type-name rewriting (structs, enums, etc.) */
+    const char *all_orig[256];
+    size_t n_all_orig = 0;
+    for (size_t i = 0; i < mod->items.len && n_all_orig < 256; i++) {
+        Item *item = mod->items.data[i];
+        if (item->name) all_orig[n_all_orig++] = item->name;
     }
 
     char buf[512];
     for (size_t i = 0; i < mod->items.len; i++) {
         Item *item = mod->items.data[i];
         if (!item->name) continue;
+        if (item->kind == ITEM_EXTERN_FN) {
+            /* save original C name, then mangle so alias.fn rewrites work */
+            item->extern_fn.c_name = item->name;
+            snprintf(buf, sizeof(buf), "%s__%s", alias, item->name);
+            item->name = arena_strdup(arena, buf);
+            continue;
+        }
         snprintf(buf, sizeof(buf), "%s__%s", alias, item->name);
         item->name = arena_strdup(arena, buf);
         /* For impl blocks, also mangle the target type name */
@@ -117,26 +291,34 @@ static void mangle_items(Module *mod, const char *alias, Arena *arena) {
         }
     }
 
-    /* rewrite all TY_NAMED type annotations within the module */
+    /* rewrite TY_NAMED annotations and intra-module EXPR_IDENT calls in bodies */
     for (size_t i = 0; i < mod->items.len; i++) {
         Item *item = mod->items.data[i];
-        if (item->kind == ITEM_FN || item->kind == ITEM_EXTERN_FN) {
+        if (item->kind == ITEM_FN) {
             for (size_t j = 0; j < item->fn.params.len; j++)
-                rw_type(item->fn.params.data[j].ty, orig, n_orig, alias, arena);
-            rw_type(item->fn.ret, orig, n_orig, alias, arena);
-            rw_types_in_stmts(item->fn.body, orig, n_orig, alias, arena);
+                rw_type(item->fn.params.data[j].ty, all_orig, n_all_orig, alias, arena);
+            rw_type(item->fn.ret, all_orig, n_all_orig, alias, arena);
+            rw_types_in_stmts(item->fn.body, all_orig, n_all_orig, alias, arena);
+            /* rewrite direct calls to other module functions */
+            rw_ident_stmts(item->fn.body, orig, n_orig, alias, arena);
+        } else if (item->kind == ITEM_EXTERN_FN) {
+            /* extern fn: only rewrite type annotations (param/return types) */
+            for (size_t j = 0; j < item->extern_fn.params.len; j++)
+                rw_type(item->extern_fn.params.data[j].ty, all_orig, n_all_orig, alias, arena);
+            rw_type(item->extern_fn.ret, all_orig, n_all_orig, alias, arena);
         } else if (item->kind == ITEM_STRUCT) {
             for (size_t j = 0; j < item->struct_.fields.len; j++)
-                rw_type(item->struct_.fields.data[j].ty, orig, n_orig, alias, arena);
+                rw_type(item->struct_.fields.data[j].ty, all_orig, n_all_orig, alias, arena);
         } else if (item->kind == ITEM_GLOBAL) {
-            rw_type(item->global.ty, orig, n_orig, alias, arena);
+            rw_type(item->global.ty, all_orig, n_all_orig, alias, arena);
         } else if (item->kind == ITEM_IMPL) {
             for (size_t j = 0; j < item->impl.methods.len; j++) {
                 Item *m = item->impl.methods.data[j];
                 for (size_t k = 0; k < m->fn.params.len; k++)
-                    rw_type(m->fn.params.data[k].ty, orig, n_orig, alias, arena);
-                rw_type(m->fn.ret, orig, n_orig, alias, arena);
-                rw_types_in_stmts(m->fn.body, orig, n_orig, alias, arena);
+                    rw_type(m->fn.params.data[k].ty, all_orig, n_all_orig, alias, arena);
+                rw_type(m->fn.ret, all_orig, n_all_orig, alias, arena);
+                rw_types_in_stmts(m->fn.body, all_orig, n_all_orig, alias, arena);
+                rw_ident_stmts(m->fn.body, orig, n_orig, alias, arena);
             }
         }
     }
@@ -327,6 +509,9 @@ static void load_imports(Module *mod, const char *src_path,
     size_t      n_aliases = 0;
     char        src_dir[1024];
     src_dir_of(src_path, src_dir, sizeof(src_dir));
+    /* remember how many items this module originally has so rw_item only
+       touches the caller's own code, not the imported (already-mangled) items */
+    size_t n_orig_items = mod->items.len;
 
     for (size_t i = 0; i < mod->items.len && n_aliases < 64; i++) {
         Item *item = mod->items.data[i];
@@ -338,10 +523,14 @@ static void load_imports(Module *mod, const char *src_path,
 
             /* resolve path: append .przp */
             char full[1024];
-            if (imp_path[0] == '/')
+            if (imp_path[0] == '/') {
                 snprintf(full, sizeof(full), "%s.przp", imp_path);
-            else
+            } else if (!strncmp(imp_path, "std/", 4) && g_stdlib_root[0]) {
+                /* stdlib path: resolve against stdlib root */
+                snprintf(full, sizeof(full), "%s/%s.przp", g_stdlib_root, imp_path + 4);
+            } else {
                 snprintf(full, sizeof(full), "%s/%s.przp", src_dir, imp_path);
+            }
 
             /* cycle detection */
             int cycle = 0;
@@ -371,9 +560,9 @@ static void load_imports(Module *mod, const char *src_path,
         }
     }
 
-    /* rewrite module accesses in the calling module */
+    /* rewrite module accesses in the calling module only (not imported items) */
     if (n_aliases > 0) {
-        for (size_t i = 0; i < mod->items.len; i++)
+        for (size_t i = 0; i < n_orig_items; i++)
             rw_item(mod->items.data[i], aliases, n_aliases, arena);
     }
 }
@@ -412,7 +601,7 @@ static int compile_file(const char *src_path, const char *out_path, int release)
 
     FILE *ll_f = fopen(ll_path, "w");
     if (!ll_f) { fprintf(stderr, "przp: cannot write '%s'\n", ll_path); return 1; }
-    int ok = codegen(mod, ll_f);
+    int ok = codegen(mod, ll_f, release);
     fclose(ll_f);
 
     arena_free(&arena);
@@ -423,7 +612,7 @@ static int compile_file(const char *src_path, const char *out_path, int release)
     /* invoke clang to produce the binary */
     char cmd[2048];
     const char *opt = release ? "-O2" : "-O0 -g";
-    snprintf(cmd, sizeof(cmd), "clang %s %s -o %s", opt, ll_path, out_path);
+    snprintf(cmd, sizeof(cmd), "clang %s %s -o %s -lm", opt, ll_path, out_path);
     int ret = system(cmd);
     if (!getenv("PRZP_KEEP_IR")) remove(ll_path);
     return (ret == 0) ? 0 : 1;
@@ -557,6 +746,7 @@ static void usage(void) {
 
 int main(int argc, char **argv) {
     if (argc < 2) usage();
+    stdlib_root_init(argv[0]);
 
     const char *cmd = argv[1];
     argv += 2;

@@ -1,0 +1,141 @@
+# std/str — string operations
+# All functions that return new strings allocate on the heap.
+# Caller is responsible for freeing if needed (raw pointer inside str).
+
+extern fn strlen(s: *u8) -> usize
+extern fn strcmp(a: *u8, b: *u8) -> i32
+extern fn strncmp(a: *u8, b: *u8, n: usize) -> i32
+extern fn strstr(haystack: *u8, needle: *u8) -> *u8
+extern fn memcpy(dst: *u8, src: *u8, n: usize) -> *u8
+extern fn malloc(n: usize) -> *u8
+extern fn toupper(c: i32) -> i32
+extern fn tolower(c: i32) -> i32
+extern fn isspace(c: i32) -> i32
+
+# len: return the length of a string
+fn len(s: str) -> usize {
+    ret s.len
+}
+
+# eq: true if two strings are equal
+fn eq(a: str, b: str) -> bool {
+    if a.len != b.len { ret false }
+    ret strcmp(a.data, b.data) == 0
+}
+
+# concat: concatenate two strings, return new heap-allocated str
+fn concat(a: str, b: str) -> str {
+    total: usize = a.len + b.len
+    buf: *u8 = malloc(total + 1)
+    memcpy(buf, a.data, a.len)
+    off: *u8 = buf + a.len
+    memcpy(off, b.data, b.len)
+    end: *u8 = buf + total
+    end.* = 0u8
+    ret @str_raw(buf, total)
+}
+
+# slice: return a str view into s from start (inclusive) to end (exclusive)
+fn slice(s: str, start: usize, end: usize) -> str {
+    if start > s.len { start = s.len }
+    if end > s.len   { end   = s.len }
+    if end < start   { end   = start }
+    p: *u8 = s.data + start
+    ret @str_raw(p, end - start)
+}
+
+# find: return the byte offset of sub in s, or s.len if not found
+fn find(s: str, sub: str) -> usize {
+    if sub.len == 0 { ret 0 }
+    if sub.len > s.len { ret s.len }
+    limit: usize = s.len - sub.len
+    i: usize = 0
+    while i <= limit {
+        if strncmp(s.data + i, sub.data, sub.len) == 0 {
+            ret i
+        }
+        i = i + 1
+    }
+    ret s.len
+}
+
+# contains: true if sub appears anywhere in s
+fn contains(s: str, sub: str) -> bool {
+    ret find(s, sub) < s.len
+}
+
+# starts_with: true if s begins with prefix
+fn starts_with(s: str, prefix: str) -> bool {
+    if prefix.len > s.len { ret false }
+    ret strncmp(s.data, prefix.data, prefix.len) == 0
+}
+
+# ends_with: true if s ends with suffix
+fn ends_with(s: str, suffix: str) -> bool {
+    if suffix.len > s.len { ret false }
+    offset: usize = s.len - suffix.len
+    ret strncmp(s.data + offset, suffix.data, suffix.len) == 0
+}
+
+# to_upper: return new heap string with all ASCII letters uppercased
+fn to_upper(s: str) -> str {
+    buf: *u8 = malloc(s.len + 1)
+    i: usize = 0
+    while i < s.len {
+        c: i32 = @i32((s.data + i).*)
+        b: *u8 = buf + i
+        b.* = @u8(toupper(c))
+        i = i + 1
+    }
+    end: *u8 = buf + s.len
+    end.* = 0u8
+    ret @str_raw(buf, s.len)
+}
+
+# to_lower: return new heap string with all ASCII letters lowercased
+fn to_lower(s: str) -> str {
+    buf: *u8 = malloc(s.len + 1)
+    i: usize = 0
+    while i < s.len {
+        c: i32 = @i32((s.data + i).*)
+        b: *u8 = buf + i
+        b.* = @u8(tolower(c))
+        i = i + 1
+    }
+    end: *u8 = buf + s.len
+    end.* = 0u8
+    ret @str_raw(buf, s.len)
+}
+
+# trim: strip leading and trailing ASCII whitespace
+fn trim(s: str) -> str {
+    start: usize = 0
+    while start < s.len {
+        c: i32 = @i32((s.data + start).*)
+        if isspace(c) == 0 { break }
+        start = start + 1
+    }
+    end: usize = s.len
+    while end > start {
+        c: i32 = @i32((s.data + end - 1).*)
+        if isspace(c) == 0 { break }
+        end = end - 1
+    }
+    ret slice(s, start, end)
+}
+
+# repeat: return s concatenated n times
+fn repeat(s: str, n: usize) -> str {
+    if n == 0 { ret @str_raw(malloc(1), 0) }
+    total: usize = s.len * n
+    buf: *u8 = malloc(total + 1)
+    i: usize = 0
+    while i < n {
+        off: *u8 = buf + i * s.len
+        memcpy(off, s.data, s.len)
+        i = i + 1
+    }
+    end: *u8 = buf + total
+    end.* = 0u8
+    ret @str_raw(buf, total)
+}

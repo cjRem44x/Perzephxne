@@ -6,6 +6,9 @@
 #include <stdarg.h>
 #include <inttypes.h>
 
+/* ── Val forward declaration (defined fully below) ───────────────────────── */
+typedef struct { char buf[64]; } Val;
+
 /* ── Codegen state ────────────────────────────────────────────────────────── */
 
 typedef struct StrConst {
@@ -30,6 +33,16 @@ typedef struct EnumInfo {
     size_t           n_variants;
     EnumVariantVal  *variants;
 } EnumInfo;
+
+typedef struct { const char *name; Type *ty; } UnionVariantCG; /* ty=NULL → unit variant */
+
+typedef struct UnionInfoCG {
+    struct UnionInfoCG *next;
+    const char         *name;
+    size_t              n_variants;
+    UnionVariantCG     *variants;
+    int                 payload_size; /* bytes — 0 if all unit variants */
+} UnionInfoCG;
 
 typedef struct Symbol {
     struct Symbol *next;
@@ -65,6 +78,7 @@ typedef struct {
     StrConst    *str_consts;
     StructInfo  *structs;    /* name → field list for struct layout */
     EnumInfo    *enums;      /* name → variant values for enum access */
+    UnionInfoCG *unions;     /* name → tagged union variant table */
     int          str_id;
     int          tmp_id;      /* next %t<n> temporary */
     int          label_id;    /* next label suffix     */
@@ -73,6 +87,17 @@ typedef struct {
     const char  *skip_rc_drop; /* alloca to skip in RC drops (being moved out by ret) */
     int          terminated;   /* 1 = current block already has a terminator */
     int          had_error;
+    int          release;      /* 1 = --release build (@debug=false, @release=true) */
+    int          cur_label;    /* -1 = entry block, else the current l%d label id */
+    /* dedup tracker for extern fn declarations/wrappers */
+    const char  *declared_fns[512];
+    size_t       n_declared_fns;
+    /* failable destructure cache: val, err: !T = expr() */
+    const Expr  *last_fail_init;   /* init expr pointer from the val-side let */
+    Val          last_fail_val;    /* aggregate value returned by cg_expr for it */
+    Type        *last_fail_ty;     /* TY_FAILABLE type (needed for extractvalue) */
+    /* current function return type (for @ok/@err builtins in STMT_RET) */
+    Type        *cur_fn_ret_ty;
 } CG;
 
 /* ── Utilities ────────────────────────────────────────────────────────────── */
@@ -100,6 +125,13 @@ static void emit_br(CG *cg, const char *fmt, ...) {
 static void emit_label(CG *cg, int id) {
     emit(cg, "l%d:\n", id);
     cg->terminated = 0;
+    cg->cur_label  = id;
+}
+
+/* write the current label name for phi predecessors */
+static void emit_cur_label(CG *cg) {
+    if (cg->cur_label < 0) emit(cg, "%%entry");
+    else emit(cg, "%%l%d", cg->cur_label);
 }
 
 static void push_scope(CG *cg) {
@@ -222,7 +254,13 @@ static const char *llvm_type(Type *ty) {
         case TY_PTR:       return "ptr";
         case TY_SMART_PTR: return "ptr";
         case TY_SLICE:     return "{ ptr, i64 }";
-        case TY_FAILABLE:  return llvm_type(ty->ptr.inner); /* value part */
+        case TY_FAILABLE: {
+            static char fbufs[4][256];
+            static int  fbi = 0;
+            fbi = (fbi + 1) % 4;
+            snprintf(fbufs[fbi], sizeof(fbufs[fbi]), "{ %s, i32 }", llvm_type(ty->ptr.inner));
+            return fbufs[fbi];
+        }
         case TY_NAMED: {
             /* Round-robin static buffers — safe for up to 8 concurrent uses */
             static char bufs[8][128];
@@ -247,12 +285,43 @@ static EnumInfo *find_enum(CG *cg, const char *name) {
     return NULL;
 }
 
-/* For named types: enums use their backing integer type; structs use %Name. */
+static UnionInfoCG *find_union(CG *cg, const char *name) {
+    for (UnionInfoCG *ui = cg->unions; ui; ui = ui->next)
+        if (!strcmp(ui->name, name)) return ui;
+    return NULL;
+}
+
+/* Approximate byte size of a type for union payload sizing */
+static int cg_type_byte_size(CG *cg, Type *ty) {
+    if (!ty) return 0;
+    switch (ty->kind) {
+        case TY_BOOL: case TY_I8: case TY_U8: case TY_CHAR: return 1;
+        case TY_I16: case TY_U16: return 2;
+        case TY_I32: case TY_U32: case TY_F32: return 4;
+        case TY_I64: case TY_U64: case TY_F64: case TY_USIZE:
+        case TY_PTR: case TY_SMART_PTR: return 8;
+        case TY_STR: case TY_SLICE: case TY_ANY: return 16;
+        case TY_NAMED: {
+            StructInfo *si = find_struct(cg, ty->named.name);
+            if (si) {
+                int total = 0;
+                for (size_t i = 0; i < si->fields.len; i++)
+                    total += cg_type_byte_size(cg, si->fields.data[i].ty);
+                return total ? total : 8;
+            }
+            return 8;
+        }
+        default: return 8;
+    }
+}
+
+/* For named types: enums use their backing integer type; structs/unions use %Name. */
 static const char *effective_llvm_type(CG *cg, Type *ty) {
     if (!ty) return "i32";
     if (ty->kind == TY_NAMED) {
         EnumInfo *ei = find_enum(cg, ty->named.name);
         if (ei) return llvm_type(ei->backing_ty);
+        /* structs and tagged unions: %Name */
     }
     return llvm_type(ty);
 }
@@ -321,11 +390,35 @@ static void emit_str_constants(CG *cg) {
 
 /* ── Expression codegen ───────────────────────────────────────────────────── */
 
-/* Returns the LLVM value string representing the result (e.g. "%t3", "42", "@.str.0") */
-typedef struct { char buf[64]; } Val;
+/* Val is defined at top of file (forward decl) for use in CG struct */
 
 static Val val_tmp(int id)  { Val v; snprintf(v.buf, sizeof(v.buf), "%%t%d", id); return v; }
 static Val val_str(const char *s) { Val v; snprintf(v.buf, sizeof(v.buf), "%s", s); return v; }
+
+/* C ABI: small int/float args to variadic functions must be widened */
+static Val promote_vararg(CG *cg, Val v, Type *ty, const char **llt_out) {
+    if (ty && ty->kind == TY_F32) {
+        int t = new_tmp(cg);
+        emit(cg, "  %%t%d = fpext float %s to double\n", t, v.buf);
+        if (llt_out) *llt_out = "double";
+        return val_tmp(t);
+    }
+    /* C integer promotion: i8/i16/u8/u16/bool/char → i32 */
+    if (ty && (ty->kind == TY_I8 || ty->kind == TY_I16
+            || ty->kind == TY_U8 || ty->kind == TY_U16
+            || ty->kind == TY_BOOL || ty->kind == TY_CHAR)) {
+        int t = new_tmp(cg);
+        int is_signed = (ty->kind == TY_I8 || ty->kind == TY_I16);
+        if (is_signed)
+            emit(cg, "  %%t%d = sext %s %s to i32\n", t, llvm_type(ty), v.buf);
+        else
+            emit(cg, "  %%t%d = zext %s %s to i32\n", t, llvm_type(ty), v.buf);
+        if (llt_out) *llt_out = "i32";
+        return val_tmp(t);
+    }
+    if (llt_out) *llt_out = ty ? llvm_type(ty) : "i32";
+    return v;
+}
 
 /* Increment RC given the smart ptr value buf (e.g. "%t5"). */
 static void emit_rc_inc(CG *cg, const char *smart_ptr_buf) {
@@ -351,7 +444,8 @@ static void emit_defers_for_scope(CG *cg, Scope *sc) {
 }
 
 static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
-    if (out_ty) *out_ty = NULL;
+    /* default: use sema-annotated type; individual cases may override */
+    if (out_ty) *out_ty = e->ty;
 
     switch (e->kind) {
         case EXPR_INT: {
@@ -384,13 +478,18 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
         }
 
         case EXPR_STR: {
-            /* Produce a ptr to the string constant */
+            /* Produce a str fat-pointer { ptr, i64 } */
             int id  = intern_str(cg, e->sval);
-            size_t len = strlen(e->sval) + 1;
-            int t = new_tmp(cg);
+            size_t slen = strlen(e->sval);
+            int raw = new_tmp(cg);
             emit(cg, "  %%t%d = getelementptr inbounds [%zu x i8],"
-                     " ptr @.str.%d, i32 0, i32 0\n", t, len, id);
-            return val_tmp(t);
+                     " ptr @.str.%d, i32 0, i32 0\n", raw, slen + 1, id);
+            int f1 = new_tmp(cg);
+            emit(cg, "  %%t%d = insertvalue { ptr, i64 } undef, ptr %%t%d, 0\n", f1, raw);
+            int f2 = new_tmp(cg);
+            emit(cg, "  %%t%d = insertvalue { ptr, i64 } %%t%d, i64 %zu, 1\n", f2, f1, slen);
+            if (out_ty) *out_ty = e->ty;
+            return val_tmp(f2);
         }
 
         case EXPR_IDENT: {
@@ -480,35 +579,88 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                     emit(cg, "  %%t%d = getelementptr inbounds [%zu x i8],"
                              " ptr @.str.%d, i32 0, i32 0\n", ft, pff + 1, fmtid);
 
-                    int t = new_tmp(cg);
-                    emit(cg, "  %%t%d = call i32 (ptr, ...) @printf(ptr %%t%d", t, ft);
+                    /* pre-emit fpext for float args before starting the call */
+                    Val          *iprint_final = malloc(sizeof(Val)         * na);
+                    const char  **iprint_llts  = malloc(sizeof(const char*) * na);
                     for (size_t i = 1; i < na; i++) {
-                        const char *llt = (itys[i] && itys[i]->kind == TY_STR)
-                                          ? "ptr" : (itys[i] ? llvm_type(itys[i]) : "i32");
-                        emit(cg, ", %s %s", llt, printable[i].buf);
+                        if (itys[i] && itys[i]->kind == TY_STR) {
+                            iprint_final[i] = printable[i]; /* already ptr-extracted */
+                            iprint_llts[i]  = "ptr";
+                        } else {
+                            const char *llt;
+                            iprint_final[i] = promote_vararg(cg, printable[i], itys[i], &llt);
+                            iprint_llts[i]  = llt;
+                        }
+                    }
+
+                    int t = new_tmp(cg);
+                    int is_epf = !strcmp(name, "epf");
+                    if (is_epf) {
+                        int stde = new_tmp(cg);
+                        emit(cg, "  %%t%d = load ptr, ptr @stderr\n", stde);
+                        emit(cg, "  %%t%d = call i32 (ptr, ptr, ...) @fprintf(ptr %%t%d, ptr %%t%d",
+                             t, stde, ft);
+                    } else {
+                        emit(cg, "  %%t%d = call i32 (ptr, ...) @printf(ptr %%t%d", t, ft);
+                    }
+                    for (size_t i = 1; i < na; i++) {
+                        emit(cg, ", %s %s", iprint_llts[i], iprint_final[i].buf);
                     }
                     emit(cg, ")\n");
+                    free(iprint_final);
+                    free(iprint_llts);
 
                     free(ivals); free(itys); free(printable);
                     return val_tmp(t);
                 }
 
-                /* Non-interpolated path: pass args directly to printf */
-                Val   *pf_vals = malloc(sizeof(Val)   * na);
-                Type **pf_tys  = malloc(sizeof(Type*) * na);
+                /* Non-interpolated path: pass args directly to printf/fprintf */
+                Val   *pf_vals  = malloc(sizeof(Val)    * na);
+                Val   *pf_final = malloc(sizeof(Val)    * na);
+                const char **pf_llts = malloc(sizeof(const char*) * na);
+                Type **pf_tys   = malloc(sizeof(Type*) * na);
                 for (size_t i = 0; i < na; i++) {
                     pf_tys[i]  = NULL;
                     pf_vals[i] = cg_expr(cg, e->builtin.args.data[i], &pf_tys[i]);
                 }
-                int t = new_tmp(cg);
-                emit(cg, "  %%t%d = call i32 (ptr, ...) @printf(ptr %s",
-                     t, pf_vals[0].buf);
+                /* format string (args[0]) must be a raw ptr for printf */
+                Val fmt_ptr = pf_vals[0];
+                if (pf_tys[0] && pf_tys[0]->kind == TY_STR) {
+                    int sp0 = new_tmp(cg);
+                    emit(cg, "  %%t%d = extractvalue { ptr, i64 } %s, 0\n", sp0, pf_vals[0].buf);
+                    fmt_ptr = val_tmp(sp0);
+                }
+                /* pre-emit coercions (extractvalue / fpext) before the call */
                 for (size_t i = 1; i < na; i++) {
-                    const char *llt = pf_tys[i] ? llvm_type(pf_tys[i]) : "i32";
-                    emit(cg, ", %s %s", llt, pf_vals[i].buf);
+                    if (pf_tys[i] && pf_tys[i]->kind == TY_STR) {
+                        int sp = new_tmp(cg);
+                        emit(cg, "  %%t%d = extractvalue { ptr, i64 } %s, 0\n", sp, pf_vals[i].buf);
+                        pf_final[i] = val_tmp(sp);
+                        pf_llts[i]  = "ptr";
+                    } else {
+                        const char *llt;
+                        pf_final[i] = promote_vararg(cg, pf_vals[i], pf_tys[i], &llt);
+                        pf_llts[i]  = llt;
+                    }
+                }
+                int t = new_tmp(cg);
+                int is_epf2 = !strcmp(name, "epf");
+                if (is_epf2) {
+                    int stde2 = new_tmp(cg);
+                    emit(cg, "  %%t%d = load ptr, ptr @stderr\n", stde2);
+                    emit(cg, "  %%t%d = call i32 (ptr, ptr, ...) @fprintf(ptr %%t%d, ptr %s",
+                         t, stde2, fmt_ptr.buf);
+                } else {
+                    emit(cg, "  %%t%d = call i32 (ptr, ...) @printf(ptr %s",
+                         t, fmt_ptr.buf);
+                }
+                for (size_t i = 1; i < na; i++) {
+                    emit(cg, ", %s %s", pf_llts[i], pf_final[i].buf);
                 }
                 emit(cg, ")\n");
                 free(pf_vals);
+                free(pf_final);
+                free(pf_llts);
                 free(pf_tys);
                 return val_tmp(t);
             }
@@ -601,11 +753,170 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                 return ptr;
             }
 
+            /* @fmt — format to heap-allocated str */
+            if (!strcmp(name, "fmt")) {
+                if (e->builtin.args.len == 0)
+                    fatal_at(e->span, "@fmt requires a format string");
+                size_t na2 = e->builtin.args.len;
+                Expr *fmt_arg2 = e->builtin.args.data[0];
+                /* build the same format string as @pf */
+                Val   *fv  = malloc(sizeof(Val)   * na2);
+                Type **fty = malloc(sizeof(Type*) * na2);
+                for (size_t i = 1; i < na2; i++) {
+                    fty[i] = NULL;
+                    fv[i]  = cg_expr(cg, e->builtin.args.data[i], &fty[i]);
+                    if (fty[i] && fty[i]->kind == TY_STR) {
+                        int sv = new_tmp(cg);
+                        emit(cg, "  %%t%d = extractvalue { ptr, i64 } %s, 0\n", sv, fv[i].buf);
+                        fv[i] = val_tmp(sv);
+                    }
+                }
+                char pf2[4096]; size_t pf2n = 0; size_t ai2 = 1;
+                if (fmt_arg2->kind == EXPR_STR && strchr(fmt_arg2->sval, '\x01')) {
+                    for (const char *fs = fmt_arg2->sval; *fs && pf2n < sizeof(pf2)-32; fs++) {
+                        if ((unsigned char)*fs == '\x01') {
+                            fs++;
+                            char spec_buf2[64]; size_t sl2 = 0;
+                            while (*fs && (unsigned char)*fs != '\x02' && sl2 < 63)
+                                spec_buf2[sl2++] = *fs++;
+                            spec_buf2[sl2] = '\0';
+                            pf2[pf2n++] = '%';
+                            if (sl2 > 0) { for (size_t j=0;j<sl2;j++) pf2[pf2n++]=spec_buf2[j]; }
+                            else { const char *as=pf_specifier(fty[ai2]); for(const char*sp=as+1;*sp;sp++) pf2[pf2n++]=*sp; }
+                            ai2++;
+                        } else { pf2[pf2n++] = *fs; }
+                    }
+                } else {
+                    const char *s2 = fmt_arg2->sval ? fmt_arg2->sval : "";
+                    while (*s2 && pf2n < sizeof(pf2)-2) pf2[pf2n++] = *s2++;
+                }
+                pf2[pf2n] = '\0';
+                int fmtid2 = intern_str(cg, arena_strndup(cg->arena, pf2, pf2n));
+                int ft2 = new_tmp(cg);
+                emit(cg, "  %%t%d = getelementptr inbounds [%zu x i8],"
+                     " ptr @.str.%d, i32 0, i32 0\n", ft2, pf2n+1, fmtid2);
+                int buf2 = new_tmp(cg);
+                emit(cg, "  %%t%d = call ptr @malloc(i64 4096)\n", buf2);
+                int sp2 = new_tmp(cg);
+                /* pre-emit fpext coercions before the sprintf call */
+                Val         *fmt_final = malloc(sizeof(Val)        * na2);
+                const char **fmt_llts  = malloc(sizeof(const char*)* na2);
+                for (size_t i = 1; i < na2; i++) {
+                    const char *llt2;
+                    fmt_final[i] = promote_vararg(cg, fv[i], fty[i], &llt2);
+                    fmt_llts[i]  = llt2;
+                }
+                emit(cg, "  %%t%d = call i32 (ptr, ptr, ...) @sprintf(ptr %%t%d, ptr %%t%d", sp2, buf2, ft2);
+                for (size_t i = 1; i < na2; i++) {
+                    emit(cg, ", %s %s", fmt_llts[i], fmt_final[i].buf);
+                }
+                emit(cg, ")\n");
+                free(fmt_final);
+                free(fmt_llts);
+                int slen = new_tmp(cg);
+                emit(cg, "  %%t%d = call i64 @strlen(ptr %%t%d)\n", slen, buf2);
+                int sa = new_tmp(cg);
+                emit(cg, "  %%t%d = alloca { ptr, i64 }\n", sa);
+                int p0 = new_tmp(cg);
+                emit(cg, "  %%t%d = getelementptr { ptr, i64 }, ptr %%t%d, i32 0, i32 0\n", p0, sa);
+                emit(cg, "  store ptr %%t%d, ptr %%t%d\n", buf2, p0);
+                int p1 = new_tmp(cg);
+                emit(cg, "  %%t%d = getelementptr { ptr, i64 }, ptr %%t%d, i32 0, i32 1\n", p1, sa);
+                emit(cg, "  store i64 %%t%d, ptr %%t%d\n", slen, p1);
+                int res2 = new_tmp(cg);
+                emit(cg, "  %%t%d = load { ptr, i64 }, ptr %%t%d\n", res2, sa);
+                free(fv); free(fty);
+                if (out_ty) { Type *st = ARENA_NEW(cg->arena, Type); st->kind = TY_STR; *out_ty = st; }
+                return val_tmp(res2);
+            }
+
+            /* @cin — print optional prompt, read line from stdin, return str */
+            if (!strcmp(name, "cin")) {
+                if (e->builtin.args.len > 0) {
+                    /* print prompt — extract raw ptr from str fat-pointer if needed */
+                    Type *pty = NULL;
+                    Val pv = cg_expr(cg, e->builtin.args.data[0], &pty);
+                    Val prompt_ptr = pv;
+                    if (pty && pty->kind == TY_STR) {
+                        int sp0 = new_tmp(cg);
+                        emit(cg, "  %%t%d = extractvalue { ptr, i64 } %s, 0\n", sp0, pv.buf);
+                        prompt_ptr = val_tmp(sp0);
+                    }
+                    int pt = new_tmp(cg);
+                    emit(cg, "  %%t%d = call i32 (ptr, ...) @printf(ptr %s)\n", pt, prompt_ptr.buf);
+                }
+                int cbuf = new_tmp(cg);
+                emit(cg, "  %%t%d = call ptr @malloc(i64 4096)\n", cbuf);
+                int sin_ptr = new_tmp(cg);
+                emit(cg, "  %%t%d = load ptr, ptr @stdin\n", sin_ptr);
+                int fg = new_tmp(cg);
+                emit(cg, "  %%t%d = call ptr @fgets(ptr %%t%d, i32 4096, ptr %%t%d)\n",
+                     fg, cbuf, sin_ptr);
+                /* strip trailing newline */
+                int clen = new_tmp(cg);
+                emit(cg, "  %%t%d = call i64 @strlen(ptr %%t%d)\n", clen, cbuf);
+                int clast = new_tmp(cg);
+                emit(cg, "  %%t%d = sub i64 %%t%d, 1\n", clast, clen);
+                int clp = new_tmp(cg);
+                emit(cg, "  %%t%d = getelementptr i8, ptr %%t%d, i64 %%t%d\n", clp, cbuf, clast);
+                int clc = new_tmp(cg);
+                emit(cg, "  %%t%d = load i8, ptr %%t%d\n", clc, clp);
+                int clnl = new_tmp(cg);
+                emit(cg, "  %%t%d = icmp eq i8 %%t%d, 10\n", clnl, clc);
+                int cl_strip = new_label(cg), cl_done = new_label(cg);
+                /* capture predecessor label before the branch for the phi */
+                char pred_lbl[32];
+                if (cg->cur_label < 0) snprintf(pred_lbl, sizeof(pred_lbl), "%%entry");
+                else snprintf(pred_lbl, sizeof(pred_lbl), "%%l%d", cg->cur_label);
+                emit_br(cg, "  br i1 %%t%d, label %%l%d, label %%l%d\n", clnl, cl_strip, cl_done);
+                emit_label(cg, cl_strip);
+                emit(cg, "  store i8 0, ptr %%t%d\n", clp);
+                int clen2 = new_tmp(cg);
+                emit(cg, "  %%t%d = sub i64 %%t%d, 1\n", clen2, clen);
+                emit_br(cg, "  br label %%l%d\n", cl_done);
+                emit_label(cg, cl_done);
+                /* phi to pick length */
+                int clen_f = new_tmp(cg);
+                emit(cg, "  %%t%d = phi i64 [ %%t%d, %%l%d ], [ %%t%d, %s ]\n",
+                     clen_f, clen2, cl_strip, clen, pred_lbl);
+                int csa = new_tmp(cg);
+                emit(cg, "  %%t%d = alloca { ptr, i64 }\n", csa);
+                int cp0 = new_tmp(cg);
+                emit(cg, "  %%t%d = getelementptr { ptr, i64 }, ptr %%t%d, i32 0, i32 0\n", cp0, csa);
+                emit(cg, "  store ptr %%t%d, ptr %%t%d\n", cbuf, cp0);
+                int cp1 = new_tmp(cg);
+                emit(cg, "  %%t%d = getelementptr { ptr, i64 }, ptr %%t%d, i32 0, i32 1\n", cp1, csa);
+                emit(cg, "  store i64 %%t%d, ptr %%t%d\n", clen_f, cp1);
+                int cres = new_tmp(cg);
+                emit(cg, "  %%t%d = load { ptr, i64 }, ptr %%t%d\n", cres, csa);
+                if (out_ty) { Type *st = ARENA_NEW(cg->arena, Type); st->kind = TY_STR; *out_ty = st; }
+                return val_tmp(cres);
+            }
+
+            /* @unreachable / @todo */
+            if (!strcmp(name, "unreachable") || !strcmp(name, "todo")) {
+                emit(cg, "  call void @exit(i32 1)\n");
+                emit_br(cg, "  unreachable\n");
+                return val_str("0");
+            }
+
             /* @alo */
             if (!strcmp(name, "alo")) {
-                /* @alo(T) or @alo(T, N) — emit malloc call */
+                /* @alo(T) or @alo(T, N) — malloc with proper sizeof via GEP trick */
                 int t = new_tmp(cg);
-                emit(cg, "  %%t%d = call ptr @malloc(i64 8)\n", t); /* placeholder size */
+                /* If no type arg available at LLVM level, default to 8 bytes */
+                if (e->builtin.args.len >= 1 && e->builtin.args.data[0]->ty) {
+                    const char *inner_llt = llvm_type(e->builtin.args.data[0]->ty);
+                    int count = 1;
+                    if (e->builtin.args.len >= 2 && e->builtin.args.data[1]->kind == EXPR_INT)
+                        count = (int)e->builtin.args.data[1]->ival;
+                    int sz = new_tmp(cg);
+                    emit(cg, "  %%t%d = mul i64 %d, ptrtoint (ptr getelementptr (%s, ptr null, i32 1) to i64)\n",
+                         sz, count, inner_llt);
+                    emit(cg, "  %%t%d = call ptr @malloc(i64 %%t%d)\n", t, sz);
+                } else {
+                    emit(cg, "  %%t%d = call ptr @malloc(i64 8)\n", t);
+                }
                 return val_tmp(t);
             }
 
@@ -649,10 +960,143 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                 return val_tmp(sel);
             }
 
-            /* @size */
+            /* @realo */
+            if (!strcmp(name, "realo")) {
+                Val ptr = cg_expr(cg, e->builtin.args.data[0], NULL);
+                Type *ety = NULL;
+                if (e->builtin.args.len >= 2)
+                    cg_expr(cg, e->builtin.args.data[1], &ety);
+                int nsz = new_tmp(cg);
+                if (ety) {
+                    const char *inner = llvm_type(ety);
+                    emit(cg, "  %%t%d = ptrtoint (ptr getelementptr (%s, ptr null, i32 1) to i64)\n",
+                         nsz, inner);
+                } else {
+                    emit(cg, "  %%t%d = add i64 0, 8\n", nsz);
+                }
+                int t = new_tmp(cg);
+                emit(cg, "  %%t%d = call ptr @realloc(ptr %s, i64 %%t%d)\n", t, ptr.buf, nsz);
+                return val_tmp(t);
+            }
+
+            /* @memcpy / @memmove / @memset */
+            if (!strcmp(name, "memcpy")) {
+                Val dst = cg_expr(cg, e->builtin.args.data[0], NULL);
+                Val src = cg_expr(cg, e->builtin.args.data[1], NULL);
+                Val n   = cg_expr(cg, e->builtin.args.data[2], NULL);
+                emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %s, ptr %s, i64 %s, i1 false)\n",
+                     dst.buf, src.buf, n.buf);
+                return val_str("0");
+            }
+            if (!strcmp(name, "memmove")) {
+                Val dst = cg_expr(cg, e->builtin.args.data[0], NULL);
+                Val src = cg_expr(cg, e->builtin.args.data[1], NULL);
+                Val n   = cg_expr(cg, e->builtin.args.data[2], NULL);
+                emit(cg, "  call void @llvm.memmove.p0.p0.i64(ptr %s, ptr %s, i64 %s, i1 false)\n",
+                     dst.buf, src.buf, n.buf);
+                return val_str("0");
+            }
+            if (!strcmp(name, "memset")) {
+                Val dst = cg_expr(cg, e->builtin.args.data[0], NULL);
+                Val val = cg_expr(cg, e->builtin.args.data[1], NULL);
+                Val n   = cg_expr(cg, e->builtin.args.data[2], NULL);
+                emit(cg, "  call void @llvm.memset.p0.i64(ptr %s, i8 %s, i64 %s, i1 false)\n",
+                     dst.buf, val.buf, n.buf);
+                return val_str("0");
+            }
+
+            /* @zeroed — return a zero-initialized value */
+            if (!strcmp(name, "zeroed")) {
+                int t = new_tmp(cg);
+                const char *llt = "i64";
+                Type *zt = (e->builtin.args.len > 0) ? e->builtin.args.data[0]->ty : e->ty;
+                if (zt) llt = llvm_type(zt);
+                emit(cg, "  %%t%d = alloca %s\n", t, llt);
+                emit(cg, "  call void @llvm.memset.p0.i64(ptr %%t%d, i8 0,"
+                         " i64 ptrtoint (ptr getelementptr (%s, ptr null, i32 1) to i64),"
+                         " i1 false)\n", t, llt);
+                int v = new_tmp(cg);
+                emit(cg, "  %%t%d = load %s, ptr %%t%d\n", v, llt, t);
+                return val_tmp(v);
+            }
+
+            /* @sqrt */
+            if (!strcmp(name, "sqrt")) {
+                Type *ta = NULL;
+                Val a = cg_expr(cg, e->builtin.args.data[0], &ta);
+                int t = new_tmp(cg);
+                if (ta && ta->kind == TY_F32) {
+                    int p = new_tmp(cg);
+                    emit(cg, "  %%t%d = fpext float %s to double\n", p, a.buf);
+                    emit(cg, "  %%t%d = call double @llvm.sqrt.f64(double %%t%d)\n", t, p);
+                } else {
+                    emit(cg, "  %%t%d = call double @llvm.sqrt.f64(double %s)\n", t, a.buf);
+                }
+                if (out_ty) { Type *ft = ARENA_NEW(cg->arena, Type); ft->kind = TY_F64; *out_ty = ft; }
+                return val_tmp(t);
+            }
+
+            /* @clz / @ctz / @popcount / @bswap */
+            if (!strcmp(name, "clz") || !strcmp(name, "ctz") || !strcmp(name, "popcount")) {
+                Type *ta = NULL;
+                Val a = cg_expr(cg, e->builtin.args.data[0], &ta);
+                const char *llt = ta ? llvm_type(ta) : "i32";
+                int t = new_tmp(cg);
+                const char *intr = !strcmp(name,"clz") ? "ctlz"
+                                 : !strcmp(name,"ctz") ? "cttz" : "ctpop";
+                if (!strcmp(name,"clz") || !strcmp(name,"ctz"))
+                    emit(cg, "  %%t%d = call %s @llvm.%s.%s(%s %s, i1 false)\n",
+                         t, llt, intr, llt, llt, a.buf);
+                else
+                    emit(cg, "  %%t%d = call %s @llvm.%s.%s(%s %s)\n",
+                         t, llt, intr, llt, llt, a.buf);
+                if (out_ty) { Type *rt = ARENA_NEW(cg->arena, Type); rt->kind = TY_U32; *out_ty = rt; }
+                return val_tmp(t);
+            }
+            if (!strcmp(name, "bswap")) {
+                Type *ta = NULL;
+                Val a = cg_expr(cg, e->builtin.args.data[0], &ta);
+                const char *llt = ta ? llvm_type(ta) : "i32";
+                int t = new_tmp(cg);
+                emit(cg, "  %%t%d = call %s @llvm.bswap.%s(%s %s)\n", t, llt, llt, llt, a.buf);
+                if (out_ty) *out_ty = ta;
+                return val_tmp(t);
+            }
+
+            /* @checked_add / @checked_sub / @checked_mul */
+            if (!strcmp(name, "checked_add") || !strcmp(name, "checked_sub") || !strcmp(name, "checked_mul")) {
+                Type *ta = NULL;
+                Val a = cg_expr(cg, e->builtin.args.data[0], &ta);
+                Val b = cg_expr(cg, e->builtin.args.data[1], NULL);
+                const char *llt = ta ? llvm_type(ta) : "i32";
+                const char *op = !strcmp(name,"checked_add") ? "sadd"
+                               : !strcmp(name,"checked_sub") ? "ssub" : "smul";
+                int res = new_tmp(cg);
+                emit(cg, "  %%t%d = call { %s, i1 } @llvm.%s.with.overflow.%s(%s %s, %s %s)\n",
+                     res, llt, op, llt, llt, a.buf, llt, b.buf);
+                int val = new_tmp(cg);
+                emit(cg, "  %%t%d = extractvalue { %s, i1 } %%t%d, 0\n", val, llt, res);
+                int ovf = new_tmp(cg);
+                emit(cg, "  %%t%d = extractvalue { %s, i1 } %%t%d, 1\n", ovf, llt, res);
+                /* return value; error code stored in the overflow check result (caller checks) */
+                if (out_ty) *out_ty = ta;
+                return val_tmp(val);
+            }
+
+            /* @size(T) — compile-time sizeof via GEP-from-null trick */
             if (!strcmp(name, "size")) {
-                /* return placeholder 8 — sema will fill in real sizes */
-                return val_str("8");
+                if (out_ty) {
+                    Type *ut = ARENA_NEW(cg->arena, Type); ut->kind = TY_USIZE; *out_ty = ut;
+                }
+                if (e->builtin.args.len >= 1) {
+                    Type *ta = e->builtin.args.data[0]->ty;
+                    const char *llt = ta ? llvm_type(ta) : "i8";
+                    int t = new_tmp(cg);
+                    emit(cg, "  %%t%d = ptrtoint ptr getelementptr (%s, ptr null, i32 1) to i64\n",
+                         t, llt);
+                    return val_tmp(t);
+                }
+                return val_str("0");
             }
 
             /* @len — always returns i64 */
@@ -679,6 +1123,209 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                 return val_tmp(t);
             }
 
+            /* @str_raw(ptr, len) — construct a str fat pointer from raw pointer and length */
+            if (!strcmp(name, "str_raw")) {
+                if (e->builtin.args.len < 2)
+                    fatal_at(e->span, "@str_raw requires two arguments: @str_raw(ptr, len)");
+                Val raw_ptr = cg_expr(cg, e->builtin.args.data[0], NULL);
+                Val raw_len = cg_expr(cg, e->builtin.args.data[1], NULL);
+                int f1 = new_tmp(cg);
+                emit(cg, "  %%t%d = insertvalue { ptr, i64 } undef, ptr %s, 0\n", f1, raw_ptr.buf);
+                int f2 = new_tmp(cg);
+                emit(cg, "  %%t%d = insertvalue { ptr, i64 } %%t%d, i64 %s, 1\n", f2, f1, raw_len.buf);
+                if (out_ty) { Type *st = ARENA_NEW(cg->arena, Type); st->kind = TY_STR; *out_ty = st; }
+                return val_tmp(f2);
+            }
+
+            /* @offsetof(T, field) — byte offset of a struct field */
+            if (!strcmp(name, "offsetof")) {
+                if (e->builtin.args.len < 2)
+                    fatal_at(e->span, "@offsetof requires two arguments: @offsetof(T, field)");
+                if (out_ty) {
+                    Type *ut = ARENA_NEW(cg->arena, Type); ut->kind = TY_USIZE; *out_ty = ut;
+                }
+                /* first arg: type name (EXPR_IDENT) */
+                const char *ty_name = NULL;
+                if (e->builtin.args.data[0]->kind == EXPR_IDENT)
+                    ty_name = e->builtin.args.data[0]->ident.name;
+                /* second arg: field name (EXPR_IDENT) */
+                const char *field_name = NULL;
+                if (e->builtin.args.data[1]->kind == EXPR_IDENT)
+                    field_name = e->builtin.args.data[1]->ident.name;
+                if (!ty_name || !field_name)
+                    fatal_at(e->span, "@offsetof: expected identifier arguments");
+                StructInfo *si = find_struct(cg, ty_name);
+                if (!si) fatal_at(e->span, "@offsetof: '%s' is not a struct", ty_name);
+                int fidx = -1;
+                for (size_t fi = 0; fi < si->fields.len; fi++) {
+                    if (!strcmp(si->fields.data[fi].name, field_name)) { fidx = (int)fi; break; }
+                }
+                if (fidx < 0)
+                    fatal_at(e->span, "@offsetof: struct '%s' has no field '%s'", ty_name, field_name);
+                int t = new_tmp(cg);
+                emit(cg, "  %%t%d = ptrtoint ptr getelementptr (%%%s, ptr null, i32 0, i32 %d) to i64\n",
+                     t, ty_name, fidx);
+                return val_tmp(t);
+            }
+
+            /* @typeof(expr) — compile-time type name as a str constant */
+            if (!strcmp(name, "typeof")) {
+                if (e->builtin.args.len < 1)
+                    fatal_at(e->span, "@typeof requires one argument");
+                Type *ta = NULL;
+                cg_expr(cg, e->builtin.args.data[0], &ta); /* evaluate for side effects + type */
+                const char *tname = ta ? llvm_type(ta) : "unknown";
+                /* for named types, use the Perzephxne name */
+                if (ta && ta->kind == TY_NAMED) tname = ta->named.name;
+                else if (ta) {
+                    switch (ta->kind) {
+                        case TY_I8: tname="i8"; break; case TY_I16: tname="i16"; break;
+                        case TY_I32: tname="i32"; break; case TY_I64: tname="i64"; break;
+                        case TY_U8: tname="u8"; break; case TY_U16: tname="u16"; break;
+                        case TY_U32: tname="u32"; break; case TY_U64: tname="u64"; break;
+                        case TY_F32: tname="f32"; break; case TY_F64: tname="f64"; break;
+                        case TY_BOOL: tname="bool"; break; case TY_CHAR: tname="char"; break;
+                        case TY_STR: tname="str"; break; case TY_USIZE: tname="usize"; break;
+                        case TY_PTR: tname="ptr"; break; default: tname="unknown"; break;
+                    }
+                }
+                int sid = intern_str(cg, arena_strdup(cg->arena, tname));
+                size_t slen = strlen(tname);
+                int ft = new_tmp(cg);
+                emit(cg, "  %%t%d = getelementptr inbounds [%zu x i8], ptr @.str.%d, i32 0, i32 0\n",
+                     ft, slen + 1, sid);
+                int sa = new_tmp(cg);
+                emit(cg, "  %%t%d = alloca { ptr, i64 }\n", sa);
+                int p0 = new_tmp(cg);
+                emit(cg, "  %%t%d = getelementptr { ptr, i64 }, ptr %%t%d, i32 0, i32 0\n", p0, sa);
+                emit(cg, "  store ptr %%t%d, ptr %%t%d\n", ft, p0);
+                int p1 = new_tmp(cg);
+                emit(cg, "  %%t%d = getelementptr { ptr, i64 }, ptr %%t%d, i32 0, i32 1\n", p1, sa);
+                emit(cg, "  store i64 %zu, ptr %%t%d\n", slen, p1);
+                int rv = new_tmp(cg);
+                emit(cg, "  %%t%d = load { ptr, i64 }, ptr %%t%d\n", rv, sa);
+                if (out_ty) { Type *st = ARENA_NEW(cg->arena, Type); st->kind = TY_STR; *out_ty = st; }
+                return val_tmp(rv);
+            }
+
+            /* @ok(val) — wrap a value in a failable success result */
+            if (!strcmp(name, "ok")) {
+                if (e->builtin.args.len < 1)
+                    fatal_at(e->span, "@ok requires one argument");
+                Type *vty = NULL;
+                Val val = cg_expr(cg, e->builtin.args.data[0], &vty);
+                const char *val_llt = vty ? effective_llvm_type(cg, vty) : "i32";
+                /* build { val_llt, i32 } aggregate */
+                char fail_llt[256];
+                snprintf(fail_llt, sizeof(fail_llt), "{ %s, i32 }", val_llt);
+                int f1 = new_tmp(cg);
+                emit(cg, "  %%t%d = insertvalue %s undef, %s %s, 0\n",
+                     f1, fail_llt, val_llt, val.buf);
+                int f2 = new_tmp(cg);
+                emit(cg, "  %%t%d = insertvalue %s %%t%d, i32 0, 1\n", f2, fail_llt, f1);
+                if (out_ty && vty) {
+                    Type *ft = ARENA_NEW(cg->arena, Type);
+                    ft->kind = TY_FAILABLE;
+                    ft->ptr.inner = vty;
+                    *out_ty = ft;
+                }
+                return val_tmp(f2);
+            }
+
+            /* @err(code) — wrap an error code in a failable failure result */
+            if (!strcmp(name, "err")) {
+                if (e->builtin.args.len < 1)
+                    fatal_at(e->span, "@err requires one argument (error code)");
+                Type *cty = NULL;
+                Val code = cg_expr(cg, e->builtin.args.data[0], &cty);
+                /* determine inner value type from context (function return type) */
+                const char *val_llt = "i32"; /* default inner type */
+                if (cg->cur_fn_ret_ty && cg->cur_fn_ret_ty->kind == TY_FAILABLE)
+                    val_llt = llvm_type(cg->cur_fn_ret_ty->ptr.inner);
+                char fail_llt[256];
+                snprintf(fail_llt, sizeof(fail_llt), "{ %s, i32 }", val_llt);
+                int f1 = new_tmp(cg);
+                emit(cg, "  %%t%d = insertvalue %s undef, i32 %s, 1\n", f1, fail_llt, code.buf);
+                if (out_ty && cg->cur_fn_ret_ty && cg->cur_fn_ret_ty->kind == TY_FAILABLE) {
+                    *out_ty = cg->cur_fn_ret_ty;
+                }
+                return val_tmp(f1);
+            }
+
+            /* @debug / @release — compile-time build mode booleans */
+            if (!strcmp(name, "debug")) {
+                if (out_ty) { Type *bt = ARENA_NEW(cg->arena, Type); bt->kind = TY_BOOL; *out_ty = bt; }
+                return val_str(cg->release ? "0" : "1");
+            }
+            if (!strcmp(name, "release")) {
+                if (out_ty) { Type *bt = ARENA_NEW(cg->arena, Type); bt->kind = TY_BOOL; *out_ty = bt; }
+                return val_str(cg->release ? "1" : "0");
+            }
+
+            /* @os.* / @arch.* — compile-time platform booleans */
+            if (!strncmp(name, "os.", 3) || !strncmp(name, "arch.", 5)) {
+                if (out_ty) { Type *bt = ARENA_NEW(cg->arena, Type); bt->kind = TY_BOOL; *out_ty = bt; }
+#if defined(__linux__)
+                if (!strcmp(name, "os.linux"))   return val_str("1");
+#else
+                if (!strcmp(name, "os.linux"))   return val_str("0");
+#endif
+#if defined(_WIN32) || defined(_WIN64)
+                if (!strcmp(name, "os.windows")) return val_str("1");
+#else
+                if (!strcmp(name, "os.windows")) return val_str("0");
+#endif
+#if defined(__APPLE__)
+                if (!strcmp(name, "os.mac"))     return val_str("1");
+#else
+                if (!strcmp(name, "os.mac"))     return val_str("0");
+#endif
+#if defined(__x86_64__) || defined(_M_X64)
+                if (!strcmp(name, "arch.x86_64")) return val_str("1");
+#else
+                if (!strcmp(name, "arch.x86_64")) return val_str("0");
+#endif
+#if defined(__aarch64__) || defined(_M_ARM64)
+                if (!strcmp(name, "arch.arm64")) return val_str("1");
+#else
+                if (!strcmp(name, "arch.arm64")) return val_str("0");
+#endif
+#if defined(__i386__) || defined(_M_IX86)
+                if (!strcmp(name, "arch.x86"))   return val_str("1");
+#else
+                if (!strcmp(name, "arch.x86"))   return val_str("0");
+#endif
+#if defined(__arm__)
+                if (!strcmp(name, "arch.arm"))   return val_str("1");
+#else
+                if (!strcmp(name, "arch.arm"))   return val_str("0");
+#endif
+                /* unknown os/arch variant — false */
+                return val_str("0");
+            }
+
+            /* @err.constant — error code integer constants */
+            if (!strncmp(name, "err.", 4)) {
+                static const struct { const char *n; int v; } ec[] = {
+                    {"ok",0},{"fail",1},{"div_zero",2},{"null_deref",3},
+                    {"out_of_bounds",4},{"overflow",5},{"invalid",6},
+                    {"not_found",7},{"io",8},{"oom",9},{NULL,0}
+                };
+                const char *errname = name + 4;
+                for (int i = 0; ec[i].n; i++) {
+                    if (!strcmp(errname, ec[i].n)) {
+                        if (out_ty) {
+                            Type *t32 = ARENA_NEW(cg->arena, Type);
+                            t32->kind = TY_I32;
+                            *out_ty = t32;
+                        }
+                        Val v; snprintf(v.buf, sizeof(v.buf), "%d", ec[i].v);
+                        return v;
+                    }
+                }
+                fatal_at(e->span, "unknown @err.%s", errname);
+            }
+
             fatal_at(e->span, "unknown builtin '@%s'", name);
         }
 
@@ -700,16 +1347,30 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                        (src_ty->kind == TY_STR)) {
                 emit(cg, "  %%t%d = call i32 @atoi(ptr %s)\n", t, src.buf);
             } else {
-                /* numeric cast */
+                /* numeric cast — choose trunc/sext/zext based on bit widths */
                 const char *src_llt = src_ty ? llvm_type(src_ty) : "i32";
-                if (!strcmp(dst,"i8"))    emit(cg, "  %%t%d = trunc %s %s to i8\n",  t, src_llt, src.buf);
-                else if (!strcmp(dst,"i16")) emit(cg, "  %%t%d = trunc %s %s to i16\n", t, src_llt, src.buf);
-                else if (!strcmp(dst,"i32")) emit(cg, "  %%t%d = trunc %s %s to i32\n", t, src_llt, src.buf);
-                else if (!strcmp(dst,"i64")) emit(cg, "  %%t%d = sext %s %s to i64\n",  t, src_llt, src.buf);
-                else if (!strcmp(dst,"u8"))  emit(cg, "  %%t%d = trunc %s %s to i8\n",  t, src_llt, src.buf);
-                else if (!strcmp(dst,"u16")) emit(cg, "  %%t%d = trunc %s %s to i16\n", t, src_llt, src.buf);
-                else if (!strcmp(dst,"u32")) emit(cg, "  %%t%d = trunc %s %s to i32\n", t, src_llt, src.buf);
-                else if (!strcmp(dst,"u64")) emit(cg, "  %%t%d = zext %s %s to i64\n",  t, src_llt, src.buf);
+                int src_bits = 32; /* default */
+                if (!strcmp(src_llt,"i8"))  src_bits=8;
+                else if (!strcmp(src_llt,"i16")) src_bits=16;
+                else if (!strcmp(src_llt,"i32")) src_bits=32;
+                else if (!strcmp(src_llt,"i64")) src_bits=64;
+                int is_src_signed = type_is_signed(src_ty);
+                #define INT_CAST(dst_llt, dst_bits) do { \
+                    const char *op = (dst_bits < src_bits) ? "trunc" \
+                                   : (dst_bits > src_bits) ? (is_src_signed ? "sext" : "zext") \
+                                   : NULL; \
+                    if (op) emit(cg, "  %%t%d = %s %s %s to %s\n", t, op, src_llt, src.buf, dst_llt); \
+                    else    emit(cg, "  %%t%d = bitcast %s %s to %s\n", t, src_llt, src.buf, dst_llt); \
+                } while(0)
+                if (!strcmp(dst,"i8"))         INT_CAST("i8",  8);
+                else if (!strcmp(dst,"i16"))   INT_CAST("i16",16);
+                else if (!strcmp(dst,"i32"))   INT_CAST("i32",32);
+                else if (!strcmp(dst,"i64"))   INT_CAST("i64",64);
+                else if (!strcmp(dst,"u8"))    INT_CAST("i8",  8);
+                else if (!strcmp(dst,"u16"))   INT_CAST("i16",16);
+                else if (!strcmp(dst,"u32"))   INT_CAST("i32",32);
+                else if (!strcmp(dst,"u64"))   INT_CAST("i64",64);
+                #undef INT_CAST
                 else if (!strcmp(dst,"f32")) {
                     if (type_is_float(src_ty))
                         emit(cg, "  %%t%d = fptrunc %s %s to float\n", t, src_llt, src.buf);
@@ -740,6 +1401,49 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
             Type *ty = lt ? lt : rt;
             /* use sema type for out_ty — comparisons return bool, not operand type */
             if (out_ty) *out_ty = e->ty ? e->ty : ty;
+            /* pointer arithmetic: emit GEP instead of add/sub */
+            if (e->binop.op == BINOP_ADD || e->binop.op == BINOP_SUB) {
+                Type *ptr_ty = (lt && lt->kind == TY_PTR) ? lt
+                             : (rt && rt->kind == TY_PTR) ? rt : NULL;
+                if (ptr_ty) {
+                    Val ptr_v = (lt && lt->kind == TY_PTR) ? l : r;
+                    Val off_v = (lt && lt->kind == TY_PTR) ? r : l;
+                    Type *off_ty = (lt && lt->kind == TY_PTR) ? rt : lt;
+                    /* ptr - ptr → ptrdiff as usize */
+                    if (lt && lt->kind == TY_PTR && rt && rt->kind == TY_PTR) {
+                        int t2 = new_tmp(cg);
+                        emit(cg, "  %%t%d = ptrtoint ptr %s to i64\n", t2, l.buf);
+                        int t3 = new_tmp(cg);
+                        emit(cg, "  %%t%d = ptrtoint ptr %s to i64\n", t3, r.buf);
+                        int t4 = new_tmp(cg);
+                        emit(cg, "  %%t%d = sub i64 %%t%d, %%t%d\n", t4, t2, t3);
+                        return val_tmp(t4);
+                    }
+                    /* sign-extend offset to i64 if needed */
+                    Val idx = off_v;
+                    if (off_ty && llvm_type(off_ty)[0] != 'i') {
+                        /* non-int offset, unlikely; just use as-is */
+                    } else if (off_ty && strcmp(llvm_type(off_ty), "i64") != 0) {
+                        int ext = new_tmp(cg);
+                        int is_signed_off = type_is_signed(off_ty);
+                        emit(cg, "  %%t%d = %sext %s %s to i64\n",
+                             ext, is_signed_off ? "s" : "z", llvm_type(off_ty), off_v.buf);
+                        idx = val_tmp(ext);
+                    }
+                    /* negative offset for subtraction */
+                    if (e->binop.op == BINOP_SUB) {
+                        int neg = new_tmp(cg);
+                        emit(cg, "  %%t%d = sub i64 0, %s\n", neg, idx.buf);
+                        idx = val_tmp(neg);
+                    }
+                    Type *elem_ty = ptr_ty->ptr.inner;
+                    const char *elem_llt = elem_ty ? llvm_type(elem_ty) : "i8";
+                    int t2 = new_tmp(cg);
+                    emit(cg, "  %%t%d = getelementptr %s, ptr %s, i64 %s\n",
+                         t2, elem_llt, ptr_v.buf, idx.buf);
+                    return val_tmp(t2);
+                }
+            }
             const char *llt = ty ? llvm_type(ty) : "i32";
             int t = new_tmp(cg);
             int is_flt = type_is_float(ty);
@@ -779,8 +1483,13 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                 case UNOP_NOT:    emit(cg, "  %%t%d = xor i1 %s, true\n", t, o.buf); break;
                 case UNOP_BITNOT: emit(cg, "  %%t%d = xor %s %s, -1\n", t, llt, o.buf); break;
                 case UNOP_ADDROF: {
-                    /* For address-of we need the alloca pointer of the var.
-                       We stored the alloca name directly. */
+                    /* &var must return the alloca pointer, not a loaded value.
+                       For struct types cg_expr already returns the alloca ptr.
+                       For scalar types we need to bypass the load and get the alloca. */
+                    if (e->unop.operand->kind == EXPR_IDENT) {
+                        Symbol *sym = lookup(cg, e->unop.operand->ident.name);
+                        if (sym) return val_str(sym->llvm_name);
+                    }
                     return val_str(o.buf);
                 }
             }
@@ -791,16 +1500,15 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
             /* Method call: callee is EXPR_FIELD with is_method flag set by sema */
             if (e->call.callee->kind == EXPR_FIELD && e->call.callee->field.is_method) {
                 const char *mangled = e->call.callee->field.mangled_name;
+                int is_static = (e->call.callee->field.is_method == 2);
                 Type *ret_ty = e->ty;
                 int is_void = (ret_ty == NULL || ret_ty->kind == TY_VOID);
                 const char *ret_llt = is_void ? "void" : effective_llvm_type(cg, ret_ty);
 
-                /* evaluate self:
-                   - struct p (TY_NAMED): EXPR_IDENT returns the alloca ptr directly
-                   - ptr *p (TY_PTR):     EXPR_IDENT loads the ptr from its alloca
-                   in both cases the result is already the ptr to the struct */
                 Type *obj_ty = NULL;
-                Val self_val = cg_expr(cg, e->call.callee->field.obj, &obj_ty);
+                Val self_val;
+                if (!is_static)
+                    self_val = cg_expr(cg, e->call.callee->field.obj, &obj_ty);
 
                 size_t nargs = e->call.args.len;
                 Val   *arg_vals = nargs ? malloc(sizeof(Val)   * nargs) : NULL;
@@ -811,13 +1519,25 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                 }
 
                 int t = new_tmp(cg);
-                if (is_void)
-                    emit(cg, "  call void @%s(ptr %s", mangled, self_val.buf);
-                else
-                    emit(cg, "  %%t%d = call %s @%s(ptr %s", t, ret_llt, mangled, self_val.buf);
-                for (size_t i = 0; i < nargs; i++) {
-                    const char *llt = effective_llvm_type(cg, arg_tys[i]);
-                    emit(cg, ", %s %s", llt, arg_vals[i].buf);
+                if (is_static) {
+                    if (is_void)
+                        emit(cg, "  call void @%s(", mangled);
+                    else
+                        emit(cg, "  %%t%d = call %s @%s(", t, ret_llt, mangled);
+                    for (size_t i = 0; i < nargs; i++) {
+                        if (i) emit(cg, ", ");
+                        const char *llt = effective_llvm_type(cg, arg_tys[i]);
+                        emit(cg, "%s %s", llt, arg_vals[i].buf);
+                    }
+                } else {
+                    if (is_void)
+                        emit(cg, "  call void @%s(ptr %s", mangled, self_val.buf);
+                    else
+                        emit(cg, "  %%t%d = call %s @%s(ptr %s", t, ret_llt, mangled, self_val.buf);
+                    for (size_t i = 0; i < nargs; i++) {
+                        const char *llt = effective_llvm_type(cg, arg_tys[i]);
+                        emit(cg, ", %s %s", llt, arg_vals[i].buf);
+                    }
                 }
                 emit(cg, ")\n");
                 free(arg_vals);
@@ -843,8 +1563,8 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                 fn_name = cv.buf;
             }
 
-            if (callee_ty && callee_ty->kind == TY_FN && callee_ty->fn.ret)
-                ret_llt = effective_llvm_type(cg, callee_ty->fn.ret);
+            if (callee_ty && callee_ty->kind == TY_FN)
+                ret_llt = callee_ty->fn.ret ? effective_llvm_type(cg, callee_ty->fn.ret) : "void";
             else if (callee_ty)
                 ret_llt = effective_llvm_type(cg, callee_ty);
 
@@ -857,8 +1577,47 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                 arg_vals[i] = cg_expr(cg, e->call.args.data[i], &arg_tys[i]);
             }
 
+            /* coerce arguments to callee param types when known */
+            if (callee_ty && callee_ty->kind == TY_FN) {
+                size_t np = callee_ty->fn.params.len;
+                for (size_t i = 0; i < nargs && i < np; i++) {
+                    Type *param_ty = callee_ty->fn.params.data[i];
+                    Type *arg_ty   = arg_tys[i];
+                    if (!param_ty || !arg_ty) continue;
+                    const char *pt = llvm_type(param_ty);
+                    const char *at = arg_ty ? effective_llvm_type(cg, arg_ty) : "i32";
+                    if (!strcmp(pt, at)) continue;
+                    /* str arg → *u8 param: extract .data pointer */
+                    if (arg_ty->kind == TY_STR && param_ty->kind == TY_PTR) {
+                        int ep = new_tmp(cg);
+                        emit(cg, "  %%t%d = extractvalue { ptr, i64 } %s, 0\n",
+                             ep, arg_vals[i].buf);
+                        arg_vals[i] = val_tmp(ep);
+                        arg_tys[i]  = param_ty;
+                        continue;
+                    }
+                    /* integer width coercion */
+                    int sv3 = 0, lv3 = 0;
+                    if (!strcmp(at,"i8"))  sv3=8; else if (!strcmp(at,"i16")) sv3=16;
+                    else if (!strcmp(at,"i32")) sv3=32; else if (!strcmp(at,"i64")) sv3=64;
+                    if (!strcmp(pt,"i8"))  lv3=8; else if (!strcmp(pt,"i16")) lv3=16;
+                    else if (!strcmp(pt,"i32")) lv3=32; else if (!strcmp(pt,"i64")) lv3=64;
+                    if (sv3 && lv3 && sv3 != lv3) {
+                        int ct = new_tmp(cg);
+                        const char *op = (lv3 < sv3) ? "trunc"
+                                       : (type_is_signed(arg_ty) ? "sext" : "zext");
+                        emit(cg, "  %%t%d = %s %s %s to %s\n", ct, op, at, arg_vals[i].buf, pt);
+                        arg_vals[i] = val_tmp(ct);
+                        arg_tys[i]  = param_ty;
+                    }
+                }
+            }
+            int is_void_call = !strcmp(ret_llt, "void");
             int t = new_tmp(cg);
-            emit(cg, "  %%t%d = call %s %s(", t, ret_llt, fn_name);
+            if (is_void_call)
+                emit(cg, "  call void %s(", fn_name);
+            else
+                emit(cg, "  %%t%d = call %s %s(", t, ret_llt, fn_name);
             for (size_t i = 0; i < nargs; i++) {
                 const char *llt = effective_llvm_type(cg, arg_tys[i]);
                 if (i) emit(cg, ", ");
@@ -867,10 +1626,29 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
             emit(cg, ")\n");
             free(arg_vals);
             free(arg_tys);
+            if (out_ty) *out_ty = e->ty;
             return val_tmp(t);
         }
 
         case EXPR_FIELD: {
+            /* @err.constant — error code integer */
+            if (e->field.obj->kind == EXPR_BUILTIN
+                    && !strcmp(e->field.obj->builtin.name, "err")) {
+                static const struct { const char *n; int v; } ec[] = {
+                    {"ok",0},{"fail",1},{"div_zero",2},{"null_deref",3},
+                    {"out_of_bounds",4},{"overflow",5},{"invalid",6},
+                    {"not_found",7},{"io",8},{"oom",9},{NULL,0}
+                };
+                for (int i = 0; ec[i].n; i++) {
+                    if (!strcmp(e->field.field, ec[i].n)) {
+                        if (out_ty) {
+                            Type *t32 = ARENA_NEW(cg->arena, Type); t32->kind = TY_I32; *out_ty = t32;
+                        }
+                        Val v; snprintf(v.buf, sizeof(v.buf), "%d", ec[i].v); return v;
+                    }
+                }
+                fatal_at(e->span, "unknown @err.%s", e->field.field);
+            }
             /* Enum variant access: EnumName.Variant — peek before calling cg_expr */
             if (e->field.obj->kind == EXPR_IDENT) {
                 EnumInfo *ei = find_enum(cg, e->field.obj->ident.name);
@@ -885,6 +1663,20 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                     }
                     fatal_at(e->span, "enum '%s' has no variant '%s'",
                              ei->name, e->field.field);
+                }
+            }
+            /* str / slice pseudo-fields: .len -> i64, .data/.ptr -> ptr */
+            {
+                Type *peek_ty = e->field.obj->ty;
+                if (peek_ty && (peek_ty->kind == TY_STR || peek_ty->kind == TY_SLICE)) {
+                    Type *pobj_ty = NULL;
+                    Val fat = cg_expr(cg, e->field.obj, &pobj_ty);
+                    int field_idx = (!strcmp(e->field.field, "len")) ? 1 : 0;
+                    int t = new_tmp(cg);
+                    emit(cg, "  %%t%d = extractvalue { ptr, i64 } %s, %d\n",
+                         t, fat.buf, field_idx);
+                    if (out_ty) *out_ty = e->ty;
+                    return val_tmp(t);
                 }
             }
             /* Struct field access */
@@ -997,41 +1789,250 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
             return val_tmp(load);
         }
 
-        case EXPR_STRUCT_LIT: {
-            StructInfo *si = find_struct(cg, e->struct_lit.ty_name);
-            int t = new_tmp(cg);
-            emit(cg, "  %%t%d = alloca %%%s\n", t, e->struct_lit.ty_name);
-            for (size_t i = 0; i < e->struct_lit.fields.len; i++) {
-                FieldInit *fi = &e->struct_lit.fields.data[i];
-                Type *fty = NULL;
-                Val fv = cg_expr(cg, fi->val, &fty);
-                int fidx = si ? struct_field_index(si, fi->name) : (int)i;
-                if (fidx < 0) fidx = (int)i;
-                if (!fty && si) fty = struct_field_type(si, fi->name);
-                const char *store_llt = fty ? llvm_type(fty) : "i64";
-                int fp = new_tmp(cg);
-                emit(cg, "  %%t%d = getelementptr %%%s, ptr %%t%d, i32 0, i32 %d\n",
-                     fp, e->struct_lit.ty_name, t, fidx);
-                emit(cg, "  store %s %s, ptr %%t%d\n", store_llt, fv.buf, fp);
+        case EXPR_WHEN: {
+            /* when-as-expression: evaluate all arms, store result to a slot */
+            Type *res_ty = e->ty; /* set by sema from first STMT_EXPR arm */
+            const char *res_llt = res_ty ? effective_llvm_type(cg, res_ty) : "i64";
+            int res_slot = new_tmp(cg);
+            emit(cg, "  %%t%d = alloca %s\n", res_slot, res_llt);
+
+            int end_l = new_label(cg);
+            Type *val_ty = NULL;
+            Val val = cg_expr(cg, e->when.cond, &val_ty);
+
+            /* helper: emit arm body — store STMT_EXPR result to res_slot */
+            /* NOTE: arm bodies use STMT_EXPR for result-producing arms */
+            UnionInfoCG *ui = NULL;
+            if (val_ty && val_ty->kind == TY_NAMED)
+                ui = find_union(cg, val_ty->named.name);
+
+            if (ui) {
+                /* tagged union subject */
+                int tag_ptr = new_tmp(cg);
+                emit(cg, "  %%t%d = getelementptr %%%s, ptr %s, i32 0, i32 0\n",
+                     tag_ptr, ui->name, val.buf);
+                int tag_val = new_tmp(cg);
+                emit(cg, "  %%t%d = load i32, ptr %%t%d\n", tag_val, tag_ptr);
+
+                for (size_t i = 0; i < e->when.arms.len; i++) {
+                    WhenArm *arm = &e->when.arms.data[i];
+                    int body_l = new_label(cg);
+                    int next_l = (i + 1 < e->when.arms.len) ? new_label(cg) : end_l;
+
+                    int cond_t = -1;
+                    Type *matched_payload_ty = NULL;
+                    int   matched_disc       = -1;
+                    for (size_t pi = 0; pi < arm->pats.len; pi++) {
+                        Expr *pat = arm->pats.data[pi];
+                        if (pat->kind == EXPR_DISCARD) {
+                            int wc = new_tmp(cg); emit(cg, "  %%t%d = add i1 0, 1\n", wc);
+                            cond_t = wc; break;
+                        }
+                        if (pat->kind == EXPR_IDENT && pat->ident.name[0] == '.') {
+                            const char *vname = pat->ident.name + 1;
+                            int disc = 0; Type *pty = NULL;
+                            for (size_t vi = 0; vi < ui->n_variants; vi++) {
+                                if (!strcmp(ui->variants[vi].name, vname)) {
+                                    disc = (int)vi; pty = ui->variants[vi].ty; break;
+                                }
+                            }
+                            if (matched_disc < 0) { matched_disc = disc; matched_payload_ty = pty; }
+                            int cmp = new_tmp(cg);
+                            emit(cg, "  %%t%d = icmp eq i32 %%t%d, %d\n", cmp, tag_val, disc);
+                            if (cond_t < 0) { cond_t = cmp; } else {
+                                int or_t = new_tmp(cg);
+                                emit(cg, "  %%t%d = or i1 %%t%d, %%t%d\n", or_t, cond_t, cmp);
+                                cond_t = or_t;
+                            }
+                        }
+                    }
+                    if (cond_t < 0) { int wc = new_tmp(cg); emit(cg, "  %%t%d = add i1 0, 1\n", wc); cond_t = wc; }
+                    emit_br(cg, "  br i1 %%t%d, label %%l%d, label %%l%d\n", cond_t, body_l, next_l);
+                    emit_label(cg, body_l);
+                    push_scope(cg);
+
+                    if (arm->bind && matched_payload_ty && ui->payload_size > 0) {
+                        int pay_ptr = new_tmp(cg);
+                        emit(cg, "  %%t%d = getelementptr %%%s, ptr %s, i32 0, i32 1\n",
+                             pay_ptr, ui->name, val.buf);
+                        char pay_buf[32]; snprintf(pay_buf, sizeof(pay_buf), "%%t%d", pay_ptr);
+                        const char *bind_llvm;
+                        if (matched_payload_ty->kind == TY_NAMED && find_struct(cg, matched_payload_ty->named.name)) {
+                            bind_llvm = arena_strdup(cg->arena, pay_buf);
+                        } else {
+                            const char *pay_llt = llvm_type(matched_payload_ty);
+                            int ba = new_tmp(cg);
+                            emit(cg, "  %%t%d = alloca %s\n", ba, pay_llt);
+                            int pv = new_tmp(cg);
+                            emit(cg, "  %%t%d = load %s, ptr %%t%d\n", pv, pay_llt, pay_ptr);
+                            emit(cg, "  store %s %%t%d, ptr %%t%d\n", pay_llt, pv, ba);
+                            char bb[32]; snprintf(bb, sizeof(bb), "%%t%d", ba);
+                            bind_llvm = arena_strdup(cg->arena, bb);
+                        }
+                        define_sym(cg, arm->bind, bind_llvm, 0, matched_payload_ty);
+                    }
+
+                    /* body: if STMT_EXPR, store result; otherwise just execute */
+                    if (arm->body && arm->body->kind == STMT_EXPR && arm->body->expr) {
+                        Type *arm_ty = NULL;
+                        Val arm_val = cg_expr(cg, arm->body->expr, &arm_ty);
+                        const char *store_llt = arm_ty ? effective_llvm_type(cg, arm_ty) : res_llt;
+                        emit(cg, "  store %s %s, ptr %%t%d\n", store_llt, arm_val.buf, res_slot);
+                    } else if (arm->body) {
+                        cg_stmt(cg, arm->body);
+                    }
+                    pop_scope(cg);
+                    emit_br(cg, "  br label %%l%d\n", end_l);
+                    if (next_l != end_l) emit_label(cg, next_l);
+                }
+            } else {
+                /* scalar / enum subject */
+                const char *llt = effective_llvm_type(cg, val_ty);
+                for (size_t i = 0; i < e->when.arms.len; i++) {
+                    WhenArm *arm = &e->when.arms.data[i];
+                    int body_l = new_label(cg);
+                    int next_l = (i + 1 < e->when.arms.len) ? new_label(cg) : end_l;
+                    int cond_t = -1;
+                    for (size_t pi = 0; pi < arm->pats.len; pi++) {
+                        Expr *pat = arm->pats.data[pi];
+                        if (pat->kind == EXPR_DISCARD) {
+                            int wc = new_tmp(cg); emit(cg, "  %%t%d = add i1 0, 1\n", wc);
+                            cond_t = wc; break;
+                        }
+                        Val pv = cg_expr(cg, pat, NULL);
+                        int cmp = new_tmp(cg);
+                        emit(cg, "  %%t%d = icmp eq %s %s, %s\n", cmp, llt, val.buf, pv.buf);
+                        if (cond_t < 0) { cond_t = cmp; } else {
+                            int or_t = new_tmp(cg);
+                            emit(cg, "  %%t%d = or i1 %%t%d, %%t%d\n", or_t, cond_t, cmp);
+                            cond_t = or_t;
+                        }
+                    }
+                    if (cond_t < 0) { int wc = new_tmp(cg); emit(cg, "  %%t%d = add i1 0, 1\n", wc); cond_t = wc; }
+                    emit_br(cg, "  br i1 %%t%d, label %%l%d, label %%l%d\n", cond_t, body_l, next_l);
+                    emit_label(cg, body_l);
+                    push_scope(cg);
+
+                    if (arm->body && arm->body->kind == STMT_EXPR && arm->body->expr) {
+                        Type *arm_ty = NULL;
+                        Val arm_val = cg_expr(cg, arm->body->expr, &arm_ty);
+                        const char *store_llt = arm_ty ? effective_llvm_type(cg, arm_ty) : res_llt;
+                        emit(cg, "  store %s %s, ptr %%t%d\n", store_llt, arm_val.buf, res_slot);
+                    } else if (arm->body) {
+                        cg_stmt(cg, arm->body);
+                    }
+                    pop_scope(cg);
+                    emit_br(cg, "  br label %%l%d\n", end_l);
+                    if (next_l != end_l) emit_label(cg, next_l);
+                }
             }
-            /* out_ty = the named struct type */
+
+            emit_label(cg, end_l);
+            if (out_ty) *out_ty = res_ty;
+            int load_res = new_tmp(cg);
+            emit(cg, "  %%t%d = load %s, ptr %%t%d\n", load_res, res_llt, res_slot);
+            return val_tmp(load_res);
+        }
+
+        case EXPR_STRUCT_LIT: {
+            /* out_ty = the named struct/union type */
             if (out_ty) {
                 Type *sty = ARENA_NEW(cg->arena, Type);
                 sty->kind = TY_NAMED;
                 sty->named.name = e->struct_lit.ty_name;
                 *out_ty = sty;
             }
+
+            /* tagged union construction: shape{.circle=5.0} */
+            UnionInfoCG *ui = find_union(cg, e->struct_lit.ty_name);
+            if (ui) {
+                int t = new_tmp(cg);
+                emit(cg, "  %%t%d = alloca %%%s\n", t, e->struct_lit.ty_name);
+                if (e->struct_lit.fields.len == 1) {
+                    FieldInit *fi = &e->struct_lit.fields.data[0];
+                    /* find variant index */
+                    int disc = 0;
+                    Type *payload_ty = NULL;
+                    for (size_t vi = 0; vi < ui->n_variants; vi++) {
+                        if (!strcmp(ui->variants[vi].name, fi->name)) {
+                            disc = (int)vi;
+                            payload_ty = ui->variants[vi].ty;
+                            break;
+                        }
+                    }
+                    /* store discriminant at field 0 */
+                    int tag_ptr = new_tmp(cg);
+                    emit(cg, "  %%t%d = getelementptr %%%s, ptr %%t%d, i32 0, i32 0\n",
+                         tag_ptr, e->struct_lit.ty_name, t);
+                    emit(cg, "  store i32 %d, ptr %%t%d\n", disc, tag_ptr);
+                    /* store payload at field 1 (if variant has a payload and a real value) */
+                    if (payload_ty && fi->val && fi->val->kind != EXPR_UNDEF) {
+                        Type *fty = NULL;
+                        Val fv = cg_expr(cg, fi->val, &fty);
+                        const char *store_llt = fty ? llvm_type(fty) : llvm_type(payload_ty);
+                        int pay_ptr = new_tmp(cg);
+                        emit(cg, "  %%t%d = getelementptr %%%s, ptr %%t%d, i32 0, i32 1\n",
+                             pay_ptr, e->struct_lit.ty_name, t);
+                        /* for struct payloads: load then store */
+                        if (fty && fty->kind == TY_NAMED && find_struct(cg, fty->named.name)) {
+                            int loaded = new_tmp(cg);
+                            emit(cg, "  %%t%d = load %s, ptr %s\n", loaded, store_llt, fv.buf);
+                            emit(cg, "  store %s %%t%d, ptr %%t%d\n", store_llt, loaded, pay_ptr);
+                        } else {
+                            emit(cg, "  store %s %s, ptr %%t%d\n", store_llt, fv.buf, pay_ptr);
+                        }
+                    }
+                }
+                return val_tmp(t);
+            }
+
+            /* regular struct literal */
+            StructInfo *si = find_struct(cg, e->struct_lit.ty_name);
+            int t = new_tmp(cg);
+            emit(cg, "  %%t%d = alloca %%%s\n", t, e->struct_lit.ty_name);
+            for (size_t i = 0; i < e->struct_lit.fields.len; i++) {
+                FieldInit *fi = &e->struct_lit.fields.data[i];
+                Type *val_ty = NULL;
+                Val fv = cg_expr(cg, fi->val, &val_ty);
+                int fidx = si ? struct_field_index(si, fi->name) : (int)i;
+                if (fidx < 0) fidx = (int)i;
+                /* use field type for store; coerce value if integer widths differ */
+                Type *field_ty = (si && fi->name) ? struct_field_type(si, fi->name) : val_ty;
+                const char *store_llt = field_ty ? effective_llvm_type(cg, field_ty)
+                                                  : (val_ty ? llvm_type(val_ty) : "i64");
+                const char *val_llt   = val_ty ? llvm_type(val_ty) : store_llt;
+                if (strcmp(val_llt, store_llt) != 0) {
+                    int sv = 0, lv = 0;
+                    if (!strcmp(val_llt,"i8"))   sv=8;  else if (!strcmp(val_llt,"i16"))  sv=16;
+                    else if (!strcmp(val_llt,"i32")) sv=32; else if (!strcmp(val_llt,"i64")) sv=64;
+                    if (!strcmp(store_llt,"i8"))  lv=8;  else if (!strcmp(store_llt,"i16")) lv=16;
+                    else if (!strcmp(store_llt,"i32")) lv=32; else if (!strcmp(store_llt,"i64")) lv=64;
+                    if (sv && lv && sv != lv) {
+                        int ct = new_tmp(cg);
+                        int is_signed = val_ty ? type_is_signed(val_ty) : 0;
+                        const char *op = (lv < sv) ? "trunc" : (is_signed ? "sext" : "zext");
+                        emit(cg, "  %%t%d = %s %s %s to %s\n", ct, op, val_llt, fv.buf, store_llt);
+                        fv = val_tmp(ct);
+                    }
+                }
+                int fp = new_tmp(cg);
+                emit(cg, "  %%t%d = getelementptr %%%s, ptr %%t%d, i32 0, i32 %d\n",
+                     fp, e->struct_lit.ty_name, t, fidx);
+                emit(cg, "  store %s %s, ptr %%t%d\n", store_llt, fv.buf, fp);
+            }
             return val_tmp(t);
         }
 
         case EXPR_ARRAY_LIT: {
             size_t n = e->array_lit.len;
-            /* sema sets e->ty = TY_SLICE { inner = elem_ty } */
-            Type *elem_ty = (e->ty && e->ty->kind == TY_SLICE) ? e->ty->ptr.inner : NULL;
+            /* sema sets e->ty = TY_ARRAY for fixed arrays, TY_SLICE for empty */
+            int is_fixed = e->ty && e->ty->kind == TY_ARRAY;
+            Type *elem_ty = is_fixed ? e->ty->array.inner
+                          : (e->ty && e->ty->kind == TY_SLICE) ? e->ty->ptr.inner : NULL;
             const char *elem_llt = elem_ty ? llvm_type(elem_ty) : "i64";
 
             if (n == 0) {
-                /* empty slice constant */
+                /* empty literal — return zero slice */
                 if (out_ty) *out_ty = e->ty;
                 int s0 = new_tmp(cg);
                 emit(cg, "  %%t%d = insertvalue { ptr, i64 } { ptr null, i64 0 }, ptr null, 0\n", s0);
@@ -1049,7 +2050,14 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                 emit(cg, "  store %s %s, ptr %%t%d\n", elem_llt, ev.buf, ep);
             }
 
-            /* build { ptr, i64 } slice: data ptr + element count */
+            if (out_ty) *out_ty = e->ty;
+
+            if (is_fixed) {
+                /* [N]T: return the alloca ptr — STMT_LET will load+store like a struct */
+                return val_tmp(arr);
+            }
+
+            /* []T slice: build { ptr, i64 } fat pointer */
             int dp = new_tmp(cg);
             emit(cg, "  %%t%d = getelementptr [%zu x %s], ptr %%t%d, i32 0, i32 0\n",
                  dp, n, elem_llt, arr);
@@ -1057,7 +2065,6 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
             emit(cg, "  %%t%d = insertvalue { ptr, i64 } undef, ptr %%t%d, 0\n", sl0, dp);
             int sl1 = new_tmp(cg);
             emit(cg, "  %%t%d = insertvalue { ptr, i64 } %%t%d, i64 %zu, 1\n", sl1, sl0, n);
-            if (out_ty) *out_ty = e->ty;
             return val_tmp(sl1);
         }
 
@@ -1077,17 +2084,17 @@ static void cg_stmt(CG *cg, Stmt *s) {
         }
 
         case STMT_LET: {
+            int is_fail_err = s->let.ty && s->let.ty->kind == TY_FAILABLE;
             /* allocate storage */
             int alloca = new_tmp(cg);
             const char *llt = s->let.ty ? effective_llvm_type(cg, s->let.ty) : "i32";
-            if (s->let.ty && s->let.ty->kind == TY_FAILABLE)
-                llt = llvm_type(s->let.ty->ptr.inner);
+            if (is_fail_err) llt = "i32"; /* error code slot */
             emit(cg, "  %%t%d = alloca %s\n", alloca, llt);
 
             if (s->let.init && s->let.init->kind == EXPR_UNDEF) {
                 /* undef: zero-initialize based on declared type */
                 const char *zero = "0";
-                if (s->let.ty) {
+                if (s->let.ty && !is_fail_err) {
                     switch (s->let.ty->kind) {
                         case TY_BOOL: zero = "false"; break;
                         case TY_F16: case TY_F32: case TY_F64: zero = "0.0"; break;
@@ -1099,25 +2106,72 @@ static void cg_stmt(CG *cg, Stmt *s) {
                 }
                 emit(cg, "  store %s %s, ptr %%t%d\n", llt, zero, alloca);
             } else if (s->let.init) {
-                Type *init_ty = NULL;
-                Val init = cg_expr(cg, s->let.init, &init_ty);
-                int is_struct = init_ty && init_ty->kind == TY_NAMED
-                                && !find_enum(cg, init_ty->named.name);
-                /* ^T copy: auto-increment RC when source is an identifier
-                   (EXPR_CALL and builtins @new/@clone manage RC themselves) */
-                int is_rc_copy = init_ty && init_ty->kind == TY_SMART_PTR
-                                 && s->let.init->kind == EXPR_IDENT;
-                if (is_rc_copy) emit_rc_inc(cg, init.buf);
-                if (is_struct) {
-                    /* struct init returns a ptr — copy via load+store */
-                    int loaded = new_tmp(cg);
-                    emit(cg, "  %%t%d = load %s, ptr %s\n", loaded, llvm_type(init_ty), init.buf);
-                    emit(cg, "  store %s %%t%d, ptr %%t%d\n", llvm_type(init_ty), loaded, alloca);
+                /* failable error variable: reuse cached aggregate from val-side let */
+                if (is_fail_err && s->let.init == cg->last_fail_init && cg->last_fail_ty) {
+                    const char *fail_llt = llvm_type(cg->last_fail_ty);
+                    int ev = new_tmp(cg);
+                    emit(cg, "  %%t%d = extractvalue %s %s, 1\n",
+                         ev, fail_llt, cg->last_fail_val.buf);
+                    emit(cg, "  store i32 %%t%d, ptr %%t%d\n", ev, alloca);
                 } else {
-                    const char *store_ty = init_ty ? effective_llvm_type(cg, init_ty) : llt;
-                    if (init_ty && init_ty->kind == TY_FAILABLE)
-                        store_ty = llvm_type(init_ty->ptr.inner);
-                    emit(cg, "  store %s %s, ptr %%t%d\n", store_ty, init.buf, alloca);
+                    Type *init_ty = NULL;
+                    Val init = cg_expr(cg, s->let.init, &init_ty);
+                    /* is_struct: TY_NAMED that is NOT an enum */
+                    int is_struct = init_ty && init_ty->kind == TY_NAMED
+                                    && !find_enum(cg, init_ty->named.name);
+                    /* init_is_ptr: expressions that return a ptr to the struct (not the value) */
+                    int init_is_ptr = is_struct &&
+                                      (s->let.init->kind == EXPR_IDENT
+                                       || s->let.init->kind == EXPR_STRUCT_LIT);
+                    /* ^T copy: auto-increment RC when source is an identifier */
+                    int is_rc_copy = init_ty && init_ty->kind == TY_SMART_PTR
+                                     && s->let.init->kind == EXPR_IDENT;
+                    if (is_rc_copy) emit_rc_inc(cg, init.buf);
+                    if (is_struct && init_is_ptr) {
+                        /* struct init returns a ptr — copy via load+store */
+                        int loaded = new_tmp(cg);
+                        emit(cg, "  %%t%d = load %s, ptr %s\n", loaded, llvm_type(init_ty), init.buf);
+                        emit(cg, "  store %s %%t%d, ptr %%t%d\n", llvm_type(init_ty), loaded, alloca);
+                    } else if (is_struct) {
+                        /* struct returned by value from a call — store directly */
+                        emit(cg, "  store %s %s, ptr %%t%d\n", llvm_type(init_ty), init.buf, alloca);
+                    } else if (!is_fail_err && init_ty && init_ty->kind == TY_FAILABLE) {
+                        /* val-side of failable destructure: extract field 0, cache aggregate */
+                        cg->last_fail_init = s->let.init;
+                        cg->last_fail_val  = init;
+                        cg->last_fail_ty   = init_ty;
+                        const char *fail_llt = llvm_type(init_ty);
+                        int vv = new_tmp(cg);
+                        emit(cg, "  %%t%d = extractvalue %s %s, 0\n", vv, fail_llt, init.buf);
+                        emit(cg, "  store %s %%t%d, ptr %%t%d\n", llt, vv, alloca);
+                    } else if (is_fail_err && init_ty && init_ty->kind == TY_FAILABLE) {
+                        /* err-side without cache (standalone failable let) */
+                        const char *fail_llt = llvm_type(init_ty);
+                        int ev = new_tmp(cg);
+                        emit(cg, "  %%t%d = extractvalue %s %s, 1\n", ev, fail_llt, init.buf);
+                        emit(cg, "  store i32 %%t%d, ptr %%t%d\n", ev, alloca);
+                    } else {
+                        const char *store_ty = init_ty ? effective_llvm_type(cg, init_ty) : llt;
+                        /* coerce integer width if alloca type differs from init type */
+                        if (strcmp(store_ty, llt) != 0) {
+                            int sv = 0, lv = 0;
+                            if (!strcmp(store_ty,"i8"))  sv=8; else if (!strcmp(store_ty,"i16")) sv=16;
+                            else if (!strcmp(store_ty,"i32")) sv=32; else if (!strcmp(store_ty,"i64")) sv=64;
+                            if (!strcmp(llt,"i8"))  lv=8; else if (!strcmp(llt,"i16")) lv=16;
+                            else if (!strcmp(llt,"i32")) lv=32; else if (!strcmp(llt,"i64")) lv=64;
+                            if (sv && lv && sv != lv) {
+                                int ct = new_tmp(cg);
+                                int is_signed = init_ty ? type_is_signed(init_ty) : 0;
+                                const char *op = (lv < sv) ? "trunc"
+                                               : (is_signed ? "sext" : "zext");
+                                emit(cg, "  %%t%d = %s %s %s to %s\n",
+                                     ct, op, store_ty, init.buf, llt);
+                                init = val_tmp(ct);
+                                store_ty = llt;
+                            }
+                        }
+                        emit(cg, "  store %s %s, ptr %%t%d\n", store_ty, init.buf, alloca);
+                    }
                 }
             }
 
@@ -1125,7 +2179,13 @@ static void cg_stmt(CG *cg, Stmt *s) {
             char llvm_name[32];
             snprintf(llvm_name, sizeof(llvm_name), "%%t%d", alloca);
             const char *sym_llvm = arena_strdup(cg->arena, llvm_name);
-            define_sym(cg, s->let.name, sym_llvm, 0, s->let.ty);
+            /* error variable of a failable destructure: register as i32, not !T */
+            Type *sym_ty = s->let.ty;
+            if (is_fail_err) {
+                sym_ty = ARENA_NEW(cg->arena, Type);
+                sym_ty->kind = TY_I32;
+            }
+            define_sym(cg, s->let.name, sym_llvm, 0, sym_ty);
 
             /* ^T local: register for auto-drop at scope exit */
             if (s->let.ty && s->let.ty->kind == TY_SMART_PTR)
@@ -1150,6 +2210,22 @@ static void cg_stmt(CG *cg, Stmt *s) {
                     emit(cg, "  %%t%d = load %s, ptr %s\n", loaded, llt, rhs.buf);
                     emit(cg, "  store %s %%t%d, ptr %s\n", llt, loaded, sym->llvm_name);
                 } else if (s->assign.op == ASSIGN_EQ) {
+                    /* coerce rhs integer width to match lhs type */
+                    if (vty && strcmp(llvm_type(vty), llt) != 0) {
+                        int sv4 = 0, lv4 = 0;
+                        const char *src_llt4 = llvm_type(vty);
+                        if (!strcmp(src_llt4,"i8"))  sv4=8; else if (!strcmp(src_llt4,"i16")) sv4=16;
+                        else if (!strcmp(src_llt4,"i32")) sv4=32; else if (!strcmp(src_llt4,"i64")) sv4=64;
+                        if (!strcmp(llt,"i8"))  lv4=8; else if (!strcmp(llt,"i16")) lv4=16;
+                        else if (!strcmp(llt,"i32")) lv4=32; else if (!strcmp(llt,"i64")) lv4=64;
+                        if (sv4 && lv4 && sv4 != lv4) {
+                            int ct4 = new_tmp(cg);
+                            const char *op4 = (lv4 < sv4) ? "trunc"
+                                            : (type_is_signed(vty) ? "sext" : "zext");
+                            emit(cg, "  %%t%d = %s %s %s to %s\n", ct4, op4, src_llt4, rhs.buf, llt);
+                            rhs = val_tmp(ct4);
+                        }
+                    }
                     emit(cg, "  store %s %s, ptr %s\n", llt, rhs.buf, sym->llvm_name);
                 } else {
                     /* load, operate, store */
@@ -1233,11 +2309,31 @@ static void cg_stmt(CG *cg, Stmt *s) {
                     emit(cg, "  store %s %%t%d, ptr %%t%d\n", elem_llt, res, ep);
                 }
             } else if (s->assign.target->kind == EXPR_DEREF) {
-                Val ptr = cg_expr(cg, s->assign.target->deref.operand, NULL);
+                Type *ptr_ty = NULL;
+                Val ptr = cg_expr(cg, s->assign.target->deref.operand, &ptr_ty);
+                Type *inner_ty = (ptr_ty && ptr_ty->kind == TY_PTR) ? ptr_ty->ptr.inner : NULL;
                 Type *vty = NULL;
                 Val rhs = cg_expr(cg, s->assign.val, &vty);
-                const char *llt = vty ? llvm_type(vty) : "i32";
-                emit(cg, "  store %s %s, ptr %s\n", llt, rhs.buf, ptr.buf);
+                /* prefer the pointer's inner type so narrowing stores (e.g. *u8 = 0) use i8 */
+                const char *store_ty = inner_ty ? llvm_type(inner_ty)
+                                                : (vty ? llvm_type(vty) : "i32");
+                /* coerce rhs to store_ty if widths differ */
+                if (vty && strcmp(llvm_type(vty), store_ty) != 0) {
+                    int sv2 = 0, lv2 = 0;
+                    const char *src_llt = llvm_type(vty);
+                    if (!strcmp(src_llt,"i8"))  sv2=8; else if (!strcmp(src_llt,"i16")) sv2=16;
+                    else if (!strcmp(src_llt,"i32")) sv2=32; else if (!strcmp(src_llt,"i64")) sv2=64;
+                    if (!strcmp(store_ty,"i8"))  lv2=8; else if (!strcmp(store_ty,"i16")) lv2=16;
+                    else if (!strcmp(store_ty,"i32")) lv2=32; else if (!strcmp(store_ty,"i64")) lv2=64;
+                    if (sv2 && lv2 && sv2 != lv2) {
+                        int ct = new_tmp(cg);
+                        const char *op = (lv2 < sv2) ? "trunc"
+                                       : (type_is_signed(vty) ? "sext" : "zext");
+                        emit(cg, "  %%t%d = %s %s %s to %s\n", ct, op, src_llt, rhs.buf, store_ty);
+                        rhs = val_tmp(ct);
+                    }
+                }
+                emit(cg, "  store %s %s, ptr %s\n", store_ty, rhs.buf, ptr.buf);
             } else if (s->assign.target->kind == EXPR_SMARTDEREF) {
                 /* p.^ = val : store into data portion of the RC block */
                 Type *pt = NULL;
@@ -1259,18 +2355,59 @@ static void cg_stmt(CG *cg, Stmt *s) {
         case STMT_RET: {
             /* evaluate return value before flushing defers */
             Val rv = val_str("0");
+            /* use declared function return type as the ret instruction type */
             const char *llt = cg->cur_fn_ret ? cg->cur_fn_ret : "void";
             int has_val = s->ret.val != NULL;
             if (has_val) {
                 Type *rt = NULL;
                 rv = cg_expr(cg, s->ret.val, &rt);
-                if (rt) llt = llvm_type(rt);
                 /* if returning a ^T identifier, exempt it from scope RC drops
                    (ownership is transferred to caller; RC stays at current value) */
                 if (rt && rt->kind == TY_SMART_PTR
                         && s->ret.val->kind == EXPR_IDENT) {
                     Symbol *sym = lookup(cg, s->ret.val->ident.name);
                     if (sym) cg->skip_rc_drop = sym->llvm_name;
+                }
+                /* load struct from alloca when returning named struct by value */
+                if (rt && rt->kind == TY_NAMED && !find_enum(cg, rt->named.name)
+                        && (s->ret.val->kind == EXPR_IDENT
+                            || s->ret.val->kind == EXPR_STRUCT_LIT)) {
+                    int loaded = new_tmp(cg);
+                    emit(cg, "  %%t%d = load %s, ptr %s\n",
+                         loaded, llvm_type(rt), rv.buf);
+                    rv = val_tmp(loaded);
+                }
+                /* auto-wrap plain T as @ok(T) when returning from a !T function */
+                if (cg->cur_fn_ret_ty && cg->cur_fn_ret_ty->kind == TY_FAILABLE
+                        && rt && rt->kind != TY_FAILABLE) {
+                    const char *inner_llt = rt ? effective_llvm_type(cg, rt) : "i32";
+                    char fail_llt[256];
+                    snprintf(fail_llt, sizeof(fail_llt), "{ %s, i32 }", inner_llt);
+                    int f1 = new_tmp(cg);
+                    emit(cg, "  %%t%d = insertvalue %s undef, %s %s, 0\n",
+                         f1, fail_llt, inner_llt, rv.buf);
+                    int f2 = new_tmp(cg);
+                    emit(cg, "  %%t%d = insertvalue %s %%t%d, i32 0, 1\n", f2, fail_llt, f1);
+                    rv = val_tmp(f2);
+                }
+                /* coerce integer literals to declared return width if needed */
+                else if (rt && llt && strcmp(llvm_type(rt), llt) != 0) {
+                    const char *val_llt = llvm_type(rt);
+                    /* integer widening: sext or zext */
+                    int val_is_int = (strcmp(val_llt,"i8")==0||strcmp(val_llt,"i16")==0||
+                                      strcmp(val_llt,"i32")==0||strcmp(val_llt,"i64")==0);
+                    int ret_is_int = (strcmp(llt,"i8")==0||strcmp(llt,"i16")==0||
+                                      strcmp(llt,"i32")==0||strcmp(llt,"i64")==0||
+                                      strcmp(llt,"i64")==0);
+                    if (val_is_int && ret_is_int) {
+                        int t = new_tmp(cg);
+                        int is_signed = (rt->kind==TY_I8||rt->kind==TY_I16||rt->kind==TY_I32||rt->kind==TY_I64);
+                        if (is_signed)
+                            emit(cg, "  %%t%d = sext %s %s to %s\n", t, val_llt, rv.buf, llt);
+                        else
+                            emit(cg, "  %%t%d = zext %s %s to %s\n", t, val_llt, rv.buf, llt);
+                        rv = val_tmp(t);
+                    }
                 }
             }
             /* flush all scopes: defers first, then RC drops */
@@ -1485,43 +2622,155 @@ static void cg_stmt(CG *cg, Stmt *s) {
             int end_l = new_label(cg);
             Type *val_ty = NULL;
             Val val = cg_expr(cg, s->when.val, &val_ty);
-            const char *llt = effective_llvm_type(cg, val_ty);
-            for (size_t i = 0; i < s->when.arms.len; i++) {
-                WhenArm *arm = &s->when.arms.data[i];
-                int body_l = new_label(cg);
-                int next_l = (i + 1 < s->when.arms.len) ? new_label(cg) : end_l;
 
-                int cond_t = -1;
-                for (size_t pi = 0; pi < arm->pats.len; pi++) {
-                    Expr *pat = arm->pats.data[pi];
-                    if (pat->kind == EXPR_DISCARD) {
+            /* check if subject is a tagged union */
+            UnionInfoCG *ui = NULL;
+            if (val_ty && val_ty->kind == TY_NAMED)
+                ui = find_union(cg, val_ty->named.name);
+
+            if (ui) {
+                /* tagged union: load the tag (field 0) from the union alloca */
+                int tag_ptr = new_tmp(cg);
+                emit(cg, "  %%t%d = getelementptr %%%s, ptr %s, i32 0, i32 0\n",
+                     tag_ptr, ui->name, val.buf);
+                int tag_val = new_tmp(cg);
+                emit(cg, "  %%t%d = load i32, ptr %%t%d\n", tag_val, tag_ptr);
+
+                for (size_t i = 0; i < s->when.arms.len; i++) {
+                    WhenArm *arm = &s->when.arms.data[i];
+                    int body_l = new_label(cg);
+                    int next_l = (i + 1 < s->when.arms.len) ? new_label(cg) : end_l;
+
+                    /* build condition: OR of all pattern discriminant comparisons */
+                    int cond_t = -1;
+                    Type *matched_payload_ty = NULL;
+                    int   matched_disc       = -1;
+                    for (size_t pi = 0; pi < arm->pats.len; pi++) {
+                        Expr *pat = arm->pats.data[pi];
+                        if (pat->kind == EXPR_DISCARD) {
+                            int wc = new_tmp(cg);
+                            emit(cg, "  %%t%d = add i1 0, 1\n", wc);
+                            cond_t = wc;
+                            break;
+                        }
+                        if (pat->kind == EXPR_IDENT && pat->ident.name[0] == '.') {
+                            const char *vname = pat->ident.name + 1;
+                            int disc = 0;
+                            Type *pty = NULL;
+                            for (size_t vi = 0; vi < ui->n_variants; vi++) {
+                                if (!strcmp(ui->variants[vi].name, vname)) {
+                                    disc = (int)vi;
+                                    pty  = ui->variants[vi].ty;
+                                    break;
+                                }
+                            }
+                            if (matched_disc < 0) {
+                                matched_disc       = disc;
+                                matched_payload_ty = pty;
+                            }
+                            int cmp = new_tmp(cg);
+                            emit(cg, "  %%t%d = icmp eq i32 %%t%d, %d\n",
+                                 cmp, tag_val, disc);
+                            if (cond_t < 0) {
+                                cond_t = cmp;
+                            } else {
+                                int or_t = new_tmp(cg);
+                                emit(cg, "  %%t%d = or i1 %%t%d, %%t%d\n",
+                                     or_t, cond_t, cmp);
+                                cond_t = or_t;
+                            }
+                        }
+                    }
+                    if (cond_t < 0) {
                         int wc = new_tmp(cg);
                         emit(cg, "  %%t%d = add i1 0, 1\n", wc);
                         cond_t = wc;
-                        break;
                     }
-                    Val pv = cg_expr(cg, pat, NULL);
-                    int cmp = new_tmp(cg);
-                    emit(cg, "  %%t%d = icmp eq %s %s, %s\n", cmp, llt, val.buf, pv.buf);
-                    if (cond_t < 0) {
-                        cond_t = cmp;
-                    } else {
-                        int or_t = new_tmp(cg);
-                        emit(cg, "  %%t%d = or i1 %%t%d, %%t%d\n", or_t, cond_t, cmp);
-                        cond_t = or_t;
-                    }
-                }
-                if (cond_t < 0) { int wc = new_tmp(cg); emit(cg,"  %%t%d = add i1 0,1\n",wc); cond_t=wc; }
 
-                emit_br(cg, "  br i1 %%t%d, label %%l%d, label %%l%d\n",
-                        cond_t, body_l, next_l);
-                emit_label(cg, body_l);
-                push_scope(cg);
-                cg_stmt(cg, arm->body);
-                pop_scope(cg);
-                emit_br(cg, "  br label %%l%d\n", end_l);
-                if (next_l != end_l) emit_label(cg, next_l);
+                    emit_br(cg, "  br i1 %%t%d, label %%l%d, label %%l%d\n",
+                            cond_t, body_l, next_l);
+                    emit_label(cg, body_l);
+                    push_scope(cg);
+
+                    /* bind payload if arm has a name and the variant has a payload */
+                    if (arm->bind && matched_payload_ty && ui->payload_size > 0) {
+                        int pay_ptr = new_tmp(cg);
+                        emit(cg, "  %%t%d = getelementptr %%%s, ptr %s, i32 0, i32 1\n",
+                             pay_ptr, ui->name, val.buf);
+                        char pay_buf[32];
+                        snprintf(pay_buf, sizeof(pay_buf), "%%t%d", pay_ptr);
+                        const char *bind_llvm;
+                        if (matched_payload_ty->kind == TY_NAMED
+                                && find_struct(cg, matched_payload_ty->named.name)) {
+                            /* struct payload: use the GEP ptr directly (struct-as-alloca) */
+                            bind_llvm = arena_strdup(cg->arena, pay_buf);
+                        } else {
+                            /* scalar payload: alloca + load + store */
+                            const char *pay_llt = llvm_type(matched_payload_ty);
+                            int bind_alloca = new_tmp(cg);
+                            emit(cg, "  %%t%d = alloca %s\n", bind_alloca, pay_llt);
+                            int pay_val = new_tmp(cg);
+                            emit(cg, "  %%t%d = load %s, ptr %%t%d\n",
+                                 pay_val, pay_llt, pay_ptr);
+                            emit(cg, "  store %s %%t%d, ptr %%t%d\n",
+                                 pay_llt, pay_val, bind_alloca);
+                            char bind_buf[32];
+                            snprintf(bind_buf, sizeof(bind_buf), "%%t%d", bind_alloca);
+                            bind_llvm = arena_strdup(cg->arena, bind_buf);
+                        }
+                        define_sym(cg, arm->bind, bind_llvm, 0, matched_payload_ty);
+                    }
+
+                    cg_stmt(cg, arm->body);
+                    pop_scope(cg);
+                    emit_br(cg, "  br label %%l%d\n", end_l);
+                    if (next_l != end_l) emit_label(cg, next_l);
+                }
+            } else {
+                /* regular when: integer/enum/bool pattern matching */
+                const char *llt = effective_llvm_type(cg, val_ty);
+                for (size_t i = 0; i < s->when.arms.len; i++) {
+                    WhenArm *arm = &s->when.arms.data[i];
+                    int body_l = new_label(cg);
+                    int next_l = (i + 1 < s->when.arms.len) ? new_label(cg) : end_l;
+
+                    int cond_t = -1;
+                    for (size_t pi = 0; pi < arm->pats.len; pi++) {
+                        Expr *pat = arm->pats.data[pi];
+                        if (pat->kind == EXPR_DISCARD) {
+                            int wc = new_tmp(cg);
+                            emit(cg, "  %%t%d = add i1 0, 1\n", wc);
+                            cond_t = wc;
+                            break;
+                        }
+                        Val pv = cg_expr(cg, pat, NULL);
+                        int cmp = new_tmp(cg);
+                        emit(cg, "  %%t%d = icmp eq %s %s, %s\n", cmp, llt, val.buf, pv.buf);
+                        if (cond_t < 0) {
+                            cond_t = cmp;
+                        } else {
+                            int or_t = new_tmp(cg);
+                            emit(cg, "  %%t%d = or i1 %%t%d, %%t%d\n", or_t, cond_t, cmp);
+                            cond_t = or_t;
+                        }
+                    }
+                    if (cond_t < 0) {
+                        int wc = new_tmp(cg);
+                        emit(cg, "  %%t%d = add i1 0, 1\n", wc);
+                        cond_t = wc;
+                    }
+
+                    emit_br(cg, "  br i1 %%t%d, label %%l%d, label %%l%d\n",
+                            cond_t, body_l, next_l);
+                    emit_label(cg, body_l);
+                    push_scope(cg);
+                    cg_stmt(cg, arm->body);
+                    pop_scope(cg);
+                    emit_br(cg, "  br label %%l%d\n", end_l);
+                    if (next_l != end_l) emit_label(cg, next_l);
+                }
             }
+
             emit_label(cg, end_l);
             break;
         }
@@ -1536,10 +2785,16 @@ static void cg_stmt(CG *cg, Stmt *s) {
         }
 
         case STMT_BLOCK: {
-            push_scope(cg);
+            /* failable destructure: two lets where second has !T — no new scope */
+            int is_fail = (s->block.len == 2
+                && s->block.data[0]->kind == STMT_LET
+                && s->block.data[1]->kind == STMT_LET
+                && s->block.data[1]->let.ty
+                && s->block.data[1]->let.ty->kind == TY_FAILABLE);
+            if (!is_fail) push_scope(cg);
             for (size_t i = 0; i < s->block.len; i++)
                 cg_stmt(cg, s->block.data[i]);
-            pop_scope(cg);
+            if (!is_fail) pop_scope(cg);
             break;
         }
 
@@ -1597,7 +2852,9 @@ static void cg_fn(CG *cg, Item *item) {
     }
     emit(cg, ") {\nentry:\n");
 
-    cg->cur_fn_ret = ret_llt;
+    cg->cur_fn_ret    = ret_llt;
+    cg->cur_fn_ret_ty = item->fn.ret;
+    cg->cur_label     = -1; /* -1 = entry block */
     push_scope(cg);
 
     /* spill parameters to allocas so they're addressable */
@@ -1635,8 +2892,105 @@ static void cg_fn(CG *cg, Item *item) {
     emit(cg, "}\n\n");
 }
 
+/* Names declared in the preamble — skip re-declaration from extern fn */
+static const char *g_preamble_decls[] = {
+    "printf", "fprintf", "sprintf", "atoi", "strlen",
+    "malloc", "realloc", "free", "exit", "fgets",
+    NULL
+};
+static int is_preamble_decl(const char *name) {
+    for (const char **p = g_preamble_decls; *p; p++)
+        if (!strcmp(name, *p)) return 1;
+    return 0;
+}
+
+static int mark_declared(CG *cg, const char *name) {
+    for (size_t i = 0; i < cg->n_declared_fns; i++)
+        if (!strcmp(cg->declared_fns[i], name)) return 0; /* already done */
+    if (cg->n_declared_fns < 512)
+        cg->declared_fns[cg->n_declared_fns++] = name;
+    return 1; /* first time */
+}
+
 static void cg_extern_fn(CG *cg, Item *item) {
+    const char *c_name = item->extern_fn.c_name ? item->extern_fn.c_name : item->name;
+    /* skip if this exact declaration (by mangled name) was already emitted */
+    if (!mark_declared(cg, item->name)) return;
+    if (is_preamble_decl(c_name)) {
+        /* preamble already declares the real C function; just emit a wrapper alias */
+        if (item->extern_fn.c_name) {
+            const char *ret_llt = item->extern_fn.ret ? llvm_type(item->extern_fn.ret) : "void";
+            int is_void = !strcmp(ret_llt, "void");
+            /* emit define wrapper: alias__fn(...) -> fn(...) */
+            emit(cg, "define %s @%s(", ret_llt, item->name);
+            for (size_t i = 0; i < item->extern_fn.params.len; i++) {
+                if (i) emit(cg, ", ");
+                emit(cg, "%s %%p%zu", llvm_type(item->extern_fn.params.data[i].ty), i);
+            }
+            emit(cg, ") {\nentry:\n");
+            if (is_void) {
+                emit(cg, "  call void @%s(", c_name);
+            } else {
+                emit(cg, "  %%r = call %s @%s(", ret_llt, c_name);
+            }
+            for (size_t i = 0; i < item->extern_fn.params.len; i++) {
+                if (i) emit(cg, ", ");
+                emit(cg, "%s %%p%zu", llvm_type(item->extern_fn.params.data[i].ty), i);
+            }
+            if (item->extern_fn.variadic) {
+                /* variadic wrappers aren't straightforward; just call the C fn directly */
+            }
+            emit(cg, ")\n");
+            if (is_void) emit(cg, "  ret void\n}\n");
+            else         emit(cg, "  ret %s %%r\n}\n", ret_llt);
+        }
+        return;
+    }
     const char *ret_llt = item->extern_fn.ret ? llvm_type(item->extern_fn.ret) : "void";
+
+    if (item->extern_fn.c_name) {
+        /* Imported extern fn: declare C function + emit thin wrapper with mangled name */
+        /* First declare the original C function (if not already declared) */
+        if (mark_declared(cg, c_name)) {
+            emit(cg, "declare %s @%s(", ret_llt, c_name);
+            for (size_t i = 0; i < item->extern_fn.params.len; i++) {
+                if (i) emit(cg, ", ");
+                emit(cg, "%s", llvm_type(item->extern_fn.params.data[i].ty));
+            }
+            if (item->extern_fn.variadic) {
+                if (item->extern_fn.params.len) emit(cg, ", ");
+                emit(cg, "...");
+            }
+            emit(cg, ")\n");
+        }
+        /* Then emit a thin define wrapper with the mangled name */
+        int is_void = !strcmp(ret_llt, "void");
+        emit(cg, "define %s @%s(", ret_llt, item->name);
+        for (size_t i = 0; i < item->extern_fn.params.len; i++) {
+            if (i) emit(cg, ", ");
+            emit(cg, "%s %%p%zu", llvm_type(item->extern_fn.params.data[i].ty), i);
+        }
+        if (item->extern_fn.variadic) {
+            if (item->extern_fn.params.len) emit(cg, ", ");
+            emit(cg, "...");
+        }
+        emit(cg, ") {\nentry:\n");
+        if (is_void) {
+            emit(cg, "  call void @%s(", c_name);
+        } else {
+            emit(cg, "  %%r = call %s @%s(", ret_llt, c_name);
+        }
+        for (size_t i = 0; i < item->extern_fn.params.len; i++) {
+            if (i) emit(cg, ", ");
+            emit(cg, "%s %%p%zu", llvm_type(item->extern_fn.params.data[i].ty), i);
+        }
+        emit(cg, ")\n");
+        if (is_void) emit(cg, "  ret void\n}\n");
+        else         emit(cg, "  ret %s %%r\n}\n", ret_llt);
+        return;
+    }
+
+    /* Normal extern fn declaration */
     emit(cg, "declare %s @%s(", ret_llt, item->name);
     for (size_t i = 0; i < item->extern_fn.params.len; i++) {
         Param *par = &item->extern_fn.params.data[i];
@@ -1652,14 +3006,32 @@ static void cg_extern_fn(CG *cg, Item *item) {
 
 static void cg_global(CG *cg, Item *item) {
     const char *llt = llvm_type(item->global.ty);
-    emit(cg, "@%s = %s global %s ",
-         item->name,
-         item->global.mutable ? "" : "constant",
-         llt);
+    /* LLVM syntax: @name = [constant|global] type value */
+    const char *linkage = item->global.mutable ? "global" : "constant";
+
+    /* str globals: emit a { ptr, i64 } constant using a string literal */
+    if (item->global.ty && item->global.ty->kind == TY_STR
+            && item->global.init && item->global.init->kind == EXPR_STR) {
+        const char *sv = item->global.init->sval;
+        size_t slen = strlen(sv);
+        int sid = intern_str(cg, sv);
+        emit(cg, "@%s = %s { ptr, i64 } { ptr getelementptr inbounds ([%zu x i8], ptr @.str.%d, i32 0, i32 0), i64 %zu }\n",
+             item->name, linkage, slen + 1, sid, slen);
+        char llvm_name[128];
+        snprintf(llvm_name, sizeof(llvm_name), "@%s", item->name);
+        define_sym(cg, item->name, arena_strdup(cg->arena, llvm_name), 1, item->global.ty);
+        return;
+    }
+
+    emit(cg, "@%s = %s %s ", item->name, linkage, llt);
     if (item->global.init) {
         switch (item->global.init->kind) {
             case EXPR_INT:  emit(cg, "%" PRIu64, item->global.init->ival); break;
-            case EXPR_FLOAT:emit(cg, "%a", item->global.init->fval); break;
+            case EXPR_FLOAT: {
+                union { double d; uint64_t u; } bits; bits.d = item->global.init->fval;
+                emit(cg, "0x%016" PRIX64, bits.u);
+                break;
+            }
             case EXPR_BOOL: emit(cg, "%d", item->global.init->bval); break;
             default:        emit(cg, "zeroinitializer"); break;
         }
@@ -1676,10 +3048,11 @@ static void cg_global(CG *cg, Item *item) {
 
 /* ── Module entry ─────────────────────────────────────────────────────────── */
 
-int codegen(Module *mod, FILE *out) {
+int codegen(Module *mod, FILE *out, int release) {
     CG cg = {0};
-    cg.out   = out;
-    cg.arena = mod->arena;
+    cg.out     = out;
+    cg.arena   = mod->arena;
+    cg.release = release;
 
     /* global scope */
     Scope global_scope = {0};
@@ -1691,11 +3064,21 @@ int codegen(Module *mod, FILE *out) {
 
     /* standard declarations always needed */
     emit(&cg, "declare i32 @printf(ptr noundef, ...)\n");
+    emit(&cg, "declare i32 @fprintf(ptr, ptr noundef, ...)\n");
     emit(&cg, "declare i32 @sprintf(ptr, ptr, ...)\n");
     emit(&cg, "declare i32 @atoi(ptr)\n");
+    emit(&cg, "declare i64 @strlen(ptr)\n");
     emit(&cg, "declare ptr @malloc(i64)\n");
+    emit(&cg, "declare ptr @realloc(ptr, i64)\n");
     emit(&cg, "declare void @free(ptr)\n");
-    emit(&cg, "declare void @exit(i32)\n\n");
+    emit(&cg, "declare void @exit(i32)\n");
+    emit(&cg, "declare ptr @fgets(ptr, i32, ptr)\n");
+    emit(&cg, "declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1)\n");
+    emit(&cg, "declare void @llvm.memmove.p0.p0.i64(ptr, ptr, i64, i1)\n");
+    emit(&cg, "declare void @llvm.memset.p0.i64(ptr, i8, i64, i1)\n");
+    emit(&cg, "declare double @llvm.sqrt.f64(double)\n");
+    emit(&cg, "@stdin  = external global ptr\n");
+    emit(&cg, "@stderr = external global ptr\n\n");
 
     /* globals for @args support */
     emit(&cg, "@__przp_argc = internal global i32 0\n");
@@ -1754,6 +3137,42 @@ int codegen(Module *mod, FILE *out) {
     }
     emit(&cg, "\n");
 
+    /* tagged union type declarations and layout table
+       Layout: { i32 tag, [N x i8] payload } where N = max variant payload size */
+    for (size_t i = 0; i < mod->items.len; i++) {
+        Item *item = mod->items.data[i];
+        if (item->kind != ITEM_UNION || !item->union_.tagged) continue;
+        /* compute max payload size */
+        int max_payload = 0;
+        for (size_t j = 0; j < item->union_.fields.len; j++) {
+            Type *fty = item->union_.fields.data[j].ty;
+            if (fty) {
+                int sz = cg_type_byte_size(&cg, fty);
+                if (sz > max_payload) max_payload = sz;
+            }
+        }
+        /* build variant table */
+        size_t nv = item->union_.fields.len;
+        UnionVariantCG *vars = ARENA_ALLOC(cg.arena, UnionVariantCG, nv);
+        for (size_t j = 0; j < nv; j++) {
+            vars[j].name = item->union_.fields.data[j].name;
+            vars[j].ty   = item->union_.fields.data[j].ty;
+        }
+        UnionInfoCG *ui  = ARENA_NEW(cg.arena, UnionInfoCG);
+        ui->name         = item->name;
+        ui->n_variants   = nv;
+        ui->variants     = vars;
+        ui->payload_size = max_payload;
+        ui->next         = cg.unions;
+        cg.unions        = ui;
+        /* emit LLVM named type */
+        if (max_payload > 0)
+            emit(&cg, "%%%s = type { i32, [%d x i8] }\n", item->name, max_payload);
+        else
+            emit(&cg, "%%%s = type { i32 }\n", item->name);
+    }
+    emit(&cg, "\n");
+
     /* globals and externs */
     for (size_t i = 0; i < mod->items.len; i++) {
         Item *item = mod->items.data[i];
@@ -1764,11 +3183,18 @@ int codegen(Module *mod, FILE *out) {
 
     /* functions — rename user's `main` to `__przp_main` */
     int has_main = 0;
+    int main_returns_i32 = 0;
     for (size_t i = 0; i < mod->items.len; i++) {
         Item *item = mod->items.data[i];
         if (item->kind == ITEM_FN) {
             if (item->fn.n_type_params > 0) continue; /* skip generic template */
-            if (!strcmp(item->name, "main")) { has_main = 1; item->name = "__przp_main"; }
+            if (!strcmp(item->name, "main")) {
+                has_main = 1;
+                item->name = "__przp_main";
+                /* check if user's main has an explicit i32 return */
+                Type *ret = item->fn.ret;
+                if (ret && ret->kind == TY_I32) main_returns_i32 = 1;
+            }
             cg_fn(&cg, item);
             if (!strcmp(item->name, "__przp_main")) item->name = "main"; /* restore */
         }
@@ -1786,14 +3212,25 @@ int codegen(Module *mod, FILE *out) {
 
     /* emit a real C main that stores argc/argv then calls __przp_main */
     if (has_main) {
-        emit(&cg,
-            "define i32 @main(i32 %%argc, ptr %%argv) {\n"
-            "entry:\n"
-            "  store i32 %%argc, ptr @__przp_argc\n"
-            "  store ptr %%argv, ptr @__przp_argv\n"
-            "  %%r = call i32 @__przp_main()\n"
-            "  ret i32 %%r\n"
-            "}\n\n");
+        if (main_returns_i32) {
+            emit(&cg,
+                "define i32 @main(i32 %%argc, ptr %%argv) {\n"
+                "entry:\n"
+                "  store i32 %%argc, ptr @__przp_argc\n"
+                "  store ptr %%argv, ptr @__przp_argv\n"
+                "  %%r = call i32 @__przp_main()\n"
+                "  ret i32 %%r\n"
+                "}\n\n");
+        } else {
+            emit(&cg,
+                "define i32 @main(i32 %%argc, ptr %%argv) {\n"
+                "entry:\n"
+                "  store i32 %%argc, ptr @__przp_argc\n"
+                "  store ptr %%argv, ptr @__przp_argv\n"
+                "  call void @__przp_main()\n"
+                "  ret i32 0\n"
+                "}\n\n");
+        }
     }
 
     /* string constants */
