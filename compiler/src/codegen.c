@@ -675,8 +675,15 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
 
             /* @panic */
             if (!strcmp(name, "panic")) {
-                Val msg = cg_expr(cg, e->builtin.args.data[0], NULL);
-                emit(cg, "  call i32 (ptr, ...) @printf(ptr %s)\n", msg.buf);
+                Type *msg_ty = NULL;
+                Val msg = cg_expr(cg, e->builtin.args.data[0], &msg_ty);
+                Val msg_ptr = msg;
+                if (msg_ty && msg_ty->kind == TY_STR) {
+                    int sp = new_tmp(cg);
+                    emit(cg, "  %%t%d = extractvalue { ptr, i64 } %s, 0\n", sp, msg.buf);
+                    msg_ptr = val_tmp(sp);
+                }
+                emit(cg, "  call i32 (ptr, ...) @printf(ptr %s)\n", msg_ptr.buf);
                 emit(cg, "  call void @exit(i32 1)\n");
                 emit_br(cg, "  unreachable\n");
                 return val_str("0");
@@ -3092,7 +3099,9 @@ static void cg_fn(CG *cg, Item *item) {
 
 /* Names declared in the preamble — skip re-declaration from extern fn */
 static const char *g_preamble_decls[] = {
-    "printf", "fprintf", "sprintf", "atoi", "strlen",
+    "printf", "fprintf", "sprintf",
+    "atoi", "atol", "atof", "strtol", "strtod",
+    "strcmp", "strlen",
     "malloc", "realloc", "free", "exit", "fgets",
     NULL
 };

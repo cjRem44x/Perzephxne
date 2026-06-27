@@ -35,13 +35,17 @@ fn concat(a: str, b: str) -> str {
     ret @str_raw(buf, total)
 }
 
-# slice: return a str view into s from start (inclusive) to end (exclusive)
+# slice: return a heap-allocated null-terminated copy of s[start..end)
 fn slice(s: str, start: usize, end: usize) -> str {
     if start > s.len { start = s.len }
     if end > s.len   { end   = s.len }
     if end < start   { end   = start }
-    p: *u8 = s.data + start
-    ret @str_raw(p, end - start)
+    n: usize = end - start
+    buf: *u8 = malloc(n + 1)
+    memcpy(buf, s.data + start, n)
+    term: *u8 = buf + n
+    term.* = 0u8
+    ret @str_raw(buf, n)
 }
 
 # find: return the byte offset of sub in s, or s.len if not found
