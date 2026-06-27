@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>Tagged Unions - The Perzephxne Programming Language</title>
+        <title>Enums &amp; Unions - The Perzephxne Programming Language</title>
 
 
         <!-- Custom HTML head -->
@@ -35,10 +35,10 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-9395ba1b.js";
+            window.path_to_searchindex_js = "searchindex-9e5a952b.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-15562ee1.js"></script>
+        <script src="toc-283af563.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -177,13 +177,115 @@
 
                 <div id="mdbook-content" class="content">
                     <main>
-                        <h1 id="tagged-unions"><a class="header" href="#tagged-unions">Tagged Unions</a></h1>
+                        <h1 id="enums--unions"><a class="header" href="#enums--unions">Enums &amp; Unions</a></h1>
+<h2 id="enums"><a class="header" href="#enums">Enums</a></h2>
+<pre><code>enum Direction {
+    North,
+    South,
+    East,
+    West,
+}
+
+d: Direction = Direction.North
+
+when d {
+    Direction.North =&gt; @pf("going north\n"),
+    Direction.South =&gt; @pf("going south\n"),
+    Direction.East  =&gt; @pf("going east\n"),
+    Direction.West  =&gt; @pf("going west\n"),
+}
+</code></pre>
+<h2 id="tagged-unions"><a class="header" href="#tagged-unions">Tagged Unions</a></h2>
+<p>Each variant can carry a value:</p>
+<pre><code>enum Shape {
+    Circle(f64),
+    Rect(f64, f64),
+    Point,
+}
+
+s: Shape = Shape.Circle(5.0)
+
+area: f64 = when s {
+    Shape.Circle(r)  =&gt; 3.14159 * r * r,
+    Shape.Rect(w, h) =&gt; w * h,
+    Shape.Point      =&gt; 0.0,
+}
+</code></pre>
+<p>Multiple fields per variant use a struct-like syntax:</p>
+<pre><code>enum Event {
+    KeyPress  { key: u32, mods: u8 },
+    MouseMove { x: f32, y: f32 },
+    Quit,
+}
+
+e: Event = Event.MouseMove{.x=10.0, .y=20.0}
+
+when e {
+    Event.KeyPress{key, mods} =&gt; @pf("key {key} mods {mods}\n"),
+    Event.MouseMove{x, y}     =&gt; @pf("mouse {x},{y}\n"),
+    Event.Quit                =&gt; @pf("quit\n"),
+}
+</code></pre>
+<h2 id="impl-on-enums"><a class="header" href="#impl-on-enums"><code>impl</code> on Enums</a></h2>
+<pre><code>impl Shape {
+    fn area(self: Shape) -&gt; f64 {
+        ret when self {
+            Shape.Circle(r)  =&gt; 3.14159 * r * r,
+            Shape.Rect(w, h) =&gt; w * h,
+            Shape.Point      =&gt; 0.0,
+        }
+    }
+}
+
+s: Shape = Shape.Rect(3.0, 4.0)
+@pf("{s.area()}\n")   # 12.0
+</code></pre>
+<h2 id="integer-backed-enum"><a class="header" href="#integer-backed-enum">Integer-Backed Enum</a></h2>
+<p>Add <code>: TYPE</code> to specify a backing integer:</p>
+<pre><code>enum Color: u8 {
+    Red   = 0,
+    Green = 1,
+    Blue  = 2,
+}
+
+c: Color = Color.Red
+n: u8    = @u8(c)       # 0
+c2: Color = @Color(2)   # Color.Blue
+</code></pre>
+<h2 id="c-compatible-enum"><a class="header" href="#c-compatible-enum">C-Compatible Enum</a></h2>
+<p>For FFI, use <code>: c_int</code>:</p>
+<pre><code>extern enum errno_t: i32 {
+    EPERM  = 1,
+    ENOENT = 2,
+    EIO    = 5,
+}
+</code></pre>
+<h2 id="unions"><a class="header" href="#unions">Unions</a></h2>
+<p><code>union</code> overlays all fields at the same memory address (unsafe):</p>
+<pre><code>union FloatBits {
+    f: f32,
+    u: u32,
+}
+
+x: FloatBits = FloatBits{.f=1.0}
+@pf("{x.u:#x}\n")   # 3f800000
+</code></pre>
+<p>Reading the field that wasn’t most recently written is defined bit-level behavior in Perzephxne.</p>
+<h2 id="option-and-result-patterns"><a class="header" href="#option-and-result-patterns">Option and Result Patterns</a></h2>
+<p>The standard library provides:</p>
+<pre><code># generic Option
+enum Option[T] { Some(T), None }
+
+# generic Result
+enum Result[T, E] { Ok(T), Err(E) }
+</code></pre>
+<p>These work alongside the <code>!T</code> failable return syntax.</p>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="enums-unions.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="structs.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                             </a>
 
@@ -197,7 +299,7 @@
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="enums-unions.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="structs.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                     </a>
 

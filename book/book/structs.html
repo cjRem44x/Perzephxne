@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>Static Methods - The Perzephxne Programming Language</title>
+        <title>Structs &amp; Impl - The Perzephxne Programming Language</title>
 
 
         <!-- Custom HTML head -->
@@ -35,10 +35,10 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-9395ba1b.js";
+            window.path_to_searchindex_js = "searchindex-9e5a952b.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-15562ee1.js"></script>
+        <script src="toc-283af563.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -177,13 +177,104 @@
 
                 <div id="mdbook-content" class="content">
                     <main>
-                        <h1 id="static-methods"><a class="header" href="#static-methods">Static Methods</a></h1>
+                        <h1 id="structs--impl"><a class="header" href="#structs--impl">Structs &amp; Impl</a></h1>
+<h2 id="structs"><a class="header" href="#structs">Structs</a></h2>
+<pre><code>struct Vec2 {
+    x: f64,
+    y: f64,
+}
+</code></pre>
+<h2 id="instantiation"><a class="header" href="#instantiation">Instantiation</a></h2>
+<p>Field names must be specified with <code>.name=</code>:</p>
+<pre><code>v: Vec2 = Vec2{.x=1.0, .y=2.0}
+</code></pre>
+<p>Partial initialization (remaining fields are <code>undef</code>):</p>
+<pre><code>v: Vec2 = Vec2{.x=1.0}
+</code></pre>
+<h2 id="field-access"><a class="header" href="#field-access">Field Access</a></h2>
+<pre><code>@pf("{v.x} {v.y}\n")
+v.x = 5.0
+</code></pre>
+<h2 id="nested-structs"><a class="header" href="#nested-structs">Nested Structs</a></h2>
+<pre><code>struct Line {
+    start: Vec2,
+    end:   Vec2,
+}
+
+l: Line = Line{
+    .start = Vec2{.x=0.0, .y=0.0},
+    .end   = Vec2{.x=1.0, .y=1.0},
+}
+
+dx: f64 = l.end.x - l.start.x
+</code></pre>
+<h2 id="impl-blocks"><a class="header" href="#impl-blocks">Impl Blocks</a></h2>
+<p><code>impl</code> attaches functions to a struct. They are called with dot syntax. The first parameter conventionally named <code>self</code> receives the struct by value; use <code>*Self</code> for mutation.</p>
+<pre><code>impl Vec2 {
+    fn len(self: Vec2) -&gt; f64 {
+        ret @sqrt(self.x * self.x + self.y * self.y)
+    }
+
+    fn scale(self: *Vec2, factor: f64) {
+        self.*.x *= factor
+        self.*.y *= factor
+    }
+}
+
+v: Vec2 = Vec2{.x=3.0, .y=4.0}
+@pf("{v.len()}\n")     # 5.0
+
+v.scale(2.0)
+@pf("{v.x}\n")         # 6.0
+</code></pre>
+<h2 id="static-methods"><a class="header" href="#static-methods">Static Methods</a></h2>
+<p>Methods with no <code>self</code> parameter are static — called on the type directly:</p>
+<pre><code>impl Vec2 {
+    fn add(a: Vec2, b: Vec2) -&gt; Vec2 {
+        ret Vec2{.x=a.x+b.x, .y=a.y+b.y}
+    }
+}
+
+sum: Vec2 = Vec2.add(v, Vec2{.x=1.0, .y=0.0})
+</code></pre>
+<h2 id="anonymous-structs-tuples"><a class="header" href="#anonymous-structs-tuples">Anonymous Structs (Tuples)</a></h2>
+<pre><code>pair: {i32, str} = {42, "hello"}
+n: i32  = pair.0
+s: str  = pair.1
+</code></pre>
+<h2 id="struct-embedding"><a class="header" href="#struct-embedding">Struct Embedding</a></h2>
+<pre><code>struct ColorVec {
+    using base: Vec2,    # embeds Vec2 fields and impls
+    r: u8,
+    g: u8,
+    b: u8,
+}
+
+cv: ColorVec = ColorVec{.x=1.0, .y=0.0, .r=255, .g=0, .b=0}
+d: f64 = cv.len()      # inherited from Vec2 impl
+</code></pre>
+<h2 id="packed-structs"><a class="header" href="#packed-structs">Packed Structs</a></h2>
+<pre><code>@packed
+struct Flags {
+    active:  bool,
+    count:   u8,
+    value:   u16,
+}
+</code></pre>
+<p><code>@packed</code> removes padding — useful for binary protocols.</p>
+<h2 id="memory-layout"><a class="header" href="#memory-layout">Memory Layout</a></h2>
+<p>By default structs follow C ABI alignment rules. Use <code>@packed</code> for tight packing or <code>@align(N)</code> for explicit alignment:</p>
+<pre><code>@align(64)
+struct CacheLine {
+    data: [64]u8,
+}
+</code></pre>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="structs.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="defer.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                             </a>
 
@@ -197,7 +288,7 @@
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="structs.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="defer.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                     </a>
 

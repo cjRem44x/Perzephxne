@@ -36,10 +36,10 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-9395ba1b.js";
+            window.path_to_searchindex_js = "searchindex-9e5a952b.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-15562ee1.js"></script>
+        <script src="toc-283af563.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -207,7 +207,7 @@
 <p>The compiler (<code>przp</code>) emits LLVM IR text (<code>.ll</code> files) and invokes <code>clang</code> to produce the final native binary. You need <code>clang</code> on your <code>PATH</code>.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="getting-started"><a class="header" href="#getting-started">Getting Started</a></h1>
-<h2 id="installation"><a class="header" href="#installation-1">Installation</a></h2>
+<h2 id="installation"><a class="header" href="#installation">Installation</a></h2>
 <p>You need:</p>
 <ul>
 <li><code>clang</code> (any recent version, 14+)</li>
@@ -218,7 +218,7 @@ cd Perzephxne/compiler
 make
 sudo cp przp /usr/local/bin/
 </code></pre>
-<h2 id="hello-world"><a class="header" href="#hello-world-1">Hello World</a></h2>
+<h2 id="hello-world"><a class="header" href="#hello-world">Hello World</a></h2>
 <p>Create <code>main.przp</code>:</p>
 <pre><code>fn main() {
     @pf("Hello, World!\n")
@@ -242,10 +242,6 @@ line
 comment
 ##
 </code></pre>
-<div style="break-before: page; page-break-before: always;"></div>
-<h1 id="installation-1"><a class="header" href="#installation-1">Installation</a></h1>
-<div style="break-before: page; page-break-before: always;"></div>
-<h1 id="hello-world-1"><a class="header" href="#hello-world-1">Hello World</a></h1>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="build-system-przp"><a class="header" href="#build-system-przp">Build System (<code>przp</code>)</a></h1>
 <p><code>przp</code> is the Perzephxne build tool, similar to Cargo for Rust.</p>
@@ -359,7 +355,7 @@ nl: char = '\n'
 </div>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="variables--types"><a class="header" href="#variables--types">Variables &amp; Types</a></h1>
-<h2 id="mutability"><a class="header" href="#mutability-1">Mutability</a></h2>
+<h2 id="mutability"><a class="header" href="#mutability">Mutability</a></h2>
 <p>Every variable is either <strong>mutable</strong> (declared with <code>=</code>) or <strong>immutable</strong> (declared with <code>:</code>).</p>
 <pre><code>x: i32 = 5      # mutable — can be reassigned
 PI: f64 : 3.14  # immutable — assignment after this is a compile error
@@ -368,7 +364,7 @@ PI: f64 : 3.14  # immutable — assignment after this is a compile error
 <pre><code>N: usize : 10
 N = 20           # ERROR: cannot assign to immutable binding 'N'
 </code></pre>
-<h2 id="primitive-types"><a class="header" href="#primitive-types-1">Primitive Types</a></h2>
+<h2 id="primitive-types"><a class="header" href="#primitive-types">Primitive Types</a></h2>
 <h3 id="integers"><a class="header" href="#integers">Integers</a></h3>
 <pre><code>u8   i8
 u16  i16
@@ -407,7 +403,7 @@ count: usize = @len(arr)     # 5
                      [0.0, 0.0, 1.0]]
 val: f32 = matrix[1][2]
 </code></pre>
-<h2 id="slices"><a class="header" href="#slices-1">Slices</a></h2>
+<h2 id="slices"><a class="header" href="#slices">Slices</a></h2>
 <p>A slice is a fat pointer <code>{*T data, usize len}</code> — a non-owning view into an array or allocation.</p>
 <pre><code>arr: [5]i32 = [10, 20, 30, 40, 50]
 sl:  []i32  = arr[1..3]    # [20, 30] — exclusive end
@@ -486,7 +482,7 @@ p: *i32 = null
 x = 5
 if p != null { p.* = x }
 </code></pre>
-<h2 id="type-casting"><a class="header" href="#type-casting-1">Type Casting</a></h2>
+<h2 id="type-casting"><a class="header" href="#type-casting">Type Casting</a></h2>
 <p>Use <code>@T(val)</code> where <code>T</code> is the target type:</p>
 <pre><code>x: i32  = 300
 y: u8   = @u8(x)         # truncates to 44
@@ -512,24 +508,12 @@ bad, err2: !i32 = @i32("abc")  # bad=0   err2=1
 <pre><code>f: f32    = 1.0
 bits: u32 = @bitcast(u32, f)   # 0x3F800000
 </code></pre>
-<h2 id="type-aliases"><a class="header" href="#type-aliases-1">Type Aliases</a></h2>
+<h2 id="type-aliases"><a class="header" href="#type-aliases">Type Aliases</a></h2>
 <pre><code>type int  = i32
 type uint = u32
 type byte = u8
 type cstr = *u8    # null-terminated C string
 </code></pre>
-<div style="break-before: page; page-break-before: always;"></div>
-<h1 id="mutability-1"><a class="header" href="#mutability-1">Mutability</a></h1>
-<div style="break-before: page; page-break-before: always;"></div>
-<h1 id="primitive-types-1"><a class="header" href="#primitive-types-1">Primitive Types</a></h1>
-<div style="break-before: page; page-break-before: always;"></div>
-<h1 id="strings--arrays"><a class="header" href="#strings--arrays">Strings &amp; Arrays</a></h1>
-<div style="break-before: page; page-break-before: always;"></div>
-<h1 id="slices-1"><a class="header" href="#slices-1">Slices</a></h1>
-<div style="break-before: page; page-break-before: always;"></div>
-<h1 id="type-casting-1"><a class="header" href="#type-casting-1">Type Casting</a></h1>
-<div style="break-before: page; page-break-before: always;"></div>
-<h1 id="type-aliases-1"><a class="header" href="#type-aliases-1">Type Aliases</a></h1>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="generics"><a class="header" href="#generics">Generics</a></h1>
 <p>Generic functions and types are parameterized over one or more type variables written in <code>[T]</code> after the name.</p>
@@ -573,7 +557,7 @@ fn find[T](s: []T, pred: fn(T) -&gt; bool) -&gt; Option[T] {
 <p>Generics are compiled to concrete, specialized versions at the call site — the same approach as C++ templates, with no runtime overhead.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="functions"><a class="header" href="#functions">Functions</a></h1>
-<h2 id="declaration"><a class="header" href="#declaration-1">Declaration</a></h2>
+<h2 id="declaration"><a class="header" href="#declaration">Declaration</a></h2>
 <pre><code>fn add(a: i32, b: i32) -&gt; i32 {
     ret a + b
 }
@@ -639,10 +623,10 @@ result: i32 = op(3, 4)
 fn double(x: i32) -&gt; i32 { ret x * 2 }
 y: i32 = apply(double, 5)   # 10
 </code></pre>
-<h2 id="function-pointers"><a class="header" href="#function-pointers-1">Function Pointers</a></h2>
+<h2 id="function-pointers"><a class="header" href="#function-pointers">Function Pointers</a></h2>
 <p>Bare function references (like <code>double</code> above) are plain pointers — zero overhead.</p>
 <p>Closures that capture the environment are not yet supported (planned for a future version).</p>
-<h2 id="extern--ffi"><a class="header" href="#extern--ffi-1">Extern / FFI</a></h2>
+<h2 id="extern--ffi"><a class="header" href="#extern--ffi">Extern / FFI</a></h2>
 <p>To call C functions, declare them with <code>extern</code>:</p>
 <pre><code>extern fn printf(fmt: *u8, ...) -&gt; i32
 extern fn malloc(size: usize) -&gt; *u8
@@ -662,16 +646,6 @@ extern fn free(p: *u8)
 </code></pre>
 <p>Mutual recursion is supported because <code>przp</code> does a two-pass compilation — all top-level names are visible regardless of source order.</p>
 <div style="break-before: page; page-break-before: always;"></div>
-<h1 id="declaration-1"><a class="header" href="#declaration-1">Declaration</a></h1>
-<div style="break-before: page; page-break-before: always;"></div>
-<h1 id="failable-return-"><a class="header" href="#failable-return-">Failable Return (!)</a></h1>
-<div style="break-before: page; page-break-before: always;"></div>
-<h1 id="inline--variadic"><a class="header" href="#inline--variadic">Inline &amp; Variadic</a></h1>
-<div style="break-before: page; page-break-before: always;"></div>
-<h1 id="function-pointers-1"><a class="header" href="#function-pointers-1">Function Pointers</a></h1>
-<div style="break-before: page; page-break-before: always;"></div>
-<h1 id="extern--ffi-1"><a class="header" href="#extern--ffi-1">Extern / FFI</a></h1>
-<div style="break-before: page; page-break-before: always;"></div>
 <h1 id="control-flow"><a class="header" href="#control-flow">Control Flow</a></h1>
 <h2 id="if-elif-else"><a class="header" href="#if-elif-else">if, elif, else</a></h2>
 <pre><code>x: i32 = 42
@@ -685,7 +659,7 @@ if x &gt; 100 {
 }
 </code></pre>
 <p>Braces are required. Conditions do not need parentheses.</p>
-<h2 id="loops"><a class="header" href="#loops-1">Loops</a></h2>
+<h2 id="loops"><a class="header" href="#loops">Loops</a></h2>
 <h3 id="loop"><a class="header" href="#loop"><code>loop</code></a></h3>
 <p>Infinite loop:</p>
 <pre><code>i: i32 = 0
@@ -785,12 +759,6 @@ when s {
 }
 </code></pre>
 <div style="break-before: page; page-break-before: always;"></div>
-<h1 id="if--elif--else"><a class="header" href="#if--elif--else">if / elif / else</a></h1>
-<div style="break-before: page; page-break-before: always;"></div>
-<h1 id="when-pattern-match"><a class="header" href="#when-pattern-match">when (Pattern Match)</a></h1>
-<div style="break-before: page; page-break-before: always;"></div>
-<h1 id="loops-1"><a class="header" href="#loops-1">Loops</a></h1>
-<div style="break-before: page; page-break-before: always;"></div>
 <h1 id="defer"><a class="header" href="#defer">Defer</a></h1>
 <p><code>defer</code> pushes a statement onto a LIFO stack that runs when the enclosing scope exits — whether by <code>ret</code>, <code>break</code>, <code>continue</code>, or falling off the end.</p>
 <h2 id="basic-usage"><a class="header" href="#basic-usage">Basic Usage</a></h2>
@@ -847,7 +815,7 @@ defer @pf("3\n")
 </ul>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="structs--impl"><a class="header" href="#structs--impl">Structs &amp; Impl</a></h1>
-<h2 id="structs"><a class="header" href="#structs-1">Structs</a></h2>
+<h2 id="structs"><a class="header" href="#structs">Structs</a></h2>
 <pre><code>struct Vec2 {
     x: f64,
     y: f64,
@@ -877,7 +845,7 @@ l: Line = Line{
 
 dx: f64 = l.end.x - l.start.x
 </code></pre>
-<h2 id="impl-blocks"><a class="header" href="#impl-blocks-1">Impl Blocks</a></h2>
+<h2 id="impl-blocks"><a class="header" href="#impl-blocks">Impl Blocks</a></h2>
 <p><code>impl</code> attaches functions to a struct. They are called with dot syntax. The first parameter conventionally named <code>self</code> receives the struct by value; use <code>*Self</code> for mutation.</p>
 <pre><code>impl Vec2 {
     fn len(self: Vec2) -&gt; f64 {
@@ -896,7 +864,7 @@ v: Vec2 = Vec2{.x=3.0, .y=4.0}
 v.scale(2.0)
 @pf("{v.x}\n")         # 6.0
 </code></pre>
-<h2 id="static-methods"><a class="header" href="#static-methods-1">Static Methods</a></h2>
+<h2 id="static-methods"><a class="header" href="#static-methods">Static Methods</a></h2>
 <p>Methods with no <code>self</code> parameter are static — called on the type directly:</p>
 <pre><code>impl Vec2 {
     fn add(a: Vec2, b: Vec2) -&gt; Vec2 {
@@ -939,14 +907,8 @@ struct CacheLine {
 }
 </code></pre>
 <div style="break-before: page; page-break-before: always;"></div>
-<h1 id="structs-1"><a class="header" href="#structs-1">Structs</a></h1>
-<div style="break-before: page; page-break-before: always;"></div>
-<h1 id="impl-blocks-1"><a class="header" href="#impl-blocks-1">Impl Blocks</a></h1>
-<div style="break-before: page; page-break-before: always;"></div>
-<h1 id="static-methods-1"><a class="header" href="#static-methods-1">Static Methods</a></h1>
-<div style="break-before: page; page-break-before: always;"></div>
 <h1 id="enums--unions"><a class="header" href="#enums--unions">Enums &amp; Unions</a></h1>
-<h2 id="enums"><a class="header" href="#enums-1">Enums</a></h2>
+<h2 id="enums"><a class="header" href="#enums">Enums</a></h2>
 <pre><code>enum Direction {
     North,
     South,
@@ -963,7 +925,7 @@ when d {
     Direction.West  =&gt; @pf("going west\n"),
 }
 </code></pre>
-<h2 id="tagged-unions"><a class="header" href="#tagged-unions-1">Tagged Unions</a></h2>
+<h2 id="tagged-unions"><a class="header" href="#tagged-unions">Tagged Unions</a></h2>
 <p>Each variant can carry a value:</p>
 <pre><code>enum Shape {
     Circle(f64),
@@ -1028,7 +990,7 @@ c2: Color = @Color(2)   # Color.Blue
     EIO    = 5,
 }
 </code></pre>
-<h2 id="unions"><a class="header" href="#unions-1">Unions</a></h2>
+<h2 id="unions"><a class="header" href="#unions">Unions</a></h2>
 <p><code>union</code> overlays all fields at the same memory address (unsafe):</p>
 <pre><code>union FloatBits {
     f: f32,
@@ -1049,12 +1011,6 @@ enum Result[T, E] { Ok(T), Err(E) }
 </code></pre>
 <p>These work alongside the <code>!T</code> failable return syntax.</p>
 <div style="break-before: page; page-break-before: always;"></div>
-<h1 id="enums-1"><a class="header" href="#enums-1">Enums</a></h1>
-<div style="break-before: page; page-break-before: always;"></div>
-<h1 id="unions-1"><a class="header" href="#unions-1">Unions</a></h1>
-<div style="break-before: page; page-break-before: always;"></div>
-<h1 id="tagged-unions-1"><a class="header" href="#tagged-unions-1">Tagged Unions</a></h1>
-<div style="break-before: page; page-break-before: always;"></div>
 <h1 id="pointers--memory"><a class="header" href="#pointers--memory">Pointers &amp; Memory</a></h1>
 <p>Perzephxne has no garbage collector. Memory is managed manually or with smart pointers from the standard library.</p>
 <h2 id="raw-pointers"><a class="header" href="#raw-pointers">Raw Pointers</a></h2>
@@ -1063,7 +1019,7 @@ p: *i32 = &amp;x      # address-of
 v: i32  = p.*     # dereference
 p.* = 100         # write through pointer
 </code></pre>
-<h2 id="pointer-arithmetic"><a class="header" href="#pointer-arithmetic-1">Pointer Arithmetic</a></h2>
+<h2 id="pointer-arithmetic"><a class="header" href="#pointer-arithmetic">Pointer Arithmetic</a></h2>
 <pre><code>arr: [5]i32 = [1, 2, 3, 4, 5]
 p: *i32 = &amp;arr[0]
 q: *i32 = p + 2    # points to arr[2]
@@ -1134,10 +1090,6 @@ ok: bool = parse("42", &amp;n)
 <pre><code>extern struct SDL_Window   # declared but not defined
 type WindowHandle = *SDL_Window
 </code></pre>
-<div style="break-before: page; page-break-before: always;"></div>
-<h1 id="raw-pointers-"><a class="header" href="#raw-pointers-">Raw Pointers (*)</a></h1>
-<div style="break-before: page; page-break-before: always;"></div>
-<h1 id="pointer-arithmetic-1"><a class="header" href="#pointer-arithmetic-1">Pointer Arithmetic</a></h1>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="error-handling"><a class="header" href="#error-handling">Error Handling</a></h1>
 <p>Errors in Perzephxne are values — not exceptions. There are no <code>try/catch</code> blocks.</p>
