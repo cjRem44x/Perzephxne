@@ -1343,9 +1343,22 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                          "ptr %%t%d, ptr @.fmt.d, i32 %s)\n", buf, src.buf);
                 emit(cg, "  %%t%d = getelementptr [32 x i8], ptr %%t%d, i32 0, i32 0\n",
                      t, buf);
-            } else if (!strcmp(dst, "i32") && src_ty &&
-                       (src_ty->kind == TY_STR)) {
-                emit(cg, "  %%t%d = call i32 @atoi(ptr %s)\n", t, src.buf);
+            } else if (src_ty && src_ty->kind == TY_STR
+                       && (!strcmp(dst,"i32") || !strcmp(dst,"i64") || !strcmp(dst,"usize")
+                           || !strcmp(dst,"f32") || !strcmp(dst,"f64"))) {
+                /* str → number: extract .data ptr from { ptr, i64 } first */
+                int dp = new_tmp(cg);
+                emit(cg, "  %%t%d = extractvalue { ptr, i64 } %s, 0\n", dp, src.buf);
+                if (!strcmp(dst,"i32"))
+                    emit(cg, "  %%t%d = call i32 @atoi(ptr %%t%d)\n", t, dp);
+                else if (!strcmp(dst,"i64") || !strcmp(dst,"usize"))
+                    emit(cg, "  %%t%d = call i64 @atol(ptr %%t%d)\n", t, dp);
+                else if (!strcmp(dst,"f32")) {
+                    int td = new_tmp(cg);
+                    emit(cg, "  %%t%d = call double @atof(ptr %%t%d)\n", td, dp);
+                    emit(cg, "  %%t%d = fptrunc double %%t%d to float\n", t, td);
+                } else /* f64 */
+                    emit(cg, "  %%t%d = call double @atof(ptr %%t%d)\n", t, dp);
             } else {
                 /* numeric cast — choose trunc/sext/zext based on bit widths */
                 const char *src_llt = src_ty ? llvm_type(src_ty) : "i32";
@@ -3067,6 +3080,8 @@ int codegen(Module *mod, FILE *out, int release) {
     emit(&cg, "declare i32 @fprintf(ptr, ptr noundef, ...)\n");
     emit(&cg, "declare i32 @sprintf(ptr, ptr, ...)\n");
     emit(&cg, "declare i32 @atoi(ptr)\n");
+    emit(&cg, "declare i64 @atol(ptr)\n");
+    emit(&cg, "declare double @atof(ptr)\n");
     emit(&cg, "declare i64 @strlen(ptr)\n");
     emit(&cg, "declare ptr @malloc(i64)\n");
     emit(&cg, "declare ptr @realloc(ptr, i64)\n");
