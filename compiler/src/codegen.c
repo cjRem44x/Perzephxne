@@ -1099,6 +1099,22 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                 return val_str("0");
             }
 
+            /* @align(T) — alignment of T in bytes: offset of T in { i8, T } from null */
+            if (!strcmp(name, "align")) {
+                if (out_ty) {
+                    Type *ut = ARENA_NEW(cg->arena, Type); ut->kind = TY_USIZE; *out_ty = ut;
+                }
+                if (e->builtin.args.len >= 1) {
+                    Type *ta = e->builtin.args.data[0]->ty;
+                    const char *llt = ta ? llvm_type(ta) : "i8";
+                    int t = new_tmp(cg);
+                    emit(cg, "  %%t%d = ptrtoint ptr getelementptr ({ i8, %s }, ptr null, i32 0, i32 1) to i64\n",
+                         t, llt);
+                    return val_tmp(t);
+                }
+                return val_str("1");
+            }
+
             /* @len — always returns i64 */
             if (!strcmp(name, "len")) {
                 if (out_ty) {
@@ -1326,6 +1342,21 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                 fatal_at(e->span, "unknown @err.%s", errname);
             }
 
+            /* @bitcast(DstType, val) — reinterpret bits of val as DstType (same size) */
+            if (!strcmp(name, "bitcast")) {
+                if (e->builtin.args.len < 2)
+                    fatal_at(e->span, "@bitcast requires two arguments: @bitcast(Type, val)");
+                Type *dst_ty = e->builtin.args.data[0]->ty;
+                Type *src_ty2 = NULL;
+                Val src2 = cg_expr(cg, e->builtin.args.data[1], &src_ty2);
+                const char *src_llt2 = src_ty2 ? llvm_type(src_ty2) : "i32";
+                const char *dst_llt2 = dst_ty  ? llvm_type(dst_ty)  : "i32";
+                int tb = new_tmp(cg);
+                emit(cg, "  %%t%d = bitcast %s %s to %s\n", tb, src_llt2, src2.buf, dst_llt2);
+                if (out_ty && dst_ty) *out_ty = dst_ty;
+                return val_tmp(tb);
+            }
+
             fatal_at(e->span, "unknown builtin '@%s'", name);
         }
 
@@ -1336,13 +1367,32 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
             int t = new_tmp(cg);
 
             if (!strcmp(dst, "str")) {
-                /* int/float → string: call sprintf into a temp buffer — simplified */
+                /* int/float → string via sprintf into a 32-byte stack buffer;
+                   returns a { ptr, i64 } str fat pointer. */
                 int buf = new_tmp(cg);
                 emit(cg, "  %%t%d = alloca [32 x i8]\n", buf);
-                emit(cg, "  call i32 (ptr, ptr, ...) @sprintf("
-                         "ptr %%t%d, ptr @.fmt.d, i32 %s)\n", buf, src.buf);
-                emit(cg, "  %%t%d = getelementptr [32 x i8], ptr %%t%d, i32 0, i32 0\n",
-                     t, buf);
+                int cptr = new_tmp(cg);
+                emit(cg, "  %%t%d = getelementptr [32 x i8], ptr %%t%d, i32 0, i32 0\n", cptr, buf);
+                int is_src_float = src_ty && (src_ty->kind == TY_F32 || src_ty->kind == TY_F64);
+                if (is_src_float) {
+                    Val sv = src;
+                    if (src_ty->kind == TY_F32) {
+                        int tp = new_tmp(cg);
+                        emit(cg, "  %%t%d = fpext float %s to double\n", tp, src.buf);
+                        sv = val_tmp(tp);
+                    }
+                    emit(cg, "  call i32 (ptr, ptr, ...) @sprintf("
+                             "ptr %%t%d, ptr @.fmt.f, double %s)\n", cptr, sv.buf);
+                } else {
+                    emit(cg, "  call i32 (ptr, ptr, ...) @sprintf("
+                             "ptr %%t%d, ptr @.fmt.d, i32 %s)\n", cptr, src.buf);
+                }
+                int slen = new_tmp(cg);
+                emit(cg, "  %%t%d = call i64 @strlen(ptr %%t%d)\n", slen, cptr);
+                int f1 = new_tmp(cg);
+                emit(cg, "  %%t%d = insertvalue { ptr, i64 } undef, ptr %%t%d, 0\n", f1, cptr);
+                emit(cg, "  %%t%d = insertvalue { ptr, i64 } %%t%d, i64 %%t%d, 1\n", t, f1, slen);
+                if (out_ty) { Type *st = ARENA_NEW(cg->arena, Type); st->kind = TY_STR; *out_ty = st; }
             } else if (src_ty && src_ty->kind == TY_STR && !strcmp(dst, "bool")) {
                 /* str → bool: "true" or "1" → true, anything else → false (no failable) */
                 int dp2 = new_tmp(cg);
@@ -2255,22 +2305,31 @@ static void cg_stmt(CG *cg, Stmt *s) {
                         emit(cg, "  store i32 %%t%d, ptr %%t%d\n", ev, alloca);
                     } else {
                         const char *store_ty = init_ty ? effective_llvm_type(cg, init_ty) : llt;
-                        /* coerce integer width if alloca type differs from init type */
+                        /* coerce type if alloca type differs from init type */
                         if (strcmp(store_ty, llt) != 0) {
-                            int sv = 0, lv = 0;
-                            if (!strcmp(store_ty,"i8"))  sv=8; else if (!strcmp(store_ty,"i16")) sv=16;
-                            else if (!strcmp(store_ty,"i32")) sv=32; else if (!strcmp(store_ty,"i64")) sv=64;
-                            if (!strcmp(llt,"i8"))  lv=8; else if (!strcmp(llt,"i16")) lv=16;
-                            else if (!strcmp(llt,"i32")) lv=32; else if (!strcmp(llt,"i64")) lv=64;
-                            if (sv && lv && sv != lv) {
+                            /* float width coercion: double → float */
+                            if (!strcmp(store_ty,"double") && !strcmp(llt,"float")) {
                                 int ct = new_tmp(cg);
-                                int is_signed = init_ty ? type_is_signed(init_ty) : 0;
-                                const char *op = (lv < sv) ? "trunc"
-                                               : (is_signed ? "sext" : "zext");
-                                emit(cg, "  %%t%d = %s %s %s to %s\n",
-                                     ct, op, store_ty, init.buf, llt);
+                                emit(cg, "  %%t%d = fptrunc double %s to float\n", ct, init.buf);
                                 init = val_tmp(ct);
                                 store_ty = llt;
+                            /* integer width coercion */
+                            } else {
+                                int sv = 0, lv = 0;
+                                if (!strcmp(store_ty,"i8"))  sv=8; else if (!strcmp(store_ty,"i16")) sv=16;
+                                else if (!strcmp(store_ty,"i32")) sv=32; else if (!strcmp(store_ty,"i64")) sv=64;
+                                if (!strcmp(llt,"i8"))  lv=8; else if (!strcmp(llt,"i16")) lv=16;
+                                else if (!strcmp(llt,"i32")) lv=32; else if (!strcmp(llt,"i64")) lv=64;
+                                if (sv && lv && sv != lv) {
+                                    int ct = new_tmp(cg);
+                                    int is_signed = init_ty ? type_is_signed(init_ty) : 0;
+                                    const char *op = (lv < sv) ? "trunc"
+                                                   : (is_signed ? "sext" : "zext");
+                                    emit(cg, "  %%t%d = %s %s %s to %s\n",
+                                         ct, op, store_ty, init.buf, llt);
+                                    init = val_tmp(ct);
+                                    store_ty = llt;
+                                }
                             }
                         }
                         emit(cg, "  store %s %s, ptr %%t%d\n", store_ty, init.buf, alloca);
@@ -3193,7 +3252,8 @@ int codegen(Module *mod, FILE *out, int release) {
     emit(&cg, "@__przp_argv = internal global ptr null\n\n");
 
     /* format string constants */
-    emit(&cg, "@.fmt.d = private constant [3 x i8] c\"%%d\\00\"\n\n");
+    emit(&cg, "@.fmt.d = private constant [3 x i8] c\"%%d\\00\"\n");
+    emit(&cg, "@.fmt.f = private constant [3 x i8] c\"%%f\\00\"\n\n");
 
     /* enum variant tables (no IR to emit — enums are integer constants) */
     for (size_t i = 0; i < mod->items.len; i++) {
