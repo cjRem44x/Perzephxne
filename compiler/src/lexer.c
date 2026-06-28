@@ -202,6 +202,7 @@ static TokenKind keyword_or_ident(const char *s) {
     if (!strcmp(s, "break"))    return TOK_BREAK;
     if (!strcmp(s, "continue")) return TOK_CONTINUE;
     if (!strcmp(s, "asm"))      return TOK_ASM;
+    if (!strcmp(s, "goto"))     return TOK_GOTO;
     if (!strcmp(s, "_"))        return TOK_UNDER;
     return TOK_IDENT;
 }
@@ -299,7 +300,10 @@ Token lexer_next(Lexer *l) {
         case '}': TOK1(TOK_RBRACE);
         case '[': TOK1(TOK_LBRACKET);
         case ']': TOK1(TOK_RBRACKET);
-        case ':': TOK1(TOK_COLON);
+        case ':':
+            if (peek(l) == '=') { advance(l); TOK1(TOK_COLONEQ); }
+            if (peek(l) == ':') { advance(l); TOK1(TOK_COLONCOLON); }
+            TOK1(TOK_COLON);
         case ',': TOK1(TOK_COMMA);
         case ';': TOK1(TOK_SEMI);
         default:
@@ -342,8 +346,9 @@ const char *tok_kind_str(TokenKind k) {
         case TOK_NULL:     return "'null'";
         case TOK_BREAK:    return "'break'";
         case TOK_CONTINUE: return "'continue'";
-        case TOK_ASM:      return "'asm'";
-        case TOK_IDENT:    return "identifier";
+        case TOK_ASM:        return "'asm'";
+        case TOK_GOTO:       return "'goto'";
+        case TOK_IDENT:      return "identifier";
         case TOK_BUILTIN:  return "builtin";
         case TOK_UNDER:    return "'_'";
         case TOK_PLUS:     return "'+'";
@@ -382,9 +387,11 @@ const char *tok_kind_str(TokenKind k) {
         case TOK_DOTCARET: return "'.^'";
         case TOK_DOTDOT:   return "'..'";
         case TOK_DOTDOTEQ: return "'..='";
-        case TOK_COLON:    return "':'";
-        case TOK_COMMA:    return "','";
-        case TOK_SEMI:     return "';'";
+        case TOK_COLON:      return "':'";
+        case TOK_COLONEQ:    return "':='";
+        case TOK_COLONCOLON: return "'::'";
+        case TOK_COMMA:      return "','";
+        case TOK_SEMI:       return "';'";
         case TOK_LPAREN:   return "'('";
         case TOK_RPAREN:   return "')'";
         case TOK_LBRACE:   return "'{'";

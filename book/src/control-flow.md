@@ -138,6 +138,40 @@ label: str = when x {
 }
 ```
 
+## Labels and `goto`
+
+Labels mark a position within a function. `goto` jumps to a label. Both are **function-internal** — a label cannot be reached from outside the function it is declared in.
+
+```
+fn process(skip: bool) {
+    if skip { goto done }
+
+    @pf("doing work\n")
+    # ... more statements ...
+
+    done:
+    @pf("finished\n")
+}
+```
+
+Labels can appear before any statement, including in the middle of a block. Forward and backward jumps are both allowed:
+
+```
+fn retry_loop() {
+    attempts: i64 = 0
+
+    try_again:
+    attempts += 1
+    if attempts < 3 { goto try_again }
+
+    @pf("gave up after {attempts} tries\n")
+}
+```
+
+Jumping over a variable declaration is allowed. Code between the `goto` and the label is simply skipped.
+
+`goto` is intentionally restricted to the current function to avoid the classic C pitfall of jumping into another function's stack frame.
+
 ## `ret`
 
 Return from the current function:

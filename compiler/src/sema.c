@@ -75,6 +75,11 @@ typedef struct {
     Type   *ty_u8,   *ty_u16,  *ty_u32, *ty_u64, *ty_usize;
     Type   *ty_f16,  *ty_f32,  *ty_f64;
     Type   *ty_str,  *ty_char, *ty_any;
+    /* function-level label/goto tracking (reset per-function in check_fn) */
+    struct { const char *name; Span span; } fn_labels[64], fn_gotos[64];
+    size_t fn_label_count, fn_goto_count;
+    /* return-type inference for functions with no explicit -> type */
+    Type   *inferred_ret;
 } Sema;
 
 /* ── Helpers ──────────────────────────────────────────────────────────────── */
@@ -178,6 +183,18 @@ static int ty_is_numeric(Type *t) {
     return ty_is_int(t) || ty_is_float(t);
 }
 
+/* Widen an inferred type to the largest natural hardware type.
+   Integer literals become i64, smaller floats become f64, etc. */
+static Type *widen_inferred(Sema *s, Type *ty) {
+    if (!ty) return NULL;
+    switch (ty->kind) {
+        case TY_I8:  case TY_I16: case TY_I32: return s->ty_i64;
+        case TY_U8:  case TY_U16: case TY_U32: return s->ty_u64;
+        case TY_F16: case TY_F32:               return s->ty_f64;
+        default:                                return ty;
+    }
+}
+
 static int ty_is_ptr(Type *t) {
     if (!t) return 0;
     return t->kind == TY_PTR || t->kind == TY_SMART_PTR;
@@ -239,6 +256,9 @@ static int ty_coerces(Type *from, Type *to) {
     if (to->kind == TY_FAILABLE && ty_coerces(from, to->ptr.inner)) return 1;
     /* !T coerces to T (extract value part in failable destructure) */
     if (from->kind == TY_FAILABLE && ty_coerces(from->ptr.inner, to)) return 1;
+    /* [N]T1 coerces to [N]T2 if T1 coerces to T2 (e.g. [3]i32 → [3]u8) */
+    if (from->kind == TY_ARRAY && to->kind == TY_ARRAY
+            && ty_coerces(from->array.inner, to->array.inner)) return 1;
     return 0;
 }
 
@@ -431,12 +451,30 @@ static Type *check_expr(Sema *s, Expr *e) {
                 case BINOP_RANGE: case BINOP_RANGE_INC:
                     e->ty = NULL; /* range used in for, not a value */
                     break;
-                default:
-                    /* arithmetic/bitwise: take the "wider" type */
-                    if (lt && ty_is_numeric(lt)) e->ty = lt;
+                default: {
+                    /* arithmetic/bitwise: pick the wider/more-typed operand.
+                       i32 (default int literal) yields to any wider integer. */
+                    int lw = 0, rw = 0;
+                    if (lt) switch (lt->kind) {
+                        case TY_I8:  case TY_U8:  lw=8;  break;
+                        case TY_I16: case TY_U16: lw=16; break;
+                        case TY_I32: case TY_U32: lw=32; break;
+                        case TY_I64: case TY_U64: case TY_USIZE: lw=64; break;
+                        default: break;
+                    }
+                    if (rt) switch (rt->kind) {
+                        case TY_I8:  case TY_U8:  rw=8;  break;
+                        case TY_I16: case TY_U16: rw=16; break;
+                        case TY_I32: case TY_U32: rw=32; break;
+                        case TY_I64: case TY_U64: case TY_USIZE: rw=64; break;
+                        default: break;
+                    }
+                    if (lw && rw) e->ty = (rw > lw) ? rt : lt;
+                    else if (lt && ty_is_numeric(lt)) e->ty = lt;
                     else if (rt && ty_is_numeric(rt)) e->ty = rt;
                     else e->ty = s->ty_i32;
                     break;
+                }
             }
             /* type compatibility check (skip pointer arithmetic cases) */
             if (!ptr_arith && lt && rt && !ty_eq(lt, rt)
@@ -755,8 +793,23 @@ static void check_stmt(Sema *s, Stmt *st) {
                     ty_str(decl_ty), ty_str(init_ty));
             }
 
-            /* infer type from init if not declared */
+            /* infer type from init if not declared.
+               For := and ::, widen small types to hardware-native width, but ONLY
+               when the initializer is a bare literal — a new value being written for
+               the first time.  When the RHS is a call, variable, or expression, the
+               value already has a concrete type and widening would be surprising. */
             Type *ty = decl_ty ? decl_ty : init_ty;
+            if (!decl_ty && st->let.infer && ty) {
+                int is_bare_lit = st->let.init &&
+                    (st->let.init->kind == EXPR_INT   || st->let.init->kind == EXPR_FLOAT ||
+                     st->let.init->kind == EXPR_BOOL  || st->let.init->kind == EXPR_CHAR  ||
+                     st->let.init->kind == EXPR_STR);
+                if (is_bare_lit)
+                    ty = widen_inferred(s, ty);
+            }
+            /* write resolved type back so codegen gets the correct alloca type */
+            if (!st->let.ty && ty)
+                st->let.ty = ty;
 
             /* handle failable: val, err: !T = func() */
             if (ty && ty->kind == TY_FAILABLE) {
@@ -803,6 +856,9 @@ static void check_stmt(Sema *s, Stmt *st) {
                 else if (vt && !ty_coerces(vt, s->cur_ret))
                     sema_error(s, st->span, "return type mismatch: got '%s', expected '%s'",
                                ty_str(vt), ty_str(s->cur_ret));
+            } else if (vt && !s->inferred_ret) {
+                /* collect first return type for inferred-return functions */
+                s->inferred_ret = vt;
             }
             break;
         }
@@ -956,6 +1012,32 @@ static void check_stmt(Sema *s, Stmt *st) {
         case STMT_CONTINUE:
             break;
 
+        case STMT_LABEL: {
+            /* register label in function-level table; check for duplicates */
+            int dup = 0;
+            for (size_t i = 0; i < s->fn_label_count; i++) {
+                if (!strcmp(s->fn_labels[i].name, st->label_.name)) {
+                    sema_error(s, st->span, "duplicate label '%s'", st->label_.name);
+                    dup = 1; break;
+                }
+            }
+            if (!dup && s->fn_label_count < 64) {
+                s->fn_labels[s->fn_label_count].name = st->label_.name;
+                s->fn_labels[s->fn_label_count].span = st->span;
+                s->fn_label_count++;
+            }
+            break;
+        }
+
+        case STMT_GOTO:
+            /* record goto target; validated at end of check_fn */
+            if (s->fn_goto_count < 64) {
+                s->fn_gotos[s->fn_goto_count].name = st->goto_.name;
+                s->fn_gotos[s->fn_goto_count].span = st->span;
+                s->fn_goto_count++;
+            }
+            break;
+
         default:
             break;
     }
@@ -974,13 +1056,43 @@ static void check_fn(Sema *s, Item *item) {
     }
 
     Type *ret = check_type(s, item->fn.ret);
-    Type *prev_ret = s->cur_ret;
-    s->cur_ret = ret;
+    Type *prev_ret    = s->cur_ret;
+    Type *prev_inf    = s->inferred_ret;
+    size_t prev_lblc  = s->fn_label_count;
+    size_t prev_gotoc = s->fn_goto_count;
+    s->cur_ret        = ret;       /* NULL → inferring */
+    s->inferred_ret   = NULL;
+    s->fn_label_count = 0;
+    s->fn_goto_count  = 0;
 
     for (size_t i = 0; i < item->fn.body.len; i++)
         check_stmt(s, item->fn.body.data[i]);
 
-    s->cur_ret = prev_ret;
+    /* apply inferred return type when no explicit annotation was given.
+       Use the exact type from the ret expression — no widening here.
+       Widening only applies to := / :: variable bindings. */
+    if (!item->fn.ret && s->inferred_ret) {
+        item->fn.ret = s->inferred_ret;
+        /* sync the symbol-table TY_FN entry (registered before inference ran) */
+        Sym *fsym = lookup(s, item->name);
+        if (fsym && fsym->ty && fsym->ty->kind == TY_FN)
+            fsym->ty->fn.ret = item->fn.ret;
+    }
+
+    /* validate goto targets exist as labels in this function */
+    for (size_t i = 0; i < s->fn_goto_count; i++) {
+        int found = 0;
+        for (size_t j = 0; j < s->fn_label_count; j++)
+            if (!strcmp(s->fn_gotos[i].name, s->fn_labels[j].name)) { found = 1; break; }
+        if (!found)
+            sema_error(s, s->fn_gotos[i].span,
+                       "goto target '%s' not defined in this function", s->fn_gotos[i].name);
+    }
+
+    s->cur_ret        = prev_ret;
+    s->inferred_ret   = prev_inf;
+    s->fn_label_count = prev_lblc;
+    s->fn_goto_count  = prev_gotoc;
     pop_scope(s);
 }
 

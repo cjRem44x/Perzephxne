@@ -166,6 +166,23 @@ Plain assignment silently extracts the value (overflow still sets the flag, but 
 result: i32 = @checked_add(a, b)   # flag ignored
 ```
 
+## Random Numbers
+
+| Builtin | Signature | Description |
+|---|---|---|
+| `@rng(T, min, max)` | `fn(type, T, T) -> T` | random integer or float in `[min, max]` inclusive |
+| `@rng_seed(n)` | `fn(i32)` | seed the RNG (default: unseeded / stdlib `rand`) |
+
+`T` must be an integer or float type. Pass the type name as the first argument:
+
+```
+x: i32  = @rng(i32, 1, 6)       # roll a die
+y: f64  = @rng(f64, 0.0, 1.0)   # uniform float
+z: u64  = @rng(u64, 0, 100)     # unsigned range
+
+@rng_seed(42)                    # reproducible sequence
+```
+
 ## Assembly
 
 | Builtin | Description |

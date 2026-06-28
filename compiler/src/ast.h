@@ -167,6 +167,8 @@ typedef enum {
     STMT_BREAK,
     STMT_CONTINUE,
     STMT_BLOCK,
+    STMT_LABEL,   /* name: */
+    STMT_GOTO,    /* goto name */
 } StmtKind;
 
 typedef struct { Expr *cond; StmtList body; } IfBranch;
@@ -181,6 +183,7 @@ struct Stmt {
             Type       *ty;        /* may be NULL (inferred) */
             int         mutable;   /* 1 = mutable (=), 0 = immutable (:) */
             Expr       *init;      /* may be NULL */
+            int         infer;     /* 1 = := or ::, widen to platform max type */
         } let;
 
         struct { Expr *target; AssignOp op; Expr *val; } assign;
@@ -208,6 +211,9 @@ struct Stmt {
         struct { const char *label; } cont;
 
         StmtList block;
+
+        struct { const char *name; } label_; /* STMT_LABEL */
+        struct { const char *name; } goto_;  /* STMT_GOTO  */
     };
 };
 
