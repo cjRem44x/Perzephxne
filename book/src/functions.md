@@ -1,6 +1,6 @@
 # Functions
 
-## Basic Syntax
+## Declaration
 
 ```
 fn add(a: i32, b: i32) -> i32 {
@@ -59,27 +59,24 @@ fn stats(s: []f64) -> (mean: f64, max: f64) {
 }
 ```
 
-## Failable Functions
+## Failable Return
 
-Use `!T` to indicate the function might return an error:
+Use `!T` as the return type to indicate the function might return an error. Return `@ok(val)` on success or `@err(code)` on failure:
 
 ```
-fn parse_int(s: str) -> !i32 {
-    # returns an error value on failure
+fn parse_port(s: str) -> !i32 {
+    val, err: !i32 = @i32(s)
+    if err != 0 { ret @err(1) }
+    if val < 1 || val > 65535 { ret @err(2) }
+    ret @ok(val)
 }
-
-n: !i32 = parse_int("abc")
-if n == @err { @pf("parse failed\n") }
 ```
 
-Use the `?` operator to propagate errors up:
+Callers destructure the result:
 
 ```
-fn load_config() -> !Config {
-    text: str    = read_file("config.toml")?
-    parsed: Config = parse_toml(text)?
-    ret parsed
-}
+port, err: !i32 = parse_port("8080")
+if err != 0 { @pf("invalid port (err=%d)\n", err) }
 ```
 
 ## Entry Point
@@ -115,13 +112,13 @@ fn double(x: i32) -> i32 { ret x * 2 }
 y: i32 = apply(double, 5)   # 10
 ```
 
-## Function Pointers vs Closures
+## Function Pointers
 
 Bare function references (like `double` above) are plain pointers — zero overhead.
 
 Closures that capture the environment are not yet supported (planned for a future version).
 
-## Extern Functions
+## Extern / FFI
 
 To call C functions, declare them with `extern`:
 
@@ -133,7 +130,7 @@ extern fn free(p: *u8)
 
 Variadic `...` is allowed in extern declarations only.
 
-## Inline and No-Inline Hints
+## Inline and Variadic
 
 ```
 @inline fn fast_path(x: i32) -> i32 { ret x * 2 }

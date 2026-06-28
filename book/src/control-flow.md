@@ -1,6 +1,6 @@
 # Control Flow
 
-## `if` / `elif` / `else`
+## if, elif, else
 
 ```
 x: i32 = 42
@@ -16,7 +16,9 @@ if x > 100 {
 
 Braces are required. Conditions do not need parentheses.
 
-## `loop`
+## Loops
+
+### `loop`
 
 Infinite loop:
 
@@ -29,7 +31,7 @@ loop {
 }
 ```
 
-## `while`
+### `while`
 
 ```
 i: i32 = 0
@@ -39,7 +41,7 @@ while i < 10 {
 }
 ```
 
-## `for` — Range
+### `for` — Range
 
 ```
 for i => 0..10 {      # 0, 1, ..., 9
@@ -51,7 +53,7 @@ for i => 0..=10 {     # 0, 1, ..., 10
 }
 ```
 
-## `for` — Iterator (slice / array)
+### `for` — Iterator (slice / array)
 
 ```
 nums: [5]i32 = [10, 20, 30, 40, 50]
@@ -69,7 +71,7 @@ for i, v => nums {
 }
 ```
 
-## `break` and `continue`
+### `break` and `continue`
 
 ```
 for i => 0..100 {
@@ -79,7 +81,7 @@ for i => 0..100 {
 }
 ```
 
-## `when` — Pattern Match
+## when
 
 `when` is exhaustive — the compiler enforces all cases are covered.
 

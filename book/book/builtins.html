@@ -35,10 +35,10 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-0abdca4e.js";
+            window.path_to_searchindex_js = "searchindex-9e5a952b.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-d2cdd05f.js"></script>
+        <script src="toc-283af563.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -188,19 +188,48 @@
 <tbody>
 <tr><td><code>@pf(fmt, ...)</code></td><td><code>fn(str, ...) -&gt; void</code></td><td>print formatted to stdout</td></tr>
 <tr><td><code>@epf(fmt, ...)</code></td><td><code>fn(str, ...) -&gt; void</code></td><td>print formatted to stderr</td></tr>
-<tr><td><code>@pf</code> uses <code>{expr}</code> inside strings for interpolation</td><td></td><td></td></tr>
+<tr><td><code>@fmt(fmt, ...)</code></td><td><code>fn(str, ...) -&gt; str</code></td><td>format to a heap-allocated string</td></tr>
+<tr><td><code>@cin(prompt?)</code></td><td><code>fn(str?) -&gt; str</code></td><td>read a line from stdin</td></tr>
 </tbody>
 </table>
 </div>
+<p><code>@pf</code>, <code>@epf</code>, and <code>@fmt</code> all support <code>{expr}</code> interpolation inside the format string:</p>
 <pre><code>name: str = "World"
 @pf("Hello, {name}!\n")
 @pf("sum = {1 + 2}\n")
+
+greeting: str = @fmt("Hello, {name}!")
 </code></pre>
+<p>Use <code>{{</code> and <code>}}</code> to emit literal braces.</p>
 <h2 id="type-casts"><a class="header" href="#type-casts">Type Casts</a></h2>
-<p><code>@T(val)</code> where T is any primitive type:</p>
-<p><code>@i8</code> <code>@i16</code> <code>@i32</code> <code>@i64</code> <code>@u8</code> <code>@u16</code> <code>@u32</code> <code>@u64</code> <code>@f16</code> <code>@f32</code> <code>@f64</code> <code>@usize</code> <code>@bool</code> <code>@char</code> <code>@str</code></p>
+<p><code>@T(val)</code> converts <code>val</code> to type <code>T</code>:</p>
+<p><code>@i8</code> <code>@i16</code> <code>@i32</code> <code>@i64</code> <code>@u8</code> <code>@u16</code> <code>@u32</code> <code>@u64</code> <code>@f32</code> <code>@f64</code> <code>@usize</code> <code>@bool</code> <code>@char</code> <code>@str</code></p>
 <pre><code>x: i32 = 300
-y: u8  = @u8(x)     # 44
+y: u8  = @u8(x)      # truncates to 44
+
+a: f64 = 3.7
+b: i32 = @i32(a)     # truncates to 3
+
+s: str = @str(99)    # → "99"
+c: char = @char(65)  # → 'A'
+</code></pre>
+<h3 id="string-to-number"><a class="header" href="#string-to-number">String to Number</a></h3>
+<p>Casting a <code>str</code> to any numeric type parses the string. On failure (non-numeric input, empty string, or partial match like <code>"12abc"</code>) the plain form returns zero:</p>
+<pre><code>n: i32 = @i32("42")      # 42
+z: i32 = @i32("hello")   # 0  — fallback to zero
+</code></pre>
+<p>Use the failable form to distinguish parse success from failure:</p>
+<pre><code>val, err: !i32 = @i32("42")
+@pf("val=%d err=%d\n", val, err)   # val=42 err=0
+
+bad, err2: !i32 = @i32("hello")
+@pf("val=%d err=%d\n", bad, err2)  # val=0  err=1
+</code></pre>
+<h3 id="bool-from-string"><a class="header" href="#bool-from-string"><code>@bool</code> from String</a></h3>
+<p><code>@bool(s)</code> returns <code>true</code> if <code>s</code> is <code>"true"</code> or <code>"1"</code>, <code>false</code> for anything else.</p>
+<pre><code>b1: bool = @bool("true")   # true
+b2: bool = @bool("1")      # true
+b3: bool = @bool("yes")    # false
 </code></pre>
 <h2 id="memory"><a class="header" href="#memory">Memory</a></h2>
 <div class="table-wrapper">
@@ -209,14 +238,23 @@ y: u8  = @u8(x)     # 44
 <tr><th>Builtin</th><th>Description</th></tr>
 </thead>
 <tbody>
-<tr><td><code>@sizeof(T)</code></td><td>byte size of type <code>T</code> at compile time</td></tr>
-<tr><td><code>@alignof(T)</code></td><td>alignment of type <code>T</code> at compile time</td></tr>
+<tr><td><code>@size(T)</code></td><td>byte size of type <code>T</code></td></tr>
+<tr><td><code>@align(T)</code></td><td>alignment of type <code>T</code></td></tr>
+<tr><td><code>@offsetof(T, field)</code></td><td>byte offset of a struct field</td></tr>
 <tr><td><code>@bitcast(T, val)</code></td><td>reinterpret bits — same size required</td></tr>
-<tr><td><code>@ptrof(name)</code></td><td>function pointer from name</td></tr>
-<tr><td><code>@addrof(name)</code></td><td>address as <code>usize</code></td></tr>
+<tr><td><code>@zeroed(T)</code></td><td>zero value of type <code>T</code></td></tr>
+<tr><td><code>@new(T)</code></td><td>heap-allocate one <code>T</code>, return <code>*T</code></td></tr>
+<tr><td><code>@clone(val)</code></td><td>heap-copy a value, return <code>*T</code></td></tr>
+<tr><td><code>@free(ptr)</code></td><td>free heap memory</td></tr>
+<tr><td><code>@memcpy(dst, src, n)</code></td><td>copy <code>n</code> bytes from src to dst</td></tr>
+<tr><td><code>@memmove(dst, src, n)</code></td><td>copy <code>n</code> bytes, handles overlap</td></tr>
+<tr><td><code>@memset(dst, byte, n)</code></td><td>fill <code>n</code> bytes with <code>byte</code></td></tr>
 </tbody>
 </table>
 </div>
+<pre><code>f: f32    = 1.0
+bits: u32 = @bitcast(u32, f)   # raw bit pattern — 0x3F800000
+</code></pre>
 <h2 id="collections"><a class="header" href="#collections">Collections</a></h2>
 <div class="table-wrapper">
 <table>
@@ -224,8 +262,7 @@ y: u8  = @u8(x)     # 44
 <tr><th>Builtin</th><th>Description</th></tr>
 </thead>
 <tbody>
-<tr><td><code>@len(arr_or_slice)</code></td><td>length at compile time (arrays) or runtime (slices)</td></tr>
-<tr><td><code>@cap(slice)</code></td><td>allocated capacity of a slice</td></tr>
+<tr><td><code>@len(arr_or_slice)</code></td><td>element count — compile time for arrays, runtime for slices</td></tr>
 </tbody>
 </table>
 </div>
@@ -240,9 +277,20 @@ y: u8  = @u8(x)     # 44
 <tr><td><code>@abs(x)</code></td><td>absolute value</td></tr>
 <tr><td><code>@min(a, b)</code></td><td>minimum</td></tr>
 <tr><td><code>@max(a, b)</code></td><td>maximum</td></tr>
-<tr><td><code>@clamp(v, lo, hi)</code></td><td>clamp to range</td></tr>
-<tr><td><code>@pow(base, exp)</code></td><td>power</td></tr>
-<tr><td><code>@log(x)</code></td><td>natural log</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="bit-operations"><a class="header" href="#bit-operations">Bit Operations</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Builtin</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>@clz(x)</code></td><td>count leading zeros</td></tr>
+<tr><td><code>@ctz(x)</code></td><td>count trailing zeros</td></tr>
+<tr><td><code>@popcount(x)</code></td><td>count set bits</td></tr>
+<tr><td><code>@bswap(x)</code></td><td>reverse byte order</td></tr>
 </tbody>
 </table>
 </div>
@@ -254,8 +302,9 @@ y: u8  = @u8(x)     # 44
 </thead>
 <tbody>
 <tr><td><code>@assert(cond, msg)</code></td><td>panic if false (debug only)</td></tr>
-<tr><td><code>@panic(msg)</code></td><td>unconditional panic with message and stack trace</td></tr>
+<tr><td><code>@panic(msg)</code></td><td>unconditional panic with message</td></tr>
 <tr><td><code>@unreachable()</code></td><td>mark code path as unreachable</td></tr>
+<tr><td><code>@todo()</code></td><td>placeholder — panics at runtime</td></tr>
 </tbody>
 </table>
 </div>
@@ -269,12 +318,13 @@ y: u8  = @u8(x)     # 44
 <tr><td><code>@debug</code></td><td><code>bool</code></td><td>true in debug builds</td></tr>
 <tr><td><code>@release</code></td><td><code>bool</code></td><td>true in release builds</td></tr>
 <tr><td><code>@os.linux</code></td><td><code>bool</code></td><td>target is Linux</td></tr>
-<tr><td><code>@os.macos</code></td><td><code>bool</code></td><td>target is macOS</td></tr>
+<tr><td><code>@os.mac</code></td><td><code>bool</code></td><td>target is macOS</td></tr>
 <tr><td><code>@os.windows</code></td><td><code>bool</code></td><td>target is Windows</td></tr>
-<tr><td><code>@arch.x86_64</code></td><td><code>bool</code></td><td>target CPU</td></tr>
-<tr><td><code>@arch.aarch64</code></td><td><code>bool</code></td><td>target CPU</td></tr>
-<tr><td><code>@endian.little</code></td><td><code>bool</code></td><td>little-endian target</td></tr>
-<tr><td><code>@ptr_width</code></td><td><code>usize</code></td><td>pointer size in bits</td></tr>
+<tr><td><code>@arch.x86_64</code></td><td><code>bool</code></td><td>target is x86-64</td></tr>
+<tr><td><code>@arch.arm64</code></td><td><code>bool</code></td><td>target is AArch64</td></tr>
+<tr><td><code>@arch.x86</code></td><td><code>bool</code></td><td>target is 32-bit x86</td></tr>
+<tr><td><code>@arch.arm</code></td><td><code>bool</code></td><td>target is 32-bit ARM</td></tr>
+<tr><td><code>@typeof(expr)</code></td><td><code>str</code></td><td>type name as a string constant</td></tr>
 </tbody>
 </table>
 </div>
@@ -286,27 +336,30 @@ y: u8  = @u8(x)     # 44
 </thead>
 <tbody>
 <tr><td><code>@args</code></td><td><code>-&gt; []str</code></td><td>command-line arguments</td></tr>
-<tr><td><code>@argc</code></td><td><code>-&gt; usize</code></td><td>argument count</td></tr>
 <tr><td><code>@exit(code)</code></td><td><code>fn(i32)</code></td><td>exit process immediately</td></tr>
-<tr><td><code>@env(name)</code></td><td><code>fn(str) -&gt; !str</code></td><td>read environment variable</td></tr>
 </tbody>
 </table>
 </div>
 <h2 id="checked-arithmetic"><a class="header" href="#checked-arithmetic">Checked Arithmetic</a></h2>
+<p>These return <code>!T</code> — use failable destructure to check for overflow:</p>
 <div class="table-wrapper">
 <table>
 <thead>
 <tr><th>Builtin</th><th>Description</th></tr>
 </thead>
 <tbody>
-<tr><td><code>@checked_add(a, b)</code></td><td>returns <code>!T</code> — error on overflow</td></tr>
-<tr><td><code>@checked_sub(a, b)</code></td><td>returns <code>!T</code> — error on overflow</td></tr>
-<tr><td><code>@checked_mul(a, b)</code></td><td>returns <code>!T</code> — error on overflow</td></tr>
-<tr><td><code>@wrapping_add(a, b)</code></td><td>always wraps (no panic in debug)</td></tr>
-<tr><td><code>@saturating_add(a, b)</code></td><td>clamps to type max/min</td></tr>
+<tr><td><code>@checked_add(a, b)</code></td><td>addition — error on overflow</td></tr>
+<tr><td><code>@checked_sub(a, b)</code></td><td>subtraction — error on overflow</td></tr>
+<tr><td><code>@checked_mul(a, b)</code></td><td>multiplication — error on overflow</td></tr>
 </tbody>
 </table>
 </div>
+<pre><code>val, err: !i32 = @checked_add(a, b)
+if err != 0 { @panic("integer overflow") }
+</code></pre>
+<p>Plain assignment silently extracts the value (overflow still sets the flag, but it is discarded):</p>
+<pre><code>result: i32 = @checked_add(a, b)   # flag ignored
+</code></pre>
 <h2 id="assembly"><a class="header" href="#assembly">Assembly</a></h2>
 <div class="table-wrapper">
 <table>
@@ -319,12 +372,6 @@ y: u8  = @u8(x)     # 44
 </tbody>
 </table>
 </div>
-<h2 id="string-interpolation"><a class="header" href="#string-interpolation">String Interpolation</a></h2>
-<p><code>@pf</code> and <code>@epf</code> support <code>{expr}</code> inside the format string:</p>
-<pre><code>x: i32 = 42
-@pf("x is {x} and doubled is {x * 2}\n")
-</code></pre>
-<p>Use <code>{{</code> and <code>}}</code> to emit literal braces.</p>
 
                     </main>
 

@@ -35,10 +35,10 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-0abdca4e.js";
+            window.path_to_searchindex_js = "searchindex-9e5a952b.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-d2cdd05f.js"></script>
+        <script src="toc-283af563.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -180,52 +180,42 @@
                         <h1 id="error-handling"><a class="header" href="#error-handling">Error Handling</a></h1>
 <p>Errors in Perzephxne are values — not exceptions. There are no <code>try/catch</code> blocks.</p>
 <h2 id="failable-return-type-t"><a class="header" href="#failable-return-type-t">Failable Return Type <code>!T</code></a></h2>
-<p>A function that can fail returns <code>!T</code>. The <code>!</code> wrapper holds either a success value of type <code>T</code> or an error.</p>
-<pre><code>fn open_file(path: str) -&gt; !str { ... }
-</code></pre>
-<h2 id="checking-for-errors"><a class="header" href="#checking-for-errors">Checking for Errors</a></h2>
-<pre><code>result: !str = open_file("data.txt")
-
-if result == @err {
-    @pf("failed: {result.err_msg}\n")
-} else {
-    @pf("{result}\n")
-}
-</code></pre>
-<h2 id="the--propagation-operator"><a class="header" href="#the--propagation-operator">The <code>?</code> Propagation Operator</a></h2>
-<p><code>?</code> unwraps a <code>!T</code> result — on error it immediately returns the error to the caller.</p>
-<pre><code>fn load() -&gt; !Config {
-    text: str    = read_file("cfg.toml")?
-    cfg:  Config = parse_toml(text)?
-    ret cfg
-}
-</code></pre>
-<p>Equivalent to:</p>
-<pre><code>fn load() -&gt; !Config {
-    text_r: !str = read_file("cfg.toml")
-    if text_r == @err { ret text_r.err }
-    text: str = text_r
-
-    cfg_r: !Config = parse_toml(text)
-    if cfg_r == @err { ret cfg_r.err }
-    ret cfg_r
-}
-</code></pre>
-<h2 id="returning-an-error"><a class="header" href="#returning-an-error">Returning an Error</a></h2>
+<p>A function that can fail returns <code>!T</code>. The caller receives a struct of <code>{ value: T, err: i32 }</code>. A zero error code means success; non-zero means failure.</p>
 <pre><code>fn divide(a: i32, b: i32) -&gt; !i32 {
-    if b == 0 { ret @err("division by zero") }
-    ret a / b
+    if b == 0 { ret @err(1) }
+    ret @ok(a / b)
 }
 </code></pre>
-<h2 id="custom-error-types"><a class="header" href="#custom-error-types">Custom Error Types</a></h2>
-<p>Define your own error enum and use it as the payload:</p>
-<pre><code>enum IoError {
-    NotFound,
-    PermissionDenied,
-    UnexpectedEof,
+<h2 id="returning-success-or-failure"><a class="header" href="#returning-success-or-failure">Returning Success or Failure</a></h2>
+<p>Use <code>@ok(val)</code> to return a successful value and <code>@err(code)</code> to return an error:</p>
+<pre><code>fn parse_port(s: str) -&gt; !i32 {
+    val, err: !i32 = @i32(s)
+    if err != 0 { ret @err(1) }          # not a number
+    if val &lt; 1 || val &gt; 65535 { ret @err(2) }
+    ret @ok(val)
 }
-
-fn read(path: str) -&gt; !str | IoError { ... }
+</code></pre>
+<h2 id="checking-the-result"><a class="header" href="#checking-the-result">Checking the Result</a></h2>
+<p>Use failable destructuring to separate the value and error flag:</p>
+<pre><code>port, err: !i32 = parse_port("8080")
+if err != 0 {
+    @pf("bad port (err=%d)\n", err)
+} else {
+    @pf("listening on %d\n", port)
+}
+</code></pre>
+<p>When you only care about the value and want to ignore errors, assign to a plain type — the value field is extracted automatically (zero on failure):</p>
+<pre><code>n: i32 = parse_port("8080")   # err flag discarded
+</code></pre>
+<h2 id="checked-arithmetic"><a class="header" href="#checked-arithmetic">Checked Arithmetic</a></h2>
+<p><code>@checked_add</code>, <code>@checked_sub</code>, and <code>@checked_mul</code> return <code>!T</code> with the overflow flag as the error:</p>
+<pre><code>val, err: !i32 = @checked_add(x, y)
+if err != 0 { @panic("integer overflow") }
+</code></pre>
+<h2 id="string-to-number-casts"><a class="header" href="#string-to-number-casts">String-to-Number Casts</a></h2>
+<p>All <code>@T(str)</code> casts return <code>!T</code> — error is 1 if the string isn’t a valid number:</p>
+<pre><code>val, err: !i64 = @i64("9876543210")    # val=9876543210 err=0
+bad, err2: !f64 = @f64("hello")        # bad=0.0        err2=1
 </code></pre>
 <h2 id="panics"><a class="header" href="#panics">Panics</a></h2>
 <p>For unrecoverable situations, use <code>@panic</code>:</p>
@@ -234,12 +224,11 @@ fn read(path: str) -&gt; !str | IoError { ... }
     ret s[i]
 }
 </code></pre>
-<p><code>@panic</code> prints the message and the call stack, then terminates the process immediately.</p>
-<p>Panics are <strong>not</strong> for expected error conditions — use <code>!T</code> for those.</p>
+<p><code>@panic</code> prints the message and terminates the process immediately. Panics are <strong>not</strong> for expected error conditions — use <code>!T</code> for those.</p>
 <h2 id="assert"><a class="header" href="#assert"><code>@assert</code></a></h2>
 <pre><code>@assert(x &gt; 0, "x must be positive")
 </code></pre>
-<p>Active in debug builds; stripped in release builds. Use for invariants you know hold but want verified during development.</p>
+<p>Active in debug builds; stripped in release. Use for invariants you know hold but want verified during development.</p>
 <h2 id="unreachable"><a class="header" href="#unreachable"><code>@unreachable</code></a></h2>
 <p>Mark code paths that should never execute:</p>
 <pre><code>when color {
@@ -249,7 +238,7 @@ fn read(path: str) -&gt; !str | IoError { ... }
     _           =&gt; @unreachable(),
 }
 </code></pre>
-<p>In debug builds <code>@unreachable()</code> panics if reached. In release it is a hint to the optimizer (undefined behavior if reached).</p>
+<p>In debug builds <code>@unreachable()</code> panics if reached. In release it is a hint to the optimizer.</p>
 
                     </main>
 

@@ -52,13 +52,7 @@ fn handle_request() {
 
 ## Thread Safety
 
-Global variables are **not** automatically thread-safe. For shared mutable state across threads, use `std/atomic` or protect with a mutex from `std/sync`.
-
-```
-import "std/atomic"
-
-active_threads: atomic.U32 = atomic.U32.new(0)
-```
+Global variables are **not** automatically thread-safe. Concurrent access to mutable globals requires external synchronization.
 
 ## Extern Globals
 
@@ -69,14 +63,13 @@ extern count: i32
 extern name:  *u8
 ```
 
-## `@args` and `@argc`
+## `@args`
 
-The program's command-line arguments are available via builtins — no global declaration needed:
+The program's command-line arguments are available via a builtin — no global declaration needed:
 
 ```
 fn main() {
     args: []str = @args      # slice of all arguments including argv[0]
-    n: usize    = @argc      # argument count
     @pf("program: {args[0]}\n")
 }
 ```

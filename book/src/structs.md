@@ -1,6 +1,6 @@
 # Structs & Impl
 
-## Defining a Struct
+## Structs
 
 ```
 struct Vec2 {
@@ -46,7 +46,7 @@ l: Line = Line{
 dx: f64 = l.end.x - l.start.x
 ```
 
-## `impl` Blocks
+## Impl Blocks
 
 `impl` attaches functions to a struct. They are called with dot syntax. The first parameter conventionally named `self` receives the struct by value; use `*Self` for mutation.
 
@@ -60,10 +60,6 @@ impl Vec2 {
         self.*.x *= factor
         self.*.y *= factor
     }
-
-    fn add(a: Vec2, b: Vec2) -> Vec2 {
-        ret Vec2{.x=a.x+b.x, .y=a.y+b.y}
-    }
 }
 
 v: Vec2 = Vec2{.x=3.0, .y=4.0}
@@ -71,11 +67,21 @@ v: Vec2 = Vec2{.x=3.0, .y=4.0}
 
 v.scale(2.0)
 @pf("{v.x}\n")         # 6.0
+```
+
+## Static Methods
+
+Methods with no `self` parameter are static — called on the type directly:
+
+```
+impl Vec2 {
+    fn add(a: Vec2, b: Vec2) -> Vec2 {
+        ret Vec2{.x=a.x+b.x, .y=a.y+b.y}
+    }
+}
 
 sum: Vec2 = Vec2.add(v, Vec2{.x=1.0, .y=0.0})
 ```
-
-`impl` methods without a `self` parameter are called on the type directly: `Vec2.add(...)`.
 
 ## Anonymous Structs (Tuples)
 

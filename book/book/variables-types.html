@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>Type Aliases - The Perzephxne Programming Language</title>
+        <title>Variables &amp; Types - The Perzephxne Programming Language</title>
 
 
         <!-- Custom HTML head -->
@@ -35,10 +35,10 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-0abdca4e.js";
+            window.path_to_searchindex_js = "searchindex-9e5a952b.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-d2cdd05f.js"></script>
+        <script src="toc-283af563.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -177,13 +177,172 @@
 
                 <div id="mdbook-content" class="content">
                     <main>
-                        <h1 id="type-aliases"><a class="header" href="#type-aliases">Type Aliases</a></h1>
+                        <h1 id="variables--types"><a class="header" href="#variables--types">Variables &amp; Types</a></h1>
+<h2 id="mutability"><a class="header" href="#mutability">Mutability</a></h2>
+<p>Every variable is either <strong>mutable</strong> (declared with <code>=</code>) or <strong>immutable</strong> (declared with <code>:</code>).</p>
+<pre><code>x: i32 = 5      # mutable — can be reassigned
+PI: f64 : 3.14  # immutable — assignment after this is a compile error
+</code></pre>
+<p>Attempting to assign to an immutable binding is a compile-time error:</p>
+<pre><code>N: usize : 10
+N = 20           # ERROR: cannot assign to immutable binding 'N'
+</code></pre>
+<h2 id="primitive-types"><a class="header" href="#primitive-types">Primitive Types</a></h2>
+<h3 id="integers"><a class="header" href="#integers">Integers</a></h3>
+<pre><code>u8   i8
+u16  i16
+u32  i32
+u64  i64
+usize        # platform-width (64-bit on 64-bit targets) — use for sizes and indices
+</code></pre>
+<h3 id="floats"><a class="header" href="#floats">Floats</a></h3>
+<pre><code>f16
+f32
+f64
+</code></pre>
+<h3 id="other-primitives"><a class="header" href="#other-primitives">Other Primitives</a></h3>
+<pre><code>char         # single byte character — alias for u8
+bool         # true / false
+</code></pre>
+<h2 id="strings-and-arrays"><a class="header" href="#strings-and-arrays">Strings and Arrays</a></h2>
+<h3 id="str"><a class="header" href="#str"><code>str</code></a></h3>
+<p><code>str</code> is a fat pointer <code>{*u8 data, usize len}</code>. String literals are immutable.</p>
+<pre><code>name: str   = "Alice"
+len: usize  = name.len
+first: char = name[0]    # indexing returns char
+</code></pre>
+<p>Concatenation and mutation require the standard library (<code>std/str</code>).</p>
+<h3 id="fixed-arrays"><a class="header" href="#fixed-arrays">Fixed Arrays</a></h3>
+<p>Fixed-size arrays live on the stack. The size must be a compile-time constant.</p>
+<pre><code>N: usize : 5
+arr: [N]i32 = [1, 2, 3, 4, 5]
+arr[0] = 10
+
+count: usize = @len(arr)     # 5
+</code></pre>
+<p>Multidimensional arrays:</p>
+<pre><code>matrix: [3][3]f32 = [[1.0, 0.0, 0.0],
+                     [0.0, 1.0, 0.0],
+                     [0.0, 0.0, 1.0]]
+val: f32 = matrix[1][2]
+</code></pre>
+<h2 id="slices"><a class="header" href="#slices">Slices</a></h2>
+<p>A slice is a fat pointer <code>{*T data, usize len}</code> — a non-owning view into an array or allocation.</p>
+<pre><code>arr: [5]i32 = [10, 20, 30, 40, 50]
+sl:  []i32  = arr[1..3]    # [20, 30] — exclusive end
+sl2: []i32  = arr[1..=3]   # [20, 30, 40] — inclusive end
+
+len: usize = @len(sl)      # 2
+</code></pre>
+<p>Passing a slice to a function:</p>
+<pre><code>fn sum(s: []i32) -&gt; i32 {
+    total: i32 = 0
+    for v =&gt; s { total += v }
+    ret total
+}
+</code></pre>
+<h2 id="any"><a class="header" href="#any"><code>any</code></a></h2>
+<p><code>any</code> holds a value of any type alongside a runtime type tag. Use <code>when</code> to inspect:</p>
+<pre><code>x: any = 42
+x = "hello"
+
+when x {
+    i32 n  =&gt; @pf("int: {n}\n"),
+    str s  =&gt; @pf("str: {s}\n"),
+    bool b =&gt; @pf("bool: {b}\n"),
+    _      =&gt; @pf("unknown\n"),
+}
+</code></pre>
+<h2 id="value-semantics"><a class="header" href="#value-semantics">Value Semantics</a></h2>
+<p>Structs and arrays are <strong>copied by value</strong> on assignment and when passed to functions — the same as C.</p>
+<pre><code>a: vec2 = vec2{.x=1.0, .y=2.0}
+b: vec2 = a           # independent copy
+b.x = 99.0
+@pf("{a.x}\n")        # still 1.0
+
+fn zero(v: vec2) {
+    v.x = 0.0         # modifies local copy only
+}
+</code></pre>
+<p>To mutate the caller’s value, pass a pointer:</p>
+<pre><code>fn zero_ptr(v: *vec2) {
+    v.*.x = 0.0
+}
+</code></pre>
+<h2 id="implicit-widening"><a class="header" href="#implicit-widening">Implicit Widening</a></h2>
+<p>Smaller integers widen to larger ones automatically. Narrowing is a compile error.</p>
+<pre><code>x: i32 = 10
+y: i64 = x        # ok — i32 fits in i64
+z: i16 = x        # ERROR — use @i16(x) instead
+n: i32 = 5
+f: f64 = n        # ok — int widens to float
+</code></pre>
+<h2 id="overflow-behavior"><a class="header" href="#overflow-behavior">Overflow Behavior</a></h2>
+<p>Both signed and unsigned integers use defined 2’s-complement wrapping — overflow is never undefined behavior.</p>
+<p>In <strong>debug builds</strong> overflow triggers a runtime panic. In <strong>release builds</strong> it wraps silently.</p>
+<pre><code>x: u8 = 255
+x = x + 1    # wraps to 0 — defined
+</code></pre>
+<p>Use <code>@checked_*</code> to detect overflow in any build mode:</p>
+<pre><code>result, err: !i32 = @checked_add(a, b)
+if err != 0 { @panic("overflow") }
+</code></pre>
+<h2 id="special-values"><a class="header" href="#special-values">Special Values</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Value</th><th>Valid on</th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>undef</code></td><td>any type</td><td>explicitly uninitialized</td></tr>
+<tr><td><code>null</code></td><td>raw pointers (<code>*T</code>) only</td><td>zero pointer</td></tr>
+</tbody>
+</table>
+</div>
+<pre><code>x: i32  = undef
+p: *i32 = null
+
+x = 5
+if p != null { p.* = x }
+</code></pre>
+<h2 id="type-casting"><a class="header" href="#type-casting">Type Casting</a></h2>
+<p>Use <code>@T(val)</code> where <code>T</code> is the target type:</p>
+<pre><code>x: i32  = 300
+y: u8   = @u8(x)         # truncates to 44
+
+a: f64  = 3.7
+b: i32  = @i32(a)        # truncates to 3
+
+s: str  = @str(99)       # int → "99"
+c: char = @char(65)      # → 'A'
+</code></pre>
+<p>All cast builtins: <code>@i8</code> <code>@i16</code> <code>@i32</code> <code>@i64</code> <code>@u8</code> <code>@u16</code> <code>@u32</code> <code>@u64</code>
+<code>@f32</code> <code>@f64</code> <code>@usize</code> <code>@bool</code> <code>@char</code> <code>@str</code></p>
+<h3 id="string-to-number"><a class="header" href="#string-to-number">String to Number</a></h3>
+<p>Casting a <code>str</code> to a numeric type parses the string. The plain form returns zero on failure; the failable form exposes the error flag:</p>
+<pre><code>n: i32  = @i32("42")     # 42 — parse string → int
+z: i32  = @i32("hello")  # 0  — non-numeric, fallback to zero
+
+val, err: !i32 = @i32("42")    # val=42  err=0
+bad, err2: !i32 = @i32("abc")  # bad=0   err2=1
+</code></pre>
+<h3 id="bit-reinterpretation"><a class="header" href="#bit-reinterpretation">Bit Reinterpretation</a></h3>
+<p><code>@bitcast(T, val)</code> reinterprets the raw bits with no numeric conversion. Source and destination must be the same size:</p>
+<pre><code>f: f32    = 1.0
+bits: u32 = @bitcast(u32, f)   # 0x3F800000
+</code></pre>
+<h2 id="type-aliases"><a class="header" href="#type-aliases">Type Aliases</a></h2>
+<pre><code>type int  = i32
+type uint = u32
+type byte = u8
+type cstr = *u8    # null-terminated C string
+</code></pre>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="variables-types.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="literals.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                             </a>
 
@@ -197,7 +356,7 @@
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="variables-types.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="literals.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                     </a>
 

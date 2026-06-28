@@ -35,10 +35,10 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-0abdca4e.js";
+            window.path_to_searchindex_js = "searchindex-9e5a952b.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-d2cdd05f.js"></script>
+        <script src="toc-283af563.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -180,50 +180,41 @@
                         <h1 id="modules"><a class="header" href="#modules">Modules</a></h1>
 <p>A module is a source file. There are no header files and no separate declaration step.</p>
 <h2 id="importing"><a class="header" href="#importing">Importing</a></h2>
-<pre><code>import "std/io"
-import "std/mem"
-import "mylib/math"
+<pre><code>import(io = "std/io")
+import(io = "std/io", math = "std/math")
 </code></pre>
-<p>Imports are resolved relative to the project root, or to the standard library path for <code>"std/*"</code> imports.</p>
+<p>Each entry is <code>alias = "path"</code>. The alias is the namespace prefix used to access the module’s symbols. Multiple modules can be imported in a single statement with a comma-separated list.</p>
+<p>Paths starting with <code>"std/"</code> resolve against the standard library. Everything else resolves relative to the importing file’s directory.</p>
 <h2 id="using-symbols"><a class="header" href="#using-symbols">Using Symbols</a></h2>
-<p>After importing, use the module’s name as a namespace prefix:</p>
-<pre><code>import "std/io"
+<p>After importing, use the alias as a namespace prefix:</p>
+<pre><code>import(io = "std/io")
 
-io.print("hello\n")
-fd: io.File = io.open("data.txt")
+fn main() {
+    io.println("hello")
+}
 </code></pre>
-<h2 id="aliasing-an-import"><a class="header" href="#aliasing-an-import">Aliasing an Import</a></h2>
-<pre><code>import "mylib/very_long_name" as vln
+<h2 id="multiple-imports"><a class="header" href="#multiple-imports">Multiple Imports</a></h2>
+<pre><code>import(io = "std/io", math = "std/math", os = "std/os")
 
-vln.do_thing()
-</code></pre>
-<h2 id="selective-import"><a class="header" href="#selective-import">Selective Import</a></h2>
-<pre><code>import "std/math" { sqrt, PI }
-
-r: f64 = sqrt(9.0)
-@pf("{PI}\n")
+fn main() {
+    r: f64 = math.sqrt(2.0)
+    io.println(@str(r))
+}
 </code></pre>
 <h2 id="module-layout"><a class="header" href="#module-layout">Module Layout</a></h2>
+<p>Source files within the same project are visible by default. Layout follows the filesystem:</p>
 <pre><code>MyProject/
   src/
-    main.przp       # import "src/util" resolves to this file
-    util.przp
+    main.przp
+    util.przp          # import(u = "util") or import(u = "src/util")
     net/
-      http.przp     # import "src/net/http"
+      http.przp        # import(http = "net/http")
+  przp.toml
 </code></pre>
 <h2 id="visibility"><a class="header" href="#visibility">Visibility</a></h2>
 <p>All top-level declarations are visible within a project by default.</p>
-<p>Mark symbols <code>private</code> to restrict access to the declaring file:</p>
+<p>Mark a symbol <code>private</code> to restrict it to the declaring file:</p>
 <pre><code>private fn internal_helper() { ... }
-</code></pre>
-<p>Private symbols are not accessible from other files.</p>
-<h2 id="external-libraries"><a class="header" href="#external-libraries">External Libraries</a></h2>
-<pre><code>@link("mylib")        # links libmylib.a / libmylib.so
-import "mylib/core"
-</code></pre>
-<p>Or in <code>przp.toml</code>:</p>
-<pre><code class="language-toml">[dependencies]
-mylib = { path = "../mylib" }
 </code></pre>
 <h2 id="standard-library-modules"><a class="header" href="#standard-library-modules">Standard Library Modules</a></h2>
 <div class="table-wrapper">
@@ -233,12 +224,10 @@ mylib = { path = "../mylib" }
 </thead>
 <tbody>
 <tr><td><code>std/io</code></td><td>print, file I/O, stdin</td></tr>
-<tr><td><code>std/mem</code></td><td>alloc, free, memcpy, memset</td></tr>
 <tr><td><code>std/str</code></td><td>string operations</td></tr>
-<tr><td><code>std/math</code></td><td>sqrt, sin, cos, etc.</td></tr>
-<tr><td><code>std/os</code></td><td>env, args, exit, paths</td></tr>
-<tr><td><code>std/box</code></td><td><code>Box[T]</code>, <code>Rc[T]</code>, <code>Weak[T]</code></td></tr>
-<tr><td><code>std/fmt</code></td><td>string formatting</td></tr>
+<tr><td><code>std/math</code></td><td>sqrt, trig, constants</td></tr>
+<tr><td><code>std/os</code></td><td>env, args, paths</td></tr>
+<tr><td><code>std/collections</code></td><td>dynamic arrays, maps</td></tr>
 </tbody>
 </table>
 </div>

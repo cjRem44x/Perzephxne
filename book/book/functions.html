@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>Extern / FFI - The Perzephxne Programming Language</title>
+        <title>Functions - The Perzephxne Programming Language</title>
 
 
         <!-- Custom HTML head -->
@@ -35,10 +35,10 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-0abdca4e.js";
+            window.path_to_searchindex_js = "searchindex-9e5a952b.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-d2cdd05f.js"></script>
+        <script src="toc-283af563.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -177,13 +177,101 @@
 
                 <div id="mdbook-content" class="content">
                     <main>
-                        <h1 id="extern--ffi"><a class="header" href="#extern--ffi">Extern / FFI</a></h1>
+                        <h1 id="functions"><a class="header" href="#functions">Functions</a></h1>
+<h2 id="declaration"><a class="header" href="#declaration">Declaration</a></h2>
+<pre><code>fn add(a: i32, b: i32) -&gt; i32 {
+    ret a + b
+}
+</code></pre>
+<h2 id="no-return-value"><a class="header" href="#no-return-value">No Return Value</a></h2>
+<p>Omit <code>-&gt;</code> when the function returns nothing:</p>
+<pre><code>fn greet(name: str) {
+    @pf("Hello, {name}!\n")
+}
+</code></pre>
+<h2 id="multiple-return-values"><a class="header" href="#multiple-return-values">Multiple Return Values</a></h2>
+<pre><code>fn divmod(a: i32, b: i32) -&gt; (i32, i32) {
+    ret (a / b, a % b)
+}
+
+q, r: i32 = divmod(17, 5)
+@pf("{q} remainder {r}\n")
+</code></pre>
+<h2 id="named-return-values"><a class="header" href="#named-return-values">Named Return Values</a></h2>
+<pre><code>fn stats(s: []f64) -&gt; (mean: f64, max: f64) {
+    sum: f64 = 0.0
+    mx: f64  = s[0]
+    for v =&gt; s {
+        sum += v
+        if v &gt; mx { mx = v }
+    }
+    ret (sum / @f64(@len(s)), mx)
+}
+</code></pre>
+<h2 id="failable-return"><a class="header" href="#failable-return">Failable Return</a></h2>
+<p>Use <code>!T</code> as the return type to indicate the function might return an error. Return <code>@ok(val)</code> on success or <code>@err(code)</code> on failure:</p>
+<pre><code>fn parse_port(s: str) -&gt; !i32 {
+    val, err: !i32 = @i32(s)
+    if err != 0 { ret @err(1) }
+    if val &lt; 1 || val &gt; 65535 { ret @err(2) }
+    ret @ok(val)
+}
+</code></pre>
+<p>Callers destructure the result:</p>
+<pre><code>port, err: !i32 = parse_port("8080")
+if err != 0 { @pf("invalid port (err=%d)\n", err) }
+</code></pre>
+<h2 id="entry-point"><a class="header" href="#entry-point">Entry Point</a></h2>
+<pre><code>fn main() {
+    # program starts here
+}
+
+# or with an exit code
+fn main() -&gt; i32 {
+    ret 0
+}
+</code></pre>
+<h2 id="first-class-functions"><a class="header" href="#first-class-functions">First-Class Functions</a></h2>
+<p>Functions are values. The type of a function is written <code>fn(params) -&gt; ret</code>:</p>
+<pre><code>op: fn(i32, i32) -&gt; i32 = add
+result: i32 = op(3, 4)
+</code></pre>
+<p>Passing functions to other functions:</p>
+<pre><code>fn apply(f: fn(i32) -&gt; i32, x: i32) -&gt; i32 {
+    ret f(x)
+}
+
+fn double(x: i32) -&gt; i32 { ret x * 2 }
+y: i32 = apply(double, 5)   # 10
+</code></pre>
+<h2 id="function-pointers"><a class="header" href="#function-pointers">Function Pointers</a></h2>
+<p>Bare function references (like <code>double</code> above) are plain pointers — zero overhead.</p>
+<p>Closures that capture the environment are not yet supported (planned for a future version).</p>
+<h2 id="extern--ffi"><a class="header" href="#extern--ffi">Extern / FFI</a></h2>
+<p>To call C functions, declare them with <code>extern</code>:</p>
+<pre><code>extern fn printf(fmt: *u8, ...) -&gt; i32
+extern fn malloc(size: usize) -&gt; *u8
+extern fn free(p: *u8)
+</code></pre>
+<p>Variadic <code>...</code> is allowed in extern declarations only.</p>
+<h2 id="inline-and-variadic"><a class="header" href="#inline-and-variadic">Inline and Variadic</a></h2>
+<pre><code>@inline fn fast_path(x: i32) -&gt; i32 { ret x * 2 }
+@noinline fn slow_path(x: i32) -&gt; i32 { ... }
+</code></pre>
+<h2 id="recursion"><a class="header" href="#recursion">Recursion</a></h2>
+<p>Recursion works as expected:</p>
+<pre><code>fn fib(n: i32) -&gt; i32 {
+    if n &lt;= 1 { ret n }
+    ret fib(n - 1) + fib(n - 2)
+}
+</code></pre>
+<p>Mutual recursion is supported because <code>przp</code> does a two-pass compilation — all top-level names are visible regardless of source order.</p>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="functions.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="generics.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                             </a>
 
@@ -197,7 +285,7 @@
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="functions.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="generics.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                     </a>
 

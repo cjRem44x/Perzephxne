@@ -1,6 +1,6 @@
 # Enums & Unions
 
-## Basic Enum
+## Enums
 
 ```
 enum Direction {
@@ -20,7 +20,7 @@ when d {
 }
 ```
 
-## Enum with Data (Tagged Union)
+## Tagged Unions
 
 Each variant can carry a value:
 
@@ -103,7 +103,7 @@ extern enum errno_t: i32 {
 }
 ```
 
-## Raw Unions
+## Unions
 
 `union` overlays all fields at the same memory address (unsafe):
 
@@ -131,4 +131,4 @@ enum Option[T] { Some(T), None }
 enum Result[T, E] { Ok(T), Err(E) }
 ```
 
-These interact with the `?` propagation operator and `!T` failable return syntax.
+These work alongside the `!T` failable return syntax.

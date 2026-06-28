@@ -5,17 +5,19 @@
 ## Basic Usage
 
 ```
-fn read_file(path: str) -> !str {
-    fd: i32 = open(path)?
-    defer close(fd)           # runs when the function returns
+import(io = "std/io")
 
-    buf: [4096]u8 = undef
-    n: isize = read(fd, &buf[0], @sizeof(buf))
-    ret str{.data=&buf[0], .len=@usize(n)}
+fn process_file(path: str) {
+    f: *u8 = io.open(path, "r")
+    if f == null { ret }
+    defer io.close(f)    # runs when the function returns
+
+    line: str = io.read_line(f)
+    @pf("{line}\n")
 }
 ```
 
-`close(fd)` runs after the `ret` — the file is always closed.
+`io.close(f)` runs after the `ret` — the file is always closed.
 
 ## Ordering
 

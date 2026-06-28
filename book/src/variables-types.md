@@ -199,7 +199,7 @@ Use `@checked_*` to detect overflow in any build mode:
 
 ```
 result, err: !i32 = @checked_add(a, b)
-if err != @err.ok { @panic("overflow") }
+if err != 0 { @panic("overflow") }
 ```
 
 ## Special Values
@@ -228,19 +228,32 @@ y: u8   = @u8(x)         # truncates to 44
 a: f64  = 3.7
 b: i32  = @i32(a)        # truncates to 3
 
-n: i32  = @i32("42")     # parse string → int
 s: str  = @str(99)       # int → "99"
 c: char = @char(65)      # → 'A'
 ```
 
 All cast builtins: `@i8` `@i16` `@i32` `@i64` `@u8` `@u16` `@u32` `@u64`
-`@f16` `@f32` `@f64` `@usize` `@bool` `@char` `@str`
+`@f32` `@f64` `@usize` `@bool` `@char` `@str`
 
-Raw bit reinterpretation (same size, no conversion):
+### String to Number
+
+Casting a `str` to a numeric type parses the string. The plain form returns zero on failure; the failable form exposes the error flag:
+
+```
+n: i32  = @i32("42")     # 42 — parse string → int
+z: i32  = @i32("hello")  # 0  — non-numeric, fallback to zero
+
+val, err: !i32 = @i32("42")    # val=42  err=0
+bad, err2: !i32 = @i32("abc")  # bad=0   err2=1
+```
+
+### Bit Reinterpretation
+
+`@bitcast(T, val)` reinterprets the raw bits with no numeric conversion. Source and destination must be the same size:
 
 ```
 f: f32    = 1.0
-bits: u32 = @bitcast(u32, f)
+bits: u32 = @bitcast(u32, f)   # 0x3F800000
 ```
 
 ## Type Aliases

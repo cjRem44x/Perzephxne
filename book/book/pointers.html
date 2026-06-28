@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>Pointer Arithmetic - The Perzephxne Programming Language</title>
+        <title>Pointers &amp; Memory - The Perzephxne Programming Language</title>
 
 
         <!-- Custom HTML head -->
@@ -35,10 +35,10 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-0abdca4e.js";
+            window.path_to_searchindex_js = "searchindex-9e5a952b.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-d2cdd05f.js"></script>
+        <script src="toc-283af563.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -177,13 +177,91 @@
 
                 <div id="mdbook-content" class="content">
                     <main>
-                        <h1 id="pointer-arithmetic"><a class="header" href="#pointer-arithmetic">Pointer Arithmetic</a></h1>
+                        <h1 id="pointers--memory"><a class="header" href="#pointers--memory">Pointers &amp; Memory</a></h1>
+<p>Perzephxne has no garbage collector. Memory is managed manually or with smart pointers from the standard library.</p>
+<h2 id="raw-pointers"><a class="header" href="#raw-pointers">Raw Pointers</a></h2>
+<pre><code>x: i32  = 42
+p: *i32 = &amp;x      # address-of
+v: i32  = p.*     # dereference
+p.* = 100         # write through pointer
+</code></pre>
+<h2 id="pointer-arithmetic"><a class="header" href="#pointer-arithmetic">Pointer Arithmetic</a></h2>
+<pre><code>arr: [5]i32 = [1, 2, 3, 4, 5]
+p: *i32 = &amp;arr[0]
+q: *i32 = p + 2    # points to arr[2]
+@pf("{q.*}\n")     # 3
+</code></pre>
+<h2 id="nullable-pointers"><a class="header" href="#nullable-pointers">Nullable Pointers</a></h2>
+<p>Raw pointers can be <code>null</code>:</p>
+<pre><code>p: *i32 = null
+if p != null {
+    @pf("{p.*}\n")
+}
+</code></pre>
+<h2 id="allocation"><a class="header" href="#allocation">Allocation</a></h2>
+<p>Use <code>@new(T)</code> to heap-allocate a single value:</p>
+<pre><code>p: *i32 = @new(i32)
+p.* = 42
+# ...
+@free(p)
+</code></pre>
+<p>For raw byte buffers use <code>@alo</code> (allocate) and <code>@free</code>:</p>
+<pre><code>buf: *u8 = @alo(1024)
+defer @free(buf)
+</code></pre>
+<h2 id="stack-allocation"><a class="header" href="#stack-allocation">Stack Allocation</a></h2>
+<p>Prefer stack allocation when the lifetime is bounded to a scope:</p>
+<pre><code>buf: [1024]u8 = undef      # on stack
+p: *u8 = &amp;buf[0]
+</code></pre>
+<h2 id="pointer-types-summary"><a class="header" href="#pointer-types-summary">Pointer Types Summary</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Syntax</th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>*T</code></td><td>raw single pointer</td></tr>
+<tr><td><code>**T</code></td><td>pointer to pointer</td></tr>
+<tr><td><code>*u8</code></td><td>typical byte pointer / C <code>char *</code></td></tr>
+<tr><td><code>[]T</code></td><td>slice (fat pointer: <code>{*T, usize}</code>)</td></tr>
+<tr><td><code>*[N]T</code></td><td>pointer to fixed array</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="pointer-casts"><a class="header" href="#pointer-casts">Pointer Casts</a></h2>
+<pre><code>p: *i32 = &amp;x
+pb: *u8 = @bitcast(*u8, p)   # reinterpret pointer type
+</code></pre>
+<h2 id="size-and-align"><a class="header" href="#size-and-align"><code>@size</code> and <code>@align</code></a></h2>
+<pre><code>sz: usize  = @size(i32)    # 4
+al: usize  = @align(f64)   # 8
+</code></pre>
+<h2 id="common-patterns"><a class="header" href="#common-patterns">Common Patterns</a></h2>
+<p><strong>Out-parameter:</strong></p>
+<pre><code>fn parse(s: str, out: *i32) -&gt; bool {
+    # write result into *out, return success
+}
+
+n: i32  = undef
+ok: bool = parse("42", &amp;n)
+</code></pre>
+<p><strong>Linked list node:</strong></p>
+<pre><code>struct Node {
+    value: i32,
+    next:  *Node,     # pointer to next (or null)
+}
+</code></pre>
+<p><strong>Opaque handle (C FFI):</strong></p>
+<pre><code>extern struct SDL_Window   # declared but not defined
+type WindowHandle = *SDL_Window
+</code></pre>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="pointers.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="enums-unions.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                             </a>
 
@@ -197,7 +275,7 @@
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="pointers.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="enums-unions.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                     </a>
 

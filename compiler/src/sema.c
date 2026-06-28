@@ -1135,6 +1135,10 @@ static void check_global(Sema *s, Item *item) {
             sema_error(s, item->span, "global '%s': cannot initialize '%s' with '%s'",
                        item->name, ty_str(ty), ty_str(init_ty));
     }
+    /* update existing sym (pre-registered in pass 1.7) rather than re-defining */
+    for (Sym *sym = s->scope->syms; sym; sym = sym->next) {
+        if (!strcmp(sym->name, item->name)) { sym->ty = ty; return; }
+    }
     define(s, item->span, item->name, ty, item->global.mutable, 0);
 }
 
@@ -1588,6 +1592,18 @@ int sema_check(Module *mod) {
         mod->items.data = new_data;
         mod->items.len  = new_len;
         register_item(&s, inst);
+    }
+
+    /* pass 1.7: pre-register all globals so fn bodies can reference them regardless
+       of item order (imported module globals appear after the main file's items) */
+    for (size_t i = 0; i < mod->items.len; i++) {
+        Item *item = mod->items.data[i];
+        if (item->kind != ITEM_GLOBAL) continue;
+        /* skip if already registered (e.g. a file-level global before any imports) */
+        if (lookup(&s, item->name)) continue;
+        Type *ty = check_type(&s, item->global.ty);
+        item->global.ty = ty;
+        define(&s, item->span, item->name, ty, item->global.mutable, 0);
     }
 
     /* pass 2: full check — skip uninstantiated generic templates */

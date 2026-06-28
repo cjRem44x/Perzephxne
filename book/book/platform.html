@@ -35,10 +35,10 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-0abdca4e.js";
+            window.path_to_searchindex_js = "searchindex-9e5a952b.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-d2cdd05f.js"></script>
+        <script src="toc-283af563.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -178,56 +178,54 @@
                 <div id="mdbook-content" class="content">
                     <main>
                         <h1 id="platform-detection"><a class="header" href="#platform-detection">Platform Detection</a></h1>
-<p>Perzephxne provides compile-time builtins for conditional compilation based on the target platform.</p>
+<p>Perzephxne provides compile-time boolean builtins for conditional compilation based on the target platform. Dead branches are removed by the compiler — no runtime overhead.</p>
 <h2 id="os-detection"><a class="header" href="#os-detection">OS Detection</a></h2>
 <pre><code>if @os.linux   { @pf("linux\n") }
-if @os.macos   { @pf("macos\n") }
+if @os.mac     { @pf("macOS\n") }
 if @os.windows { @pf("windows\n") }
-if @os.freebsd { @pf("freebsd\n") }
 </code></pre>
-<p>These are compile-time constants (<code>bool</code>). The dead branch is removed by the compiler — no runtime overhead.</p>
 <h2 id="architecture-detection"><a class="header" href="#architecture-detection">Architecture Detection</a></h2>
-<pre><code>if @arch.x86_64  { @pf("64-bit x86\n") }
-if @arch.aarch64 { @pf("arm64\n") }
-if @arch.riscv64 { @pf("riscv64\n") }
-if @arch.wasm32  { @pf("wasm\n") }
-</code></pre>
-<h2 id="platform-specific-code-blocks"><a class="header" href="#platform-specific-code-blocks">Platform-Specific Code Blocks</a></h2>
-<p>Large blocks of platform-specific code can use <code>when</code> for clarity:</p>
-<pre><code>when @os {
-    .linux   =&gt; { use_epoll() },
-    .macos   =&gt; { use_kqueue() },
-    .windows =&gt; { use_iocp() },
-    _        =&gt; { use_select() },
-}
+<pre><code>if @arch.x86_64 { @pf("64-bit x86\n") }
+if @arch.arm64  { @pf("AArch64\n") }
+if @arch.x86    { @pf("32-bit x86\n") }
+if @arch.arm    { @pf("32-bit ARM\n") }
 </code></pre>
 <h2 id="build-mode"><a class="header" href="#build-mode">Build Mode</a></h2>
 <pre><code>if @debug   { validate_all() }
 if @release { fast_path() }
 </code></pre>
-<h2 id="endianness"><a class="header" href="#endianness">Endianness</a></h2>
-<pre><code>if @endian.little { @pf("little-endian\n") }
-if @endian.big    { @pf("big-endian\n") }
-</code></pre>
-<h2 id="pointer-width"><a class="header" href="#pointer-width">Pointer Width</a></h2>
-<pre><code>sz: usize = @ptr_width   # 4 or 8
-</code></pre>
-<h2 id="conditional-import"><a class="header" href="#conditional-import">Conditional Import</a></h2>
-<pre><code>if @os.linux {
-    import "std/linux/epoll"
-} else {
-    import "std/posix/select"
+<h2 id="combining-conditions"><a class="header" href="#combining-conditions">Combining Conditions</a></h2>
+<pre><code>fn init_network() {
+    if @os.linux {
+        setup_epoll()
+    }
+    if @os.mac {
+        setup_kqueue()
+    }
+    if @os.windows {
+        setup_iocp()
+    }
 }
 </code></pre>
-<h2 id="feature-flags"><a class="header" href="#feature-flags">Feature Flags</a></h2>
-<p>Define custom feature flags in <code>przp.toml</code> and query them at compile time:</p>
-<pre><code class="language-toml">[features]
-logging = true
-</code></pre>
-<pre><code>if @feature.logging {
-    log("request received")
-}
-</code></pre>
+<h2 id="compile-time-constants-reference"><a class="header" href="#compile-time-constants-reference">Compile-Time Constants Reference</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Builtin</th><th>Type</th><th>True when</th></tr>
+</thead>
+<tbody>
+<tr><td><code>@os.linux</code></td><td><code>bool</code></td><td>target is Linux</td></tr>
+<tr><td><code>@os.mac</code></td><td><code>bool</code></td><td>target is macOS</td></tr>
+<tr><td><code>@os.windows</code></td><td><code>bool</code></td><td>target is Windows</td></tr>
+<tr><td><code>@arch.x86_64</code></td><td><code>bool</code></td><td>target is x86-64</td></tr>
+<tr><td><code>@arch.arm64</code></td><td><code>bool</code></td><td>target is AArch64</td></tr>
+<tr><td><code>@arch.x86</code></td><td><code>bool</code></td><td>target is 32-bit x86</td></tr>
+<tr><td><code>@arch.arm</code></td><td><code>bool</code></td><td>target is 32-bit ARM</td></tr>
+<tr><td><code>@debug</code></td><td><code>bool</code></td><td>compiled without <code>--release</code></td></tr>
+<tr><td><code>@release</code></td><td><code>bool</code></td><td>compiled with <code>--release</code></td></tr>
+</tbody>
+</table>
+</div>
 
                     </main>
 
