@@ -11,6 +11,7 @@ typedef struct {
     Token       cur;
     Token       peek;
     Token       peek2;     /* 3-token lookahead for generic disambiguation */
+    Token       peek3;     /* 4-token lookahead for label vs type disambiguation */
     Arena      *arena;
     GenInstList gen_insts; /* generic instantiations seen during parse */
     int         no_struct_lit; /* suppress struct-literal parsing in conditions */
@@ -21,7 +22,8 @@ typedef struct {
 static void advance(Parser *p) {
     p->cur   = p->peek;
     p->peek  = p->peek2;
-    p->peek2 = lexer_next(&p->lexer);
+    p->peek2 = p->peek3;
+    p->peek3 = lexer_next(&p->lexer);
 }
 
 static Token cur(Parser *p)  { return p->cur; }
@@ -472,6 +474,7 @@ static ExprList desugar_pf_interp(Parser *p, ExprList orig) {
             sub.cur   = lexer_next(&sub.lexer);
             sub.peek  = lexer_next(&sub.lexer);
             sub.peek2 = lexer_next(&sub.lexer);
+            sub.peek3 = lexer_next(&sub.lexer);
             Expr *inner = parse_expr(&sub);
             LIST_PUSH(p->arena, &interp, Expr, inner);
         } else {
@@ -922,6 +925,16 @@ static Stmt *mkstmt(Parser *p, StmtKind k, Span span) {
     return s;
 }
 
+/* tokens that can begin a type annotation */
+static int is_type_start(TokenKind k) {
+    switch (k) {
+        case TOK_IDENT: case TOK_STAR: case TOK_CARET:
+        case TOK_LBRACKET: case TOK_BANG: case TOK_FN:
+            return 1;
+        default: return 0;
+    }
+}
+
 /* variable declaration: name: type = expr  or  name: type : expr  or  name, name: !type = expr */
 static int is_var_decl(Parser *p) {
     /* heuristic: ident (or _) followed by ':' or ',' (two-name failable form) */
@@ -992,6 +1005,25 @@ static Stmt *parse_let(Parser *p) {
     return s;
 }
 
+/* name := expr  (mutable, inferred)  or  name :: expr  (immutable, inferred) */
+static Stmt *parse_inferred_let(Parser *p) {
+    Span span = cur(p).span;
+    const char *name;
+    if (check(p, TOK_UNDER)) { advance(p); name = "_"; }
+    else name = expect(p, TOK_IDENT).sval;
+    int mut;
+    if (eat(p, TOK_COLONEQ))    { mut = 1; }
+    else { expect(p, TOK_COLONCOLON); mut = 0; }
+    Expr *init = parse_expr(p);
+    Stmt *s = mkstmt(p, STMT_LET, span_merge(span, init->span));
+    s->let.name    = name;
+    s->let.ty      = NULL;
+    s->let.mutable = mut;
+    s->let.init    = init;
+    s->let.infer   = 1;
+    return s;
+}
+
 static Stmt *parse_stmt(Parser *p) {
     Span span = cur(p).span;
 
@@ -1002,6 +1034,50 @@ static Stmt *parse_stmt(Parser *p) {
         s->block = bl;
         return s;
     }
+
+    /* label declaration: ident ':' not immediately followed by a type-start token.
+       For `ident: ident ...`, use peek3 and the built-in type names to disambiguate:
+         - peek3 == '='            → var-decl (mutable binding)
+         - peek3 == '::'           → var-decl (immutable, new-style)
+         - peek3 == ':' AND peek2
+           is a known primitive    → var-decl (immutable, primitive type)
+         - otherwise               → label */
+    if (check(p, TOK_IDENT) && check2(p, TOK_COLON) &&
+        (!is_type_start(p->peek2.kind) ||
+         (p->peek2.kind == TOK_IDENT && ({
+             const char *n = p->peek2.sval;
+             TokenKind p3  = p->peek3.kind;
+             /* definitely a type annotation if followed by mutable/new-immutable = / :: */
+             int is_decl = (p3 == TOK_EQ || p3 == TOK_COLONCOLON);
+             /* also a type annotation if immutable (p3==:) and peek2 is a known primitive */
+             if (!is_decl && p3 == TOK_COLON && n)
+                 is_decl = (!strcmp(n,"i8")||!strcmp(n,"i16")||!strcmp(n,"i32")||
+                             !strcmp(n,"i64")||!strcmp(n,"u8")||!strcmp(n,"u16")||
+                             !strcmp(n,"u32")||!strcmp(n,"u64")||!strcmp(n,"f16")||
+                             !strcmp(n,"f32")||!strcmp(n,"f64")||!strcmp(n,"usize")||
+                             !strcmp(n,"bool")||!strcmp(n,"str")||!strcmp(n,"char"));
+             !is_decl; /* true → treat as label */
+         })))) {
+        const char *lname = cur(p).sval;
+        advance(p); advance(p); /* consume ident and ':' */
+        Stmt *s = mkstmt(p, STMT_LABEL, span);
+        s->label_.name = lname;
+        return s;
+    }
+
+    /* goto */
+    if (check(p, TOK_GOTO)) {
+        advance(p);
+        const char *target = expect(p, TOK_IDENT).sval;
+        Stmt *s = mkstmt(p, STMT_GOTO, span);
+        s->goto_.name = target;
+        return s;
+    }
+
+    /* inferred let: name := expr  or  name :: expr */
+    if ((check(p, TOK_IDENT) || check(p, TOK_UNDER)) &&
+        (check2(p, TOK_COLONEQ) || check2(p, TOK_COLONCOLON)))
+        return parse_inferred_let(p);
 
     /* variable declaration */
     if (is_var_decl(p)) return parse_let(p);
@@ -1517,10 +1593,11 @@ Module *parse(const char *src, uint32_t file_id, Arena *arena) {
     Parser p = {0};
     lexer_init(&p.lexer, src, file_id, arena);
     p.arena = arena;
-    /* prime the three-token lookahead */
+    /* prime the four-token lookahead */
     p.cur   = lexer_next(&p.lexer);
     p.peek  = lexer_next(&p.lexer);
     p.peek2 = lexer_next(&p.lexer);
+    p.peek3 = lexer_next(&p.lexer);
 
     Module *mod = ARENA_NEW(arena, Module);
     mod->arena  = arena;

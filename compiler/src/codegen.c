@@ -1688,7 +1688,8 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
             Val l = cg_expr(cg, e->binop.l, &lt);
             Val r = cg_expr(cg, e->binop.r, &rt);
             Type *ty = lt ? lt : rt;
-            /* use sema type for out_ty — comparisons return bool, not operand type */
+            /* default out_ty to sema type (comparisons return bool, not operand type);
+               updated below after integer widening to reflect actual promoted LLVM type */
             if (out_ty) *out_ty = e->ty ? e->ty : ty;
             /* pointer arithmetic: emit GEP instead of add/sub */
             if (e->binop.op == BINOP_ADD || e->binop.op == BINOP_SUB) {
@@ -1758,6 +1759,10 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                     }
                 }
             }
+            /* update out_ty to the actual post-promotion type so callers (e.g. STMT_ASSIGN)
+               can insert truncations when storing back to a narrower lhs variable */
+            if (out_ty && op_ty && !(e->ty && e->ty->kind == TY_BOOL))
+                *out_ty = op_ty;
             const char *llt = op_ty ? llvm_type(op_ty) : "i32";
             int t = new_tmp(cg);
             int is_flt = type_is_float(op_ty);
@@ -2413,6 +2418,14 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
 /* ── Statement codegen ────────────────────────────────────────────────────── */
 
 static void cg_stmt(CG *cg, Stmt *s) {
+    /* STMT_LABEL always starts a new basic block, even after a goto/terminator */
+    if (s->kind == STMT_LABEL) {
+        if (!cg->terminated)
+            emit(cg, "  br label %%ulbl_%s\n", s->label_.name);
+        emit(cg, "ulbl_%s:\n", s->label_.name);
+        cg->terminated = 0;
+        return;
+    }
     if (cg->terminated) return;  /* dead code after a terminator */
     switch (s->kind) {
         case STMT_EXPR: {
@@ -3234,6 +3247,19 @@ static void cg_stmt(CG *cg, Stmt *s) {
                 emit_br(cg, "  br label %%l%d\n", loop_sc->cont_label);
             break;
         }
+
+        case STMT_LABEL: {
+            /* implicit fallthrough from the preceding block if not terminated */
+            if (!cg->terminated)
+                emit(cg, "  br label %%ulbl_%s\n", s->label_.name);
+            emit(cg, "ulbl_%s:\n", s->label_.name);
+            cg->terminated = 0;
+            break;
+        }
+
+        case STMT_GOTO:
+            emit_br(cg, "  br label %%ulbl_%s\n", s->goto_.name);
+            break;
 
         default:
             emit(cg, "  ; unhandled stmt kind %d\n", (int)s->kind);

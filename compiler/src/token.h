@@ -14,6 +14,7 @@ typedef enum {
     TOK_TYPE, TOK_IMPORT, TOK_EXTERN, TOK_INLINE,
     TOK_DEFER, TOK_AND, TOK_OR, TOK_NOT,
     TOK_UNDEF, TOK_NULL, TOK_BREAK, TOK_CONTINUE, TOK_ASM,
+    TOK_GOTO,
 
     /* identifier / builtin */
     TOK_IDENT,      /* foo */
@@ -47,6 +48,8 @@ typedef enum {
     TOK_DOTDOT,     /* .. */
     TOK_DOTDOTEQ,   /* ..= */
     TOK_COLON,      /* :  */
+    TOK_COLONEQ,    /* := */
+    TOK_COLONCOLON, /* :: */
     TOK_COMMA,      /* ,  */
     TOK_SEMI,       /* ;  */
 
