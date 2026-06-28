@@ -2078,7 +2078,16 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
             }
             /* Struct field access */
             Type *obj_ty = NULL;
-            Val obj = cg_expr(cg, e->field.obj, &obj_ty);
+            Val obj;
+            /* .*.field: EXPR_DEREF loads the whole struct value, making GEP impossible.
+               Instead evaluate the operand (the pointer) directly and GEP from that. */
+            if (e->field.obj->kind == EXPR_DEREF) {
+                obj = cg_expr(cg, e->field.obj->deref.operand, &obj_ty);
+                if (obj_ty && obj_ty->kind == TY_PTR && obj_ty->ptr.inner)
+                    obj_ty = obj_ty->ptr.inner;
+            } else {
+                obj = cg_expr(cg, e->field.obj, &obj_ty);
+            }
             /* auto-deref: *Struct.field — EXPR_IDENT already loaded the ptr value;
                just use it directly as the struct pointer for GEP */
             if (obj_ty && obj_ty->kind == TY_PTR && obj_ty->ptr.inner
@@ -2731,7 +2740,15 @@ static void cg_stmt(CG *cg, Stmt *s) {
             } else if (s->assign.target->kind == EXPR_FIELD) {
                 /* p.field = val (or self.field = val via auto-deref) */
                 Type *obj_ty = NULL;
-                Val obj = cg_expr(cg, s->assign.target->field.obj, &obj_ty);
+                Val obj;
+                /* .*.field = val: evaluate the operand (ptr) directly, not the dereffed value */
+                if (s->assign.target->field.obj->kind == EXPR_DEREF) {
+                    obj = cg_expr(cg, s->assign.target->field.obj->deref.operand, &obj_ty);
+                    if (obj_ty && obj_ty->kind == TY_PTR && obj_ty->ptr.inner)
+                        obj_ty = obj_ty->ptr.inner;
+                } else {
+                    obj = cg_expr(cg, s->assign.target->field.obj, &obj_ty);
+                }
                 /* auto-deref: *Struct.field — ptr value already loaded by cg_expr */
                 if (obj_ty && obj_ty->kind == TY_PTR && obj_ty->ptr.inner
                         && obj_ty->ptr.inner->kind == TY_NAMED)

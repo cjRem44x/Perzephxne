@@ -871,6 +871,14 @@ static Expr *parse_postfix(Parser *p, Expr *e) {
                 fe->field.field = fname.sval;
                 e = fe;
             }
+        } else if (check(p, TOK_ARROW)) {
+            /* ptr->field — sugar for ptr.field with auto-deref */
+            advance(p);
+            Token fname = expect(p, TOK_IDENT);
+            Expr *fe = mkexpr(p, EXPR_FIELD, span_merge(span, fname.span));
+            fe->field.obj   = e;
+            fe->field.field = fname.sval;
+            e = fe;
         } else {
             break;
         }
