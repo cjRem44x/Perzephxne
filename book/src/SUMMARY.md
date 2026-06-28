@@ -17,6 +17,7 @@
 - [Structs & Impl](./structs.md)
 - [Enums & Unions](./enums-unions.md)
 - [Pointers & Memory](./pointers.md)
+- [Smart Pointers](./smart-pointers.md)
 - [Error Handling](./errors.md)
 - [Modules](./modules.md)
 - [Platform Detection](./platform.md)

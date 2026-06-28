@@ -252,6 +252,9 @@ static int ty_coerces(Type *from, Type *to) {
     /* enum ↔ integer: integer types coerce into enum named types and vice versa */
     if (ty_is_int(from) && to->kind   == TY_NAMED) return 1;
     if (from->kind == TY_NAMED && ty_is_int(to))   return 1;
+    /* ^From coerces to ^To if From coerces to To */
+    if (from->kind == TY_SMART_PTR && to->kind == TY_SMART_PTR)
+        return ty_coerces(from->ptr.inner, to->ptr.inner);
     /* T coerces to !T (auto-wrap as @ok on return) */
     if (to->kind == TY_FAILABLE && ty_coerces(from, to->ptr.inner)) return 1;
     /* !T coerces to T (extract value part in failable destructure) */
@@ -384,8 +387,13 @@ static Type *check_expr(Sema *s, Expr *e) {
                 check_expr(s, e->builtin.args.data[i]);
             Type *ret = builtin_ret_ty(s, e->builtin.name);
             if (!strcmp(e->builtin.name, "new") && e->builtin.args.len > 0) {
-                /* @new(val: T) → ^T */
-                ret = make_ptr(s, TY_SMART_PTR, e->builtin.args.data[0]->ty);
+                /* @new(val: T) → ^T; widen bare literal args like := does */
+                Expr *narg = e->builtin.args.data[0];
+                int nlit = narg->kind == EXPR_INT || narg->kind == EXPR_FLOAT ||
+                           narg->kind == EXPR_BOOL || narg->kind == EXPR_CHAR;
+                Type *inner = narg->ty;
+                if (nlit && inner) { inner = widen_inferred(s, inner); narg->ty = inner; }
+                ret = make_ptr(s, TY_SMART_PTR, inner);
             } else if (!strcmp(e->builtin.name, "clone") && e->builtin.args.len > 0) {
                 /* @clone(ptr: ^T) → ^T */
                 ret = e->builtin.args.data[0]->ty;

@@ -738,15 +738,31 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                 return val_tmp(res);
             }
 
-            /* @new(val: T) → allocate RC block { i64 rc, T data }, RC=1, return ^T ptr */
+            /* @new(val_or_T) → allocate RC block { i64 rc, T data }, RC=1, return ^T ptr */
             if (!strcmp(name, "new") && e->builtin.args.len >= 1) {
+                Expr *arg0 = e->builtin.args.data[0];
+                /* type-name arg (@new(i32), @new(MyStruct)): no runtime value to load */
+                int is_type_arg = arg0->kind == EXPR_IDENT && !lookup(cg, arg0->ident.name);
                 Type *vty = NULL;
-                Val val = cg_expr(cg, e->builtin.args.data[0], &vty);
-                const char *inner_llt = vty ? llvm_type(vty) : "i32";
-                /* malloc(8 + sizeof(T)) using GEP-from-null sizeof trick */
+                const char *inner_llt;
                 int sz  = new_tmp(cg);
                 int blk = new_tmp(cg);
                 int dp  = new_tmp(cg);
+                if (is_type_arg) {
+                    vty = arg0->ty;
+                    inner_llt = vty ? llvm_type(vty) : "i32";
+                    emit(cg, "  %%t%d = add i64 8, ptrtoint (ptr getelementptr (%s, ptr null, i32 1) to i64)\n",
+                         sz, inner_llt);
+                    emit(cg, "  %%t%d = call ptr @malloc(i64 %%t%d)\n", blk, sz);
+                    emit(cg, "  store i64 1, ptr %%t%d\n", blk);  /* RC = 1 */
+                    emit(cg, "  %%t%d = getelementptr i8, ptr %%t%d, i64 8\n", dp, blk);
+                    emit(cg, "  call void @llvm.memset.p0.i64(ptr %%t%d, i8 0, i64 ptrtoint (ptr getelementptr (%s, ptr null, i32 1) to i64), i1 false)\n",
+                         dp, inner_llt);
+                    if (out_ty) *out_ty = e->ty;
+                    return val_tmp(blk);
+                }
+                Val val = cg_expr(cg, arg0, &vty);
+                inner_llt = vty ? llvm_type(vty) : "i32";
                 emit(cg, "  %%t%d = add i64 8, ptrtoint (ptr getelementptr (%s, ptr null, i32 1) to i64)\n",
                      sz, inner_llt);
                 emit(cg, "  %%t%d = call ptr @malloc(i64 %%t%d)\n", blk, sz);
@@ -1344,7 +1360,29 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                         case TY_F32: tname="f32"; break; case TY_F64: tname="f64"; break;
                         case TY_BOOL: tname="bool"; break; case TY_CHAR: tname="char"; break;
                         case TY_STR: tname="str"; break; case TY_USIZE: tname="usize"; break;
-                        case TY_PTR: tname="ptr"; break; default: tname="unknown"; break;
+                        case TY_PTR: tname="ptr"; break;
+                        case TY_NAMED: tname=ta->named.name; break;
+                        case TY_SMART_PTR: {
+                            const char *inner = "?";
+                            if (ta->ptr.inner) {
+                                switch (ta->ptr.inner->kind) {
+                                    case TY_I8: inner="i8"; break; case TY_I16: inner="i16"; break;
+                                    case TY_I32: inner="i32"; break; case TY_I64: inner="i64"; break;
+                                    case TY_U8: inner="u8"; break; case TY_U16: inner="u16"; break;
+                                    case TY_U32: inner="u32"; break; case TY_U64: inner="u64"; break;
+                                    case TY_F32: inner="f32"; break; case TY_F64: inner="f64"; break;
+                                    case TY_BOOL: inner="bool"; break; case TY_USIZE: inner="usize"; break;
+                                    case TY_STR: inner="str"; break; case TY_CHAR: inner="char"; break;
+                                    case TY_NAMED: inner=ta->ptr.inner->named.name; break;
+                                    default: inner="?"; break;
+                                }
+                            }
+                            char *sbuf = arena_alloc(cg->arena, strlen(inner) + 2);
+                            sbuf[0] = '^'; strcpy(sbuf + 1, inner);
+                            tname = sbuf;
+                            break;
+                        }
+                        default: tname="unknown"; break;
                     }
                 }
                 int sid = intern_str(cg, arena_strdup(cg->arena, tname));
@@ -2040,7 +2078,16 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
             }
             /* Struct field access */
             Type *obj_ty = NULL;
-            Val obj = cg_expr(cg, e->field.obj, &obj_ty);
+            Val obj;
+            /* .*.field: EXPR_DEREF loads the whole struct value, making GEP impossible.
+               Instead evaluate the operand (the pointer) directly and GEP from that. */
+            if (e->field.obj->kind == EXPR_DEREF) {
+                obj = cg_expr(cg, e->field.obj->deref.operand, &obj_ty);
+                if (obj_ty && obj_ty->kind == TY_PTR && obj_ty->ptr.inner)
+                    obj_ty = obj_ty->ptr.inner;
+            } else {
+                obj = cg_expr(cg, e->field.obj, &obj_ty);
+            }
             /* auto-deref: *Struct.field — EXPR_IDENT already loaded the ptr value;
                just use it directly as the struct pointer for GEP */
             if (obj_ty && obj_ty->kind == TY_PTR && obj_ty->ptr.inner
@@ -2693,7 +2740,15 @@ static void cg_stmt(CG *cg, Stmt *s) {
             } else if (s->assign.target->kind == EXPR_FIELD) {
                 /* p.field = val (or self.field = val via auto-deref) */
                 Type *obj_ty = NULL;
-                Val obj = cg_expr(cg, s->assign.target->field.obj, &obj_ty);
+                Val obj;
+                /* .*.field = val: evaluate the operand (ptr) directly, not the dereffed value */
+                if (s->assign.target->field.obj->kind == EXPR_DEREF) {
+                    obj = cg_expr(cg, s->assign.target->field.obj->deref.operand, &obj_ty);
+                    if (obj_ty && obj_ty->kind == TY_PTR && obj_ty->ptr.inner)
+                        obj_ty = obj_ty->ptr.inner;
+                } else {
+                    obj = cg_expr(cg, s->assign.target->field.obj, &obj_ty);
+                }
                 /* auto-deref: *Struct.field — ptr value already loaded by cg_expr */
                 if (obj_ty && obj_ty->kind == TY_PTR && obj_ty->ptr.inner
                         && obj_ty->ptr.inner->kind == TY_NAMED)
