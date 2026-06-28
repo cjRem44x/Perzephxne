@@ -60,6 +60,17 @@ p: ^i32 = @new(i32)
 @pf("{@typeof(p)}\n")   # "^i32"
 ```
 
+## Field Access on `^Struct`
+
+For smart pointers to structs, use `.^.field` or dereference first:
+
+```
+struct Point { x: i32, y: i32 }
+
+p: ^Point = @new(Point{.x=1, .y=2})
+x: i32 = p.^.x
+```
+
 ## Mutating Through a Pointer
 
 ```

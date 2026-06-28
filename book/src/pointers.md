@@ -11,6 +11,36 @@ v: i32  = p.*     # dereference
 p.* = 100         # write through pointer
 ```
 
+## Struct Field Access Through a Pointer
+
+Two equivalent syntaxes work for accessing fields of a struct through a pointer:
+
+```
+p: *Foo = &my_foo
+
+# dot — auto-derefs *Foo automatically
+x: i32 = p.x
+
+# arrow — C-style, identical to dot on pointer types
+x: i32 = p->x
+```
+
+For explicit dereference followed by field access:
+
+```
+x: i32 = p.*.x     # .* dereferences, then .x accesses the field
+```
+
+Assignment works the same way:
+
+```
+p->x  = 10
+p.*.x = 10     # identical
+p.x   = 10     # identical
+```
+
+> `->` and `.` on a `*T` are interchangeable — both auto-deref the pointer.
+
 ## Pointer Arithmetic
 
 ```
