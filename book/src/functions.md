@@ -18,6 +18,22 @@ fn greet(name: str) {
 }
 ```
 
+## Inferred Return Type
+
+Omit `->` with a `ret` statement and the compiler infers the return type from the returned expression. The inferred type is the exact type of the `ret` expression — no widening is applied.
+
+```
+fn double(x: i64) {
+    ret x * 2      # inferred -> i64
+}
+
+fn scale(x: f32, factor: f32) {
+    ret x * factor # inferred -> f32
+}
+```
+
+This is equivalent to annotating the return type explicitly. Use explicit annotations when the function is part of a public API or when there are multiple `ret` paths that might resolve to different types.
+
 ## Multiple Return Values
 
 ```

@@ -793,10 +793,20 @@ static void check_stmt(Sema *s, Stmt *st) {
                     ty_str(decl_ty), ty_str(init_ty));
             }
 
-            /* infer type from init if not declared; widen for := and :: */
+            /* infer type from init if not declared.
+               For := and ::, widen small types to hardware-native width, but ONLY
+               when the initializer is a bare literal — a new value being written for
+               the first time.  When the RHS is a call, variable, or expression, the
+               value already has a concrete type and widening would be surprising. */
             Type *ty = decl_ty ? decl_ty : init_ty;
-            if (!decl_ty && st->let.infer && ty)
-                ty = widen_inferred(s, ty);
+            if (!decl_ty && st->let.infer && ty) {
+                int is_bare_lit = st->let.init &&
+                    (st->let.init->kind == EXPR_INT   || st->let.init->kind == EXPR_FLOAT ||
+                     st->let.init->kind == EXPR_BOOL  || st->let.init->kind == EXPR_CHAR  ||
+                     st->let.init->kind == EXPR_STR);
+                if (is_bare_lit)
+                    ty = widen_inferred(s, ty);
+            }
             /* write resolved type back so codegen gets the correct alloca type */
             if (!st->let.ty && ty)
                 st->let.ty = ty;
@@ -1058,9 +1068,11 @@ static void check_fn(Sema *s, Item *item) {
     for (size_t i = 0; i < item->fn.body.len; i++)
         check_stmt(s, item->fn.body.data[i]);
 
-    /* apply inferred return type when no explicit annotation was given */
+    /* apply inferred return type when no explicit annotation was given.
+       Use the exact type from the ret expression — no widening here.
+       Widening only applies to := / :: variable bindings. */
     if (!item->fn.ret && s->inferred_ret) {
-        item->fn.ret = widen_inferred(s, s->inferred_ret);
+        item->fn.ret = s->inferred_ret;
         /* sync the symbol-table TY_FN entry (registered before inference ran) */
         Sym *fsym = lookup(s, item->name);
         if (fsym && fsym->ty && fsym->ty->kind == TY_FN)

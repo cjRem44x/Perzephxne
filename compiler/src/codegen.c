@@ -1938,6 +1938,16 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                         arg_tys[i]  = param_ty;
                         continue;
                     }
+                    /* float width coercion (e.g. f64 literal → f32 param) */
+                    if ((!strcmp(at,"double") && !strcmp(pt,"float")) ||
+                        (!strcmp(at,"float")  && !strcmp(pt,"double"))) {
+                        int ct = new_tmp(cg);
+                        const char *op = !strcmp(pt,"float") ? "fptrunc" : "fpext";
+                        emit(cg, "  %%t%d = %s %s %s to %s\n", ct, op, at, arg_vals[i].buf, pt);
+                        arg_vals[i] = val_tmp(ct);
+                        arg_tys[i]  = param_ty;
+                        continue;
+                    }
                     /* integer width coercion */
                     int sv3 = 0, lv3 = 0;
                     if (!strcmp(at,"i8"))  sv3=8; else if (!strcmp(at,"i16")) sv3=16;
@@ -2555,10 +2565,15 @@ static void cg_stmt(CG *cg, Stmt *s) {
                         const char *store_ty = init_ty ? effective_llvm_type(cg, init_ty) : llt;
                         /* coerce type if alloca type differs from init type */
                         if (strcmp(store_ty, llt) != 0) {
-                            /* float width coercion: double → float */
+                            /* float width coercion */
                             if (!strcmp(store_ty,"double") && !strcmp(llt,"float")) {
                                 int ct = new_tmp(cg);
                                 emit(cg, "  %%t%d = fptrunc double %s to float\n", ct, init.buf);
+                                init = val_tmp(ct);
+                                store_ty = llt;
+                            } else if (!strcmp(store_ty,"float") && !strcmp(llt,"double")) {
+                                int ct = new_tmp(cg);
+                                emit(cg, "  %%t%d = fpext float %s to double\n", ct, init.buf);
                                 init = val_tmp(ct);
                                 store_ty = llt;
                             /* integer width coercion */

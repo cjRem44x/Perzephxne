@@ -16,6 +16,39 @@ N: usize : 10
 N = 20           # ERROR: cannot assign to immutable binding 'N'
 ```
 
+## Type Inference
+
+Use `:=` (mutable) or `::` (immutable) to let the compiler infer the type from the initializer.
+
+When the right-hand side is a bare **literal** (integer, float, string, bool, char), the type is widened to the natural hardware-width so you never accidentally box yourself into a narrow type:
+
+| Literal kind | Inferred binding type |
+|---|---|
+| integer literal (`0`, `42`, …) | `i64` |
+| float literal (`1.5`, `3.14`, …) | `f64` (already the default) |
+| string literal | `str` |
+| bool / char literal | `bool` / `char` |
+
+```
+count  := 0          # i64 — integer literal widens to i64
+ratio  := 1.5        # f64
+name   :: "Alice"    # str, immutable
+active := true       # bool
+
+count = count + 1    # ok — count is mutable i64
+name  = "Bob"        # ERROR: cannot assign to immutable binding 'name'
+```
+
+When the right-hand side is anything other than a bare literal (a call, variable, expression), the binding takes the **exact** inferred type — no widening:
+
+```
+fn get_score() -> i32 { ret 100 }
+fn get_ratio() -> f32 { ret 0.5 }
+
+s := get_score()   # i32 — exact return type
+r := get_ratio()   # f32 — exact return type
+```
+
 ## Primitive Types
 
 ### Integers
