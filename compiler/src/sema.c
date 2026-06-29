@@ -673,7 +673,13 @@ static Type *check_expr(Sema *s, Expr *e) {
                 sema_error(s, e->span, "if condition must be bool, got '%s'", ty_str(ct));
             if (e->if_expr.then_) check_stmt(s, e->if_expr.then_);
             if (e->if_expr.else_) check_stmt(s, e->if_expr.else_);
-            e->ty = NULL; /* if-expr type requires branch unification — defer to sema v2 */
+            /* infer result type from last STMT_EXPR in the then-block */
+            e->ty = NULL;
+            if (e->if_expr.then_ && e->if_expr.then_->kind == STMT_BLOCK) {
+                StmtList *bl = &e->if_expr.then_->block;
+                if (bl->len > 0 && bl->data[bl->len-1]->kind == STMT_EXPR && bl->data[bl->len-1]->expr)
+                    e->ty = bl->data[bl->len-1]->expr->ty;
+            }
             break;
         }
 

@@ -2174,24 +2174,53 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
         }
 
         case EXPR_IF: {
-            Val cond = cg_expr(cg, e->if_expr.cond, NULL);
+            /* Determine result type from last STMT_EXPR of then-block (set by sema) */
+            Type *res_ty = e->ty;
+            const char *res_llt = res_ty ? effective_llvm_type(cg, res_ty) : "i64";
+
+            /* Alloca must come before the branch terminator */
+            int res_slot = new_tmp(cg);
+            emit(cg, "  %%t%d = alloca %s\n", res_slot, res_llt);
+
+            Val cond_v = cg_expr(cg, e->if_expr.cond, NULL);
             int then_l = new_label(cg), else_l = new_label(cg), end_l = new_label(cg);
             emit_br(cg, "  br i1 %s, label %%l%d, label %%l%d\n",
-                    cond.buf, then_l, else_l);
-            int res = new_tmp(cg);
-            emit(cg, "  %%t%d = alloca i64\n", res);
+                    cond_v.buf, then_l, else_l);
+
+            /* Helper: emit a branch block, storing the last STMT_EXPR result to res_slot */
+            #define EMIT_IF_BRANCH(branch_stmt) do { \
+                if ((branch_stmt) && (branch_stmt)->kind == STMT_BLOCK) { \
+                    StmtList *_bl = &(branch_stmt)->block; \
+                    for (size_t _i = 0; _i < _bl->len; _i++) { \
+                        Stmt *_st = _bl->data[_i]; \
+                        if (_i == _bl->len - 1 && _st->kind == STMT_EXPR && _st->expr) { \
+                            Type *_vty = NULL; \
+                            Val _v = cg_expr(cg, _st->expr, &_vty); \
+                            if (!cg->terminated) \
+                                emit(cg, "  store %s %s, ptr %%t%d\n", res_llt, _v.buf, res_slot); \
+                        } else { \
+                            cg_stmt(cg, _st); \
+                        } \
+                    } \
+                } else if (branch_stmt) { \
+                    cg_stmt(cg, branch_stmt); \
+                } \
+            } while(0)
 
             emit_label(cg, then_l);
-            if (e->if_expr.then_) cg_stmt(cg, e->if_expr.then_);
+            EMIT_IF_BRANCH(e->if_expr.then_);
             emit_br(cg, "  br label %%l%d\n", end_l);
 
             emit_label(cg, else_l);
-            if (e->if_expr.else_) cg_stmt(cg, e->if_expr.else_);
+            EMIT_IF_BRANCH(e->if_expr.else_);
             emit_br(cg, "  br label %%l%d\n", end_l);
+
+            #undef EMIT_IF_BRANCH
 
             emit_label(cg, end_l);
             int load = new_tmp(cg);
-            emit(cg, "  %%t%d = load i64, ptr %%t%d\n", load, res);
+            emit(cg, "  %%t%d = load %s, ptr %%t%d\n", load, res_llt, res_slot);
+            if (out_ty) *out_ty = res_ty;
             return val_tmp(load);
         }
 

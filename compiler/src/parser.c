@@ -740,15 +740,28 @@ static Expr *parse_primary(Parser *p) {
             Expr *cond  = parse_expr(p);
             p->no_struct_lit = 0;
             StmtList tb = parse_block(p);
-            StmtList eb = {0};
-            if (eat(p, TOK_ELSE)) eb = parse_block(p);
-            /* wrap block lists as block stmts */
             Stmt *then_ = ARENA_NEW(p->arena, Stmt);
             then_->kind = STMT_BLOCK; then_->block = tb; then_->span = span;
             Stmt *else_ = NULL;
-            if (eb.len) {
-                else_ = ARENA_NEW(p->arena, Stmt);
-                else_->kind = STMT_BLOCK; else_->block = eb; else_->span = span;
+            if (eat(p, TOK_ELSE)) {
+                if (check(p, TOK_IF)) {
+                    /* else if: recursively parse another if-expression as the else body */
+                    Expr *elif_expr = parse_primary(p);
+                    Stmt *elif_stmt = ARENA_NEW(p->arena, Stmt);
+                    elif_stmt->kind = STMT_EXPR;
+                    elif_stmt->expr = elif_expr;
+                    elif_stmt->span = elif_expr->span;
+                    StmtList elif_block = {0};
+                    SLICE_PUSH(p->arena, &elif_block, Stmt *, elif_stmt);
+                    else_ = ARENA_NEW(p->arena, Stmt);
+                    else_->kind = STMT_BLOCK; else_->block = elif_block; else_->span = span;
+                } else {
+                    StmtList eb = parse_block(p);
+                    if (eb.len) {
+                        else_ = ARENA_NEW(p->arena, Stmt);
+                        else_->kind = STMT_BLOCK; else_->block = eb; else_->span = span;
+                    }
+                }
             }
             Expr *e = mkexpr(p, EXPR_IF, span_merge(span, cur(p).span));
             e->if_expr.cond  = cond;
