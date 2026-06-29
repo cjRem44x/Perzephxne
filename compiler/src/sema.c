@@ -287,8 +287,14 @@ static Type *check_type(Sema *s, Type *ty) {
             break;
         case TY_NAMED: {
             Sym *sym = lookup(s, ty->named.name);
-            if (sym && sym->is_type) return sym->ty;
-            /* leave as NAMED — may be a generic param */
+            if (sym && sym->is_type && sym->ty) {
+                /* resolve alias: overwrite the node in-place so every holder
+                   of this pointer sees the real type (structs are self-referential
+                   TY_NAMED → TY_NAMED, so the copy is a no-op for them) */
+                *ty = *sym->ty;
+                return ty;
+            }
+            /* leave as NAMED — generic param or forward reference */
             break;
         }
         default:
@@ -1180,7 +1186,10 @@ static void check_extern_fn(Sema *s, Item *item) {
 
 static void check_type_alias(Sema *s, Item *item) {
     Type *ty = check_type(s, item->type_alias.ty);
-    define(s, item->span, item->name, ty, 0, 1);
+    /* pass 1 already called define(); just update the resolved type in-place */
+    Sym *sym = lookup(s, item->name);
+    if (sym) sym->ty = ty;
+    else define(s, item->span, item->name, ty, 0, 1);
 }
 
 /* ── Generics: substitution and instantiation ─────────────────────────────── */
