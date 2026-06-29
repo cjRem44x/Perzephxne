@@ -287,8 +287,14 @@ static Type *check_type(Sema *s, Type *ty) {
             break;
         case TY_NAMED: {
             Sym *sym = lookup(s, ty->named.name);
-            if (sym && sym->is_type) return sym->ty;
-            /* leave as NAMED — may be a generic param */
+            if (sym && sym->is_type && sym->ty) {
+                /* resolve alias: overwrite the node in-place so every holder
+                   of this pointer sees the real type (structs are self-referential
+                   TY_NAMED → TY_NAMED, so the copy is a no-op for them) */
+                *ty = *sym->ty;
+                return ty;
+            }
+            /* leave as NAMED — generic param or forward reference */
             break;
         }
         default:
@@ -673,7 +679,13 @@ static Type *check_expr(Sema *s, Expr *e) {
                 sema_error(s, e->span, "if condition must be bool, got '%s'", ty_str(ct));
             if (e->if_expr.then_) check_stmt(s, e->if_expr.then_);
             if (e->if_expr.else_) check_stmt(s, e->if_expr.else_);
-            e->ty = NULL; /* if-expr type requires branch unification — defer to sema v2 */
+            /* infer result type from last STMT_EXPR in the then-block */
+            e->ty = NULL;
+            if (e->if_expr.then_ && e->if_expr.then_->kind == STMT_BLOCK) {
+                StmtList *bl = &e->if_expr.then_->block;
+                if (bl->len > 0 && bl->data[bl->len-1]->kind == STMT_EXPR && bl->data[bl->len-1]->expr)
+                    e->ty = bl->data[bl->len-1]->expr->ty;
+            }
             break;
         }
 
@@ -1174,7 +1186,10 @@ static void check_extern_fn(Sema *s, Item *item) {
 
 static void check_type_alias(Sema *s, Item *item) {
     Type *ty = check_type(s, item->type_alias.ty);
-    define(s, item->span, item->name, ty, 0, 1);
+    /* pass 1 already called define(); just update the resolved type in-place */
+    Sym *sym = lookup(s, item->name);
+    if (sym) sym->ty = ty;
+    else define(s, item->span, item->name, ty, 0, 1);
 }
 
 /* ── Generics: substitution and instantiation ─────────────────────────────── */

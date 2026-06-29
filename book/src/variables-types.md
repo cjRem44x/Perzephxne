@@ -258,9 +258,31 @@ bits: u32 = @bitcast(u32, f)   # 0x3F800000
 
 ## Type Aliases
 
+`type` creates a new name for an existing type. The alias is fully interchangeable with the underlying type.
+
 ```
-type int  = i32
-type uint = u32
-type byte = u8
-type cstr = *u8    # null-terminated C string
+type int   = i32
+type uint  = u32
+type byte  = u8
+type cstr  = *u8      # null-terminated C string
+
+type Score   = i64
+type Meters  = f64
+type Seconds = f64
+type NodeId  = u32
+type Buffer  = *u8
 ```
+
+Aliases work everywhere a type is expected — variable declarations, function parameters, and return types:
+
+```
+fn speed(dist: Meters, time: Seconds) -> f64 {
+    ret dist / time
+}
+
+d: Meters  = 100.0
+t: Seconds = 9.58
+s: f64 = speed(d, t)   # 10.44
+```
+
+The built-in aliases `int`, `uint`, `byte`, and `cstr` are pre-defined and available in every file.

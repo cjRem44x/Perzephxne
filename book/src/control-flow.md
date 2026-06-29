@@ -16,6 +16,35 @@ if x > 100 {
 
 Braces are required. Conditions do not need parentheses.
 
+## `if` as an Expression
+
+`if` can produce a value. The last expression in each block is the result:
+
+```
+x: i32 = 7
+
+label: str = if x > 10 { "big" } else { "small" }
+
+# elif chains work too
+grade := if x >= 90 {
+    "A"
+} else if x >= 70 {
+    "B"
+} else {
+    "C"
+}
+
+# multi-statement blocks — last expression is the value
+n := if x > 0 {
+    a: i32 = x * 2
+    a + 1        # result
+} else {
+    0
+}
+```
+
+The type is inferred from the `then` branch. Both branches must produce the same type.
+
 ## Loops
 
 ### `loop`
