@@ -855,11 +855,12 @@ static Expr *parse_primary(Parser *p) {
             while (!check(p, TOK_RBRACE) && !check(p, TOK_EOF)) {
                 WhenArm arm = {0};
                 arm.span = cur(p).span;
-                /* parse pattern(s): pat1 | pat2 | ... */
-                Expr *pat = parse_expr_bp(p, 1);
+                /* parse pattern(s): pat1 | pat2 | ...
+                   use BP=9 so '|' (lbp=8) is not consumed inside a pattern */
+                Expr *pat = parse_expr_bp(p, 9);
                 LIST_PUSH(p->arena, &arm.pats, Expr, pat);
                 while (eat(p, TOK_PIPE)) {
-                    pat = parse_expr_bp(p, 1);
+                    pat = parse_expr_bp(p, 9);
                     LIST_PUSH(p->arena, &arm.pats, Expr, pat);
                 }
                 /* optional bind: `i32 name =>` */
@@ -1365,10 +1366,11 @@ static Stmt *parse_stmt(Parser *p) {
         while (!check(p, TOK_RBRACE) && !check(p, TOK_EOF)) {
             WhenArm arm = {0};
             arm.span = cur(p).span;
-            Expr *pat = parse_expr_bp(p, 1);
+            /* use BP=9 so '|' (lbp=8) is not consumed inside a pattern */
+            Expr *pat = parse_expr_bp(p, 9);
             LIST_PUSH(p->arena, &arm.pats, Expr, pat);
             while (eat(p, TOK_PIPE)) {
-                pat = parse_expr_bp(p, 1);
+                pat = parse_expr_bp(p, 9);
                 LIST_PUSH(p->arena, &arm.pats, Expr, pat);
             }
             if (check(p, TOK_IDENT) && check2(p, TOK_FATARROW)) {

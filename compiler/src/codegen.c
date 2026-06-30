@@ -2681,9 +2681,24 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                             int wc = new_tmp(cg); emit(cg, "  %%t%d = add i1 0, 1\n", wc);
                             cond_t = wc; break;
                         }
-                        Val pv = cg_expr(cg, pat, NULL);
-                        int cmp = new_tmp(cg);
-                        emit(cg, "  %%t%d = icmp eq %s %s, %s\n", cmp, llt, val.buf, pv.buf);
+                        int cmp;
+                        if (pat->kind == EXPR_BINOP
+                            && (pat->binop.op == BINOP_RANGE || pat->binop.op == BINOP_RANGE_INC)) {
+                            /* range pattern: lo..hi or lo..=hi */
+                            Val lv = cg_expr(cg, pat->binop.l, NULL);
+                            Val hv = cg_expr(cg, pat->binop.r, NULL);
+                            int c_lo = new_tmp(cg);
+                            int c_hi = new_tmp(cg);
+                            const char *hi_cmp = (pat->binop.op == BINOP_RANGE_INC) ? "icmp sle" : "icmp slt";
+                            emit(cg, "  %%t%d = icmp sge %s %s, %s\n", c_lo, llt, val.buf, lv.buf);
+                            emit(cg, "  %%t%d = %s %s %s, %s\n",      c_hi, hi_cmp, llt, val.buf, hv.buf);
+                            cmp = new_tmp(cg);
+                            emit(cg, "  %%t%d = and i1 %%t%d, %%t%d\n", cmp, c_lo, c_hi);
+                        } else {
+                            Val pv = cg_expr(cg, pat, NULL);
+                            cmp = new_tmp(cg);
+                            emit(cg, "  %%t%d = icmp eq %s %s, %s\n", cmp, llt, val.buf, pv.buf);
+                        }
                         if (cond_t < 0) { cond_t = cmp; } else {
                             int or_t = new_tmp(cg);
                             emit(cg, "  %%t%d = or i1 %%t%d, %%t%d\n", or_t, cond_t, cmp);
@@ -3671,9 +3686,24 @@ static void cg_stmt(CG *cg, Stmt *s) {
                             cond_t = wc;
                             break;
                         }
-                        Val pv = cg_expr(cg, pat, NULL);
-                        int cmp = new_tmp(cg);
-                        emit(cg, "  %%t%d = icmp eq %s %s, %s\n", cmp, llt, val.buf, pv.buf);
+                        int cmp;
+                        if (pat->kind == EXPR_BINOP
+                            && (pat->binop.op == BINOP_RANGE || pat->binop.op == BINOP_RANGE_INC)) {
+                            /* range pattern: lo..hi or lo..=hi */
+                            Val lv = cg_expr(cg, pat->binop.l, NULL);
+                            Val hv = cg_expr(cg, pat->binop.r, NULL);
+                            int c_lo = new_tmp(cg);
+                            int c_hi = new_tmp(cg);
+                            const char *hi_cmp = (pat->binop.op == BINOP_RANGE_INC) ? "icmp sle" : "icmp slt";
+                            emit(cg, "  %%t%d = icmp sge %s %s, %s\n", c_lo, llt, val.buf, lv.buf);
+                            emit(cg, "  %%t%d = %s %s %s, %s\n",      c_hi, hi_cmp, llt, val.buf, hv.buf);
+                            cmp = new_tmp(cg);
+                            emit(cg, "  %%t%d = and i1 %%t%d, %%t%d\n", cmp, c_lo, c_hi);
+                        } else {
+                            Val pv = cg_expr(cg, pat, NULL);
+                            cmp = new_tmp(cg);
+                            emit(cg, "  %%t%d = icmp eq %s %s, %s\n", cmp, llt, val.buf, pv.buf);
+                        }
                         if (cond_t < 0) {
                             cond_t = cmp;
                         } else {
