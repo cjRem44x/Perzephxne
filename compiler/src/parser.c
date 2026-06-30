@@ -1649,11 +1649,22 @@ static Item *parse_item(Parser *p) {
             expect(p, TOK_GT);
         }
         /* Expose type params for the entire signature + body so record_gen_inst
-           can skip template-internal generic uses like Box<T>. */
+           can skip template-internal generic uses like Box<T>. Merge with any
+           outer (e.g. enclosing generic impl block) type params still in scope
+           rather than replacing them. */
         const char **saved_tp  = p->cur_type_params;
         size_t       saved_ntp = p->n_cur_type_params;
-        p->cur_type_params   = type_params;
-        p->n_cur_type_params = n_type_params;
+        const char **scope_tp  = type_params;
+        size_t       n_scope_tp = n_type_params;
+        if (saved_ntp > 0) {
+            const char **merged = arena_alloc(p->arena, (n_type_params + saved_ntp) * sizeof(const char *));
+            if (n_type_params) memcpy(merged, type_params, n_type_params * sizeof(const char *));
+            memcpy(merged + n_type_params, saved_tp, saved_ntp * sizeof(const char *));
+            scope_tp   = merged;
+            n_scope_tp = n_type_params + saved_ntp;
+        }
+        p->cur_type_params   = scope_tp;
+        p->n_cur_type_params = n_scope_tp;
         expect(p, TOK_LPAREN);
         ParamList params = {0};
         int variadic = 0;
@@ -1741,19 +1752,44 @@ static Item *parse_item(Parser *p) {
     if (check(p, TOK_IMPL)) {
         advance(p);
         const char *ty_name = expect(p, TOK_IDENT).sval;
+        /* optional generic type params: impl Box<T> { ... } */
+        const char **type_params = NULL;
+        size_t n_type_params = 0;
+        if (check(p, TOK_LT)) {
+            advance(p); /* consume '<' */
+            while (!check(p, TOK_GT) && !check(p, TOK_EOF)) {
+                const char *tp = expect(p, TOK_IDENT).sval;
+                const char **new_tp = arena_alloc(p->arena, (n_type_params + 1) * sizeof(const char *));
+                if (n_type_params) memcpy(new_tp, type_params, n_type_params * sizeof(const char *));
+                new_tp[n_type_params++] = tp;
+                type_params = new_tp;
+                eat(p, TOK_COMMA);
+            }
+            expect(p, TOK_GT);
+        }
         expect(p, TOK_LBRACE);
+        /* expose type params for all method signatures + bodies so uses like
+           Box<T> inside them don't get recorded as concrete gen_insts */
+        const char **saved_itp  = p->cur_type_params;
+        size_t       saved_intp = p->n_cur_type_params;
+        p->cur_type_params   = type_params;
+        p->n_cur_type_params = n_type_params;
         ItemList methods = {0};
         while (!check(p, TOK_RBRACE) && !check(p, TOK_EOF)) {
             Item *m = parse_item(p);
             LIST_PUSH(p->arena, &methods, Item, m);
         }
+        p->cur_type_params   = saved_itp;
+        p->n_cur_type_params = saved_intp;
         expect(p, TOK_RBRACE);
         Item *item = ARENA_NEW(p->arena, Item);
-        item->kind           = ITEM_IMPL;
-        item->name           = ty_name;
-        item->span           = span_merge(span, cur(p).span);
-        item->impl.ty_name   = ty_name;
-        item->impl.methods   = methods;
+        item->kind                  = ITEM_IMPL;
+        item->name                  = ty_name;
+        item->span                  = span_merge(span, cur(p).span);
+        item->impl.ty_name          = ty_name;
+        item->impl.methods          = methods;
+        item->impl.type_params      = type_params;
+        item->impl.n_type_params    = n_type_params;
         return item;
     }
 

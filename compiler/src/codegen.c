@@ -4136,6 +4136,7 @@ int codegen(Module *mod, FILE *out, int release) {
     for (size_t i = 0; i < mod->items.len; i++) {
         Item *item = mod->items.data[i];
         if (item->kind != ITEM_IMPL) continue;
+        if (item->impl.n_type_params > 0) continue; /* skip generic template */
         for (size_t j = 0; j < item->impl.methods.len; j++) {
             Item *m = item->impl.methods.data[j];
             if (m->kind != ITEM_FN || m->fn.n_type_params > 0) continue;
@@ -4176,6 +4177,7 @@ int codegen(Module *mod, FILE *out, int release) {
     for (size_t i = 0; i < mod->items.len; i++) {
         Item *item = mod->items.data[i];
         if (item->kind != ITEM_IMPL) continue;
+        if (item->impl.n_type_params > 0) continue; /* skip generic template */
         for (size_t j = 0; j < item->impl.methods.len; j++) {
             Item *m = item->impl.methods.data[j];
             if (m->kind == ITEM_FN) cg_fn(&cg, m);

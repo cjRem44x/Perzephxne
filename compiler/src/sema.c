@@ -59,6 +59,13 @@ typedef struct GenericTemplate {
     const char *name;
 } GenericTemplate;
 
+/* generic impl blocks: impl Box<T> { ... } — instantiated alongside the
+   matching struct each time a concrete Box<X> is encountered */
+typedef struct GenericImplTemplate {
+    struct GenericImplTemplate *next;
+    Item *item;
+} GenericImplTemplate;
+
 /* ── Sema context ─────────────────────────────────────────────────────────── */
 
 typedef struct {
@@ -70,6 +77,7 @@ typedef struct {
     EnumInfo         *enums;     /* name → variant values for enum lookup */
     UnionInfo        *unions;    /* name → tagged union variant table */
     GenericTemplate  *generics;  /* uninstantiated generic templates */
+    GenericImplTemplate *impl_generics; /* uninstantiated generic impl blocks */
     /* built-in types — interned once */
     Type   *ty_void, *ty_bool, *ty_i8, *ty_i16, *ty_i32, *ty_i64;
     Type   *ty_u8,   *ty_u16,  *ty_u32, *ty_u64, *ty_usize;
@@ -1547,6 +1555,30 @@ static void subst_stmts(StmtList sl, const char **params, Type **concretes,
     }
 }
 
+/* Instantiate a single generic fn item (top-level fn, or impl method) under
+   the given type-param → concrete-type substitution. new_name is used as
+   the instantiated item's name as-is (callers mangle as appropriate). */
+static Item *instantiate_fn_with(Item *tmpl_fn, const char *new_name,
+                                  const char **params,
+                                  Type **concretes, size_t n_concretes, Arena *a) {
+    Item *inst = ARENA_NEW(a, Item);
+    *inst = *tmpl_fn;
+    inst->name             = new_name;
+    inst->fn.type_params   = NULL;
+    inst->fn.n_type_params = 0;
+    Param *np = ARENA_ALLOC(a, Param, tmpl_fn->fn.params.len);
+    for (size_t i = 0; i < tmpl_fn->fn.params.len; i++) {
+        np[i]    = tmpl_fn->fn.params.data[i];
+        np[i].ty = subst_type(tmpl_fn->fn.params.data[i].ty,
+                               params, concretes, n_concretes, a);
+    }
+    inst->fn.params.data = np;
+    inst->fn.ret  = subst_type(tmpl_fn->fn.ret, params, concretes, n_concretes, a);
+    inst->fn.body = clone_stmts(tmpl_fn->fn.body, a);
+    subst_stmts(inst->fn.body, params, concretes, n_concretes, a);
+    return inst;
+}
+
 static Item *instantiate(Item *tmpl, const char *mangled_name,
                           Type **concretes, size_t n_concretes, Arena *a) {
     const char **params = NULL;
@@ -1559,6 +1591,9 @@ static Item *instantiate(Item *tmpl, const char *mangled_name,
         n_params = tmpl->struct_.n_type_params;
     }
     if (n_params != n_concretes) return tmpl;
+
+    if (tmpl->kind == ITEM_FN)
+        return instantiate_fn_with(tmpl, mangled_name, params, concretes, n_concretes, a);
 
     Item *inst = ARENA_NEW(a, Item);
     *inst = *tmpl;
@@ -1574,20 +1609,32 @@ static Item *instantiate(Item *tmpl, const char *mangled_name,
                                    params, concretes, n_concretes, a);
         }
         inst->struct_.fields.data = nf;
-    } else if (tmpl->kind == ITEM_FN) {
-        inst->fn.type_params   = NULL;
-        inst->fn.n_type_params = 0;
-        Param *np = ARENA_ALLOC(a, Param, tmpl->fn.params.len);
-        for (size_t i = 0; i < tmpl->fn.params.len; i++) {
-            np[i]    = tmpl->fn.params.data[i];
-            np[i].ty = subst_type(tmpl->fn.params.data[i].ty,
-                                   params, concretes, n_concretes, a);
-        }
-        inst->fn.params.data = np;
-        inst->fn.ret  = subst_type(tmpl->fn.ret, params, concretes, n_concretes, a);
-        inst->fn.body = clone_stmts(tmpl->fn.body, a);
-        subst_stmts(inst->fn.body, params, concretes, n_concretes, a);
     }
+    return inst;
+}
+
+/* Instantiate a generic impl block (impl Box<T> { ... }) for a concrete
+   struct instantiation, substituting type params through every method's
+   params/ret/body. Returns NULL if arity doesn't match. */
+static Item *instantiate_impl(Item *tmpl, const char *mangled_ty_name,
+                               Type **concretes, size_t n_concretes, Arena *a) {
+    if (tmpl->impl.n_type_params != n_concretes) return NULL;
+
+    Item *inst = ARENA_NEW(a, Item);
+    *inst = *tmpl;
+    inst->name                = mangled_ty_name;
+    inst->impl.ty_name        = mangled_ty_name;
+    inst->impl.type_params    = NULL;
+    inst->impl.n_type_params  = 0;
+
+    Item **nm = ARENA_ALLOC(a, Item *, tmpl->impl.methods.len);
+    for (size_t i = 0; i < tmpl->impl.methods.len; i++) {
+        Item *m = tmpl->impl.methods.data[i];
+        if (m->kind != ITEM_FN) { nm[i] = m; continue; }
+        nm[i] = instantiate_fn_with(m, m->name, tmpl->impl.type_params,
+                                    concretes, n_concretes, a);
+    }
+    inst->impl.methods.data = nm;
     return inst;
 }
 
@@ -1702,6 +1749,15 @@ static void register_item(Sema *s, Item *item) {
             break;
         }
         case ITEM_IMPL: {
+            if (item->impl.n_type_params > 0) {
+                /* generic impl block: defer until matching concrete struct
+                   instantiations are seen */
+                GenericImplTemplate *git = ARENA_NEW(s->arena, GenericImplTemplate);
+                git->item = item;
+                git->next = s->impl_generics;
+                s->impl_generics = git;
+                break;
+            }
             for (size_t i = 0; i < item->impl.methods.len; i++) {
                 Item *m = item->impl.methods.data[i];
                 if (m->kind != ITEM_FN) continue;
@@ -1770,20 +1826,38 @@ int sema_check(Module *mod) {
     /* pass 1.5: instantiate generics recorded during parsing */
     for (size_t i = 0; i < mod->gen_insts.len; i++) {
         GenInst *gi = &mod->gen_insts.data[i];
-        if (lookup(&s, gi->mangled)) continue; /* already instantiated or concrete */
-        GenericTemplate *gt = NULL;
-        for (GenericTemplate *g = s.generics; g; g = g->next)
-            if (!strcmp(g->name, gi->base)) { gt = g; break; }
-        if (!gt) continue; /* not a known generic — pass 2 will report the error */
-        Item *inst = instantiate(gt->item, gi->mangled, gi->args, gi->n_args, s.arena);
-        /* append to module so pass 2 checks it */
-        size_t new_len = mod->items.len + 1;
-        Item **new_data = ARENA_ALLOC(s.arena, Item *, new_len);
-        memcpy(new_data, mod->items.data, mod->items.len * sizeof(Item *));
-        new_data[mod->items.len] = inst;
-        mod->items.data = new_data;
-        mod->items.len  = new_len;
-        register_item(&s, inst);
+        if (!lookup(&s, gi->mangled)) {
+            GenericTemplate *gt = NULL;
+            for (GenericTemplate *g = s.generics; g; g = g->next)
+                if (!strcmp(g->name, gi->base)) { gt = g; break; }
+            if (gt) {
+                Item *inst = instantiate(gt->item, gi->mangled, gi->args, gi->n_args, s.arena);
+                /* append to module so pass 2 checks it */
+                size_t new_len = mod->items.len + 1;
+                Item **new_data = ARENA_ALLOC(s.arena, Item *, new_len);
+                memcpy(new_data, mod->items.data, mod->items.len * sizeof(Item *));
+                new_data[mod->items.len] = inst;
+                mod->items.data = new_data;
+                mod->items.len  = new_len;
+                register_item(&s, inst);
+            }
+            /* else: not a known generic — pass 2 will report the error */
+        }
+        /* also instantiate any matching generic impl block for this concrete type.
+           gen_insts entries have unique mangled names (parser dedups them), so
+           each (base, args) combination is only seen once here. */
+        for (GenericImplTemplate *git = s.impl_generics; git; git = git->next) {
+            if (strcmp(git->item->impl.ty_name, gi->base)) continue;
+            Item *impl_inst = instantiate_impl(git->item, gi->mangled, gi->args, gi->n_args, s.arena);
+            if (!impl_inst) continue;
+            size_t new_len = mod->items.len + 1;
+            Item **new_data = ARENA_ALLOC(s.arena, Item *, new_len);
+            memcpy(new_data, mod->items.data, mod->items.len * sizeof(Item *));
+            new_data[mod->items.len] = impl_inst;
+            mod->items.data = new_data;
+            mod->items.len  = new_len;
+            register_item(&s, impl_inst);
+        }
     }
 
     /* pass 1.7: pre-register all globals so fn bodies can reference them regardless
@@ -1811,7 +1885,10 @@ int sema_check(Module *mod) {
                 check_struct(&s, item);
                 break;
             case ITEM_ENUM:       check_enum(&s, item);       break;
-            case ITEM_IMPL:       check_impl(&s, item);       break;
+            case ITEM_IMPL:
+                if (item->impl.n_type_params > 0) break; /* skip generic template */
+                check_impl(&s, item);
+                break;
             case ITEM_GLOBAL:     check_global(&s, item);     break;
             case ITEM_EXTERN_FN:  check_extern_fn(&s, item);  break;
             case ITEM_TYPE_ALIAS: check_type_alias(&s, item); break;
