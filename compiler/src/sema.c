@@ -1894,8 +1894,16 @@ static void register_item(Sema *s, Item *item) {
                 if (m->fn.params.len > 0) {
                     ty->fn.params.data = ARENA_ALLOC(s->arena, Type *, m->fn.params.len);
                     ty->fn.params.len  = m->fn.params.len;
-                    for (size_t j = 0; j < m->fn.params.len; j++)
-                        ty->fn.params.data[j] = m->fn.params.data[j].ty;
+                    for (size_t j = 0; j < m->fn.params.len; j++) {
+                        Type *param_ty = m->fn.params.data[j].ty;
+                        /* bare 'self' parameter: synthesize TY_NAMED from impl type */
+                        if (!param_ty && !strcmp(m->fn.params.data[j].name, "self")) {
+                            param_ty = make_ty(s, TY_NAMED);
+                            param_ty->named.name = item->impl.ty_name;
+                            m->fn.params.data[j].ty = param_ty;
+                        }
+                        ty->fn.params.data[j] = param_ty;
+                    }
                 }
                 define(s, m->span, m->name, ty, 0, 0);
             }

@@ -1697,8 +1697,12 @@ static Item *parse_item(Parser *p) {
         while (!check(p, TOK_RPAREN) && !check(p, TOK_EOF)) {
             if (cur(p).kind == TOK_DOTDOT) { variadic = 1; advance(p); break; }
             const char *pn = expect(p, TOK_IDENT).sval;
-            expect(p, TOK_COLON);
-            Type *pt = parse_type(p);
+            Type *pt = NULL;
+            /* bare 'self' param: no type annotation — sema fills it in from impl context */
+            if (strcmp(pn, "self") != 0 || (!check(p, TOK_COMMA) && !check(p, TOK_RPAREN))) {
+                expect(p, TOK_COLON);
+                pt = parse_type(p);
+            }
             Param par = { .name = pn, .ty = pt };
             SLICE_PUSH(p->arena, &params, Param, par);
             eat(p, TOK_COMMA);

@@ -272,22 +272,25 @@ static const char *llvm_type(Type *ty) {
         case TY_SMART_PTR: return "ptr";
         case TY_SLICE:     return "{ ptr, i64 }";
         case TY_FAILABLE: {
-            static char fbufs[4][256];
+            static char fbufs[8][256];
             static int  fbi = 0;
-            fbi = (fbi + 1) % 4;
-            snprintf(fbufs[fbi], sizeof(fbufs[fbi]), "{ %s, i32 }", llvm_type(ty->ptr.inner));
-            return fbufs[fbi];
+            int my_fslot = (fbi + 1) % 8;
+            fbi = my_fslot;
+            const char *inner_llt = llvm_type(ty->ptr.inner);
+            snprintf(fbufs[my_fslot], sizeof(fbufs[my_fslot]), "{ %s, i32 }", inner_llt);
+            return fbufs[my_fslot];
         }
         case TY_ARRAY: {
-            static char abufs[4][64];
+            static char abufs[16][256];
             static int  abi = 0;
-            abi = (abi + 1) % 4;
+            int my_aslot = (abi + 1) % 16;
+            abi = my_aslot;
             int64_t n = 0;
             if (ty->array.size && ty->array.size->kind == EXPR_INT)
                 n = (int64_t)ty->array.size->ival;
             const char *elem = ty->array.inner ? llvm_type(ty->array.inner) : "i8";
-            snprintf(abufs[abi], sizeof(abufs[abi]), "[%" PRId64 " x %s]", n, elem);
-            return abufs[abi];
+            snprintf(abufs[my_aslot], sizeof(abufs[my_aslot]), "[%" PRId64 " x %s]", n, elem);
+            return abufs[my_aslot];
         }
         case TY_NAMED: {
             /* Round-robin static buffers — safe for up to 8 concurrent uses */
@@ -1964,7 +1967,7 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                 }
             } else {
                 /* numeric cast — choose trunc/sext/zext based on bit widths */
-                const char *src_llt = src_ty ? llvm_type(src_ty) : "i32";
+                const char *src_llt = src_ty ? effective_llvm_type(cg, src_ty) : "i32";
                 int src_bits = 32; /* default */
                 if (!strcmp(src_llt,"i8"))  src_bits=8;
                 else if (!strcmp(src_llt,"i16")) src_bits=16;
@@ -2583,6 +2586,14 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
             int ptr = new_tmp(cg);
             emit(cg, "  %%t%d = getelementptr %s, ptr %s, i64 %s\n",
                  ptr, elem_llt, data_buf, idx.buf);
+            /* nested arrays and structs: return ptr, don't load (aggregate convention) */
+            int elem_is_agg = elem_ty
+                && (elem_ty->kind == TY_ARRAY
+                    || (elem_ty->kind == TY_NAMED && !find_enum(cg, elem_ty->named.name)));
+            if (elem_is_agg) {
+                if (out_ty) *out_ty = elem_ty;
+                return val_tmp(ptr);
+            }
             int t = new_tmp(cg);
             emit(cg, "  %%t%d = load %s, ptr %%t%d\n", t, elem_llt, ptr);
             if (out_ty) *out_ty = elem_ty;
@@ -2918,8 +2929,18 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
             /* allocate backing storage and fill elements */
             int arr = new_tmp(cg);
             emit(cg, "  %%t%d = alloca [%zu x %s]\n", arr, n, elem_llt);
+            /* nested arrays and structs are returned as alloca ptrs — need a load */
+            int elem_needs_load = elem_ty
+                && (elem_ty->kind == TY_ARRAY
+                    || (elem_ty->kind == TY_NAMED && !find_enum(cg, elem_ty->named.name)));
             for (size_t i = 0; i < n; i++) {
-                Val ev = cg_expr(cg, e->array_lit.data[i], NULL);
+                Type *ev_ty = NULL;
+                Val ev = cg_expr(cg, e->array_lit.data[i], &ev_ty);
+                if (elem_needs_load) {
+                    int lv = new_tmp(cg);
+                    emit(cg, "  %%t%d = load %s, ptr %s\n", lv, elem_llt, ev.buf);
+                    ev = val_tmp(lv);
+                }
                 int ep = new_tmp(cg);
                 emit(cg, "  %%t%d = getelementptr [%zu x %s], ptr %%t%d, i32 0, i32 %zu\n",
                      ep, n, elem_llt, arr, i);
