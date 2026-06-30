@@ -200,40 +200,138 @@ A growable array of `i64` values.
 | `Vec.get(self, i)` | get element at index |
 | `Vec.free_vec(self)` | release heap memory |
 
+## `std/fmt`
+
+String formatting utilities. For interpolation-style formatting use the `@fmt` builtin directly (`@fmt("x={} y={}", x, y)`). This module provides type-to-string conversion and padding.
+
+```
+import(fmt = "std/fmt")
+
+h: str  = fmt.hex(255u64)         # "ff"
+hu: str = fmt.hex_upper(255u64)   # "FF"
+fi: str = fmt.fixed(3.14159, 2)   # "3.14"
+pl: str = fmt.pad_left("hi",  6, 32u8)  # "    hi"
+pr: str = fmt.pad_right("hi", 6, 46u8)  # "hi...."
+zp: str = fmt.zero_pad(7, 3)      # "007"
+```
+
+| Function | Description |
+|---|---|
+| `fmt.from_int(n)` | `i64` → decimal string |
+| `fmt.from_uint(n)` | `u64` → decimal string |
+| `fmt.from_float(f)` | `f64` → decimal string |
+| `fmt.from_bool(b)` | `"true"` or `"false"` |
+| `fmt.hex(n)` | `u64` → lowercase hex (no prefix) |
+| `fmt.hex_upper(n)` | `u64` → uppercase hex |
+| `fmt.fixed(f, decimals)` | `f64` with fixed decimal places |
+| `fmt.pad_left(s, width, ch)` | prepend `ch` to reach `width` |
+| `fmt.pad_right(s, width, ch)` | append `ch` to reach `width` |
+| `fmt.zero_pad(n, width)` | left-pad integer with `'0'` |
+
+## `std/str` additions
+
+Beyond the core functions, `std/str` also provides:
+
+| Function | Description |
+|---|---|
+| `s.replace(s, old, new_)` | replace first occurrence of `old` with `new_` |
+| `s.replace_all(s, old, new_)` | replace all non-overlapping occurrences |
+| `s.split_count(s, delim)` | count tokens when splitting by `delim` |
+| `s.split_next(s, delim, pos)` | extract next token, advance `pos` past delimiter |
+| `s.index_of_char(s, ch)` | byte offset of first `ch`, or `s.len` if absent |
+| `s.is_digit_str(s)` | true if all characters are ASCII digits |
+| `s.is_alpha_str(s)` | true if all characters are ASCII letters |
+
+```
+import(s = "std/str")
+
+# split "a,b,c" into tokens
+cnt: usize = s.split_count("a,b,c", ",")   # 3
+pos: usize = 0
+while pos < 5 {
+    tok: str = s.split_next("a,b,c", ",", &pos)
+    if tok.len == 0 { break }
+    @pf("%s\n", tok.data)
+}
+
+replaced: str = s.replace_all("aabbaa", "aa", "X")  # "XbbX"
+```
+
+## `std/os` additions
+
+| Function | Description |
+|---|---|
+| `os.cwd()` | current working directory as a `str` |
+| `os.mkdir_dir(path)` | create directory (mode 755); `true` on success |
+| `os.chdir_to(path)` | change working directory; `true` on success |
+| `os.rmdir_dir(path)` | remove empty directory; `true` on success |
+
 ## `std/atomic`
 
-Atomic integer types for lock-free programming.
+Lock-free atomic operations on `i64` values. All operations use sequentially-consistent ordering.
 
 ```
-import "std/atomic"
+import(atomic = "std/atomic")
 
-counter: atomic.I32 = atomic.I32.new(0)
-counter.fetch_add(1)
-v: i32 = counter.load()
+counter: i64 = 0
+
+atomic.add(&counter, 1)        # add 1, return old value
+atomic.sub(&counter, 1)        # subtract 1, return old value
+v: i64 = atomic.load(&counter) # atomic read
+atomic.store(&counter, 0)      # atomic write
+ok: bool = atomic.cas(&counter, 0, 42)  # compare-and-swap
+
+atomic.inc(&counter)   # add 1, return new value
+atomic.dec(&counter)   # subtract 1, return new value
 ```
+
+| Function | Description |
+|---|---|
+| `atomic.load(ptr)` | atomically read `*ptr` |
+| `atomic.store(ptr, val)` | atomically write `val` to `*ptr` |
+| `atomic.add(ptr, val)` | add `val`, return **old** value |
+| `atomic.sub(ptr, val)` | subtract `val`, return **old** value |
+| `atomic.bit_and(ptr, val)` | bitwise AND, return old value |
+| `atomic.bit_or(ptr, val)` | bitwise OR, return old value |
+| `atomic.xor(ptr, val)` | bitwise XOR, return old value |
+| `atomic.swap(ptr, val)` | swap with `val`, return old value |
+| `atomic.cas(ptr, expected, desired)` | compare-and-swap; `true` if swapped |
+| `atomic.inc(ptr)` | add 1, return **new** value |
+| `atomic.dec(ptr)` | subtract 1, return **new** value |
 
 ## `std/sync`
 
-Mutex, RwLock, and channels.
+Mutex and RwLock via pthreads. Link with `-lpthread`.
 
 ```
-import "std/sync"
+import(sync = "std/sync")
 
-mu: sync.Mutex = sync.Mutex.new()
-mu.lock()
-defer mu.unlock()
+mu: sync.Mutex = sync.mutex_new()
+sync.lock(&mu)
+defer sync.unlock(&mu)
 # ... critical section ...
+
+rw: sync.RwLock = sync.rwlock_new()
+sync.rlock(&rw)    # shared reader lock
+sync.rwunlock(&rw)
+sync.wlock(&rw)    # exclusive writer lock
+sync.rwunlock(&rw)
 ```
 
-## `std/fmt`
-
-String formatting without printing.
-
-```
-import "std/fmt"
-
-s: str = fmt.sprintf("x={} y={}", x, y)
-```
+| Function | Description |
+|---|---|
+| `sync.mutex_new()` | create an initialized `Mutex` |
+| `sync.lock(m)` | acquire (blocks until available) |
+| `sync.trylock(m)` | try to acquire; `true` if taken |
+| `sync.unlock(m)` | release |
+| `sync.mutex_destroy(m)` | free pthread resources |
+| `sync.rwlock_new()` | create an initialized `RwLock` |
+| `sync.rlock(rw)` | acquire shared reader lock |
+| `sync.tryrlock(rw)` | try reader lock; `true` if taken |
+| `sync.wlock(rw)` | acquire exclusive writer lock |
+| `sync.trywlock(rw)` | try writer lock; `true` if taken |
+| `sync.rwunlock(rw)` | release reader or writer lock |
+| `sync.rwlock_destroy(rw)` | free pthread resources |
 
 ## `std/net` *(planned)*
 

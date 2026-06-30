@@ -332,6 +332,13 @@ static Type *builtin_ret_ty(Sema *s, const char *name) {
         return sl;
     }
     if (!strcmp(name, "str_raw"))  return s->ty_str;
+    if (!strcmp(name, "atomic_load"))                    return s->ty_i64;
+    if (!strcmp(name, "atomic_store"))                   return s->ty_void;
+    if (!strcmp(name, "atomic_add")  || !strcmp(name, "atomic_sub") ||
+        !strcmp(name, "atomic_and")  || !strcmp(name, "atomic_or")  ||
+        !strcmp(name, "atomic_xor")  || !strcmp(name, "atomic_swap"))
+                                                         return s->ty_i64;
+    if (!strcmp(name, "atomic_cas"))                     return s->ty_bool;
     return NULL;
 }
 

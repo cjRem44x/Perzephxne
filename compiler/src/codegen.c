@@ -1311,6 +1311,54 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                 return val_tmp(f2);
             }
 
+            /* @atomic_load / @atomic_store / @atomic_add etc. */
+            if (!strncmp(name, "atomic_", 7)) {
+                const char *op = name + 7; /* "load", "store", "add", ... */
+                if (!strcmp(op, "load")) {
+                    if (e->builtin.args.len < 1) fatal_at(e->span, "@atomic_load requires a pointer");
+                    Val ptr = cg_expr(cg, e->builtin.args.data[0], NULL);
+                    int t = new_tmp(cg);
+                    emit(cg, "  %%t%d = load atomic i64, ptr %s seq_cst, align 8\n", t, ptr.buf);
+                    if (out_ty) { Type *ty = ARENA_NEW(cg->arena, Type); ty->kind = TY_I64; *out_ty = ty; }
+                    return val_tmp(t);
+                }
+                if (!strcmp(op, "store")) {
+                    if (e->builtin.args.len < 2) fatal_at(e->span, "@atomic_store requires ptr and value");
+                    Val ptr = cg_expr(cg, e->builtin.args.data[0], NULL);
+                    Val val = cg_expr(cg, e->builtin.args.data[1], NULL);
+                    emit(cg, "  store atomic i64 %s, ptr %s seq_cst, align 8\n", val.buf, ptr.buf);
+                    if (out_ty) { Type *ty = ARENA_NEW(cg->arena, Type); ty->kind = TY_VOID; *out_ty = ty; }
+                    Val dummy; dummy.buf[0] = '0'; dummy.buf[1] = '\0';
+                    return dummy;
+                }
+                if (!strcmp(op, "cas")) {
+                    if (e->builtin.args.len < 3) fatal_at(e->span, "@atomic_cas requires ptr, expected, desired");
+                    Val ptr = cg_expr(cg, e->builtin.args.data[0], NULL);
+                    Val exp = cg_expr(cg, e->builtin.args.data[1], NULL);
+                    Val des = cg_expr(cg, e->builtin.args.data[2], NULL);
+                    int t = new_tmp(cg);
+                    emit(cg, "  %%t%d = cmpxchg ptr %s, i64 %s, i64 %s seq_cst seq_cst\n", t, ptr.buf, exp.buf, des.buf);
+                    int t2 = new_tmp(cg);
+                    emit(cg, "  %%t%d = extractvalue { i64, i1 } %%t%d, 1\n", t2, t);
+                    if (out_ty) { Type *ty = ARENA_NEW(cg->arena, Type); ty->kind = TY_BOOL; *out_ty = ty; }
+                    return val_tmp(t2);
+                }
+                /* add, sub, and, or, xor, swap */
+                const char *llvm_op = "add";
+                if (!strcmp(op, "sub"))  llvm_op = "sub";
+                if (!strcmp(op, "and"))  llvm_op = "and";
+                if (!strcmp(op, "or"))   llvm_op = "or";
+                if (!strcmp(op, "xor"))  llvm_op = "xor";
+                if (!strcmp(op, "swap")) llvm_op = "xchg";
+                if (e->builtin.args.len < 2) fatal_at(e->span, "@atomic_* requires ptr and value");
+                Val ptr = cg_expr(cg, e->builtin.args.data[0], NULL);
+                Val val = cg_expr(cg, e->builtin.args.data[1], NULL);
+                int t = new_tmp(cg);
+                emit(cg, "  %%t%d = atomicrmw %s ptr %s, i64 %s seq_cst\n", t, llvm_op, ptr.buf, val.buf);
+                if (out_ty) { Type *ty = ARENA_NEW(cg->arena, Type); ty->kind = TY_I64; *out_ty = ty; }
+                return val_tmp(t);
+            }
+
             /* @offsetof(T, field) — byte offset of a struct field */
             if (!strcmp(name, "offsetof")) {
                 if (e->builtin.args.len < 2)
@@ -1564,8 +1612,28 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                     emit(cg, "  call i32 (ptr, ptr, ...) @sprintf("
                              "ptr %%t%d, ptr @.fmt.f, double %s)\n", cptr, sv.buf);
                 } else {
-                    emit(cg, "  call i32 (ptr, ptr, ...) @sprintf("
-                             "ptr %%t%d, ptr @.fmt.d, i32 %s)\n", cptr, src.buf);
+                    int is_wide = src_ty && (src_ty->kind == TY_I64 || src_ty->kind == TY_U64 ||
+                                             src_ty->kind == TY_USIZE);
+                    if (is_wide) {
+                        emit(cg, "  call i32 (ptr, ptr, ...) @sprintf("
+                                 "ptr %%t%d, ptr @.fmt.lld, i64 %s)\n", cptr, src.buf);
+                    } else {
+                        /* narrow integers: sext/zext to i32 first */
+                        const char *src_llt = src_ty ? llvm_type(src_ty) : "i32";
+                        Val sv = src;
+                        if (strcmp(src_llt, "i32") != 0) {
+                            int tp = new_tmp(cg);
+                            int is_signed = src_ty && (src_ty->kind == TY_I8 || src_ty->kind == TY_I16 ||
+                                                       src_ty->kind == TY_I32 || src_ty->kind == TY_BOOL);
+                            if (is_signed)
+                                emit(cg, "  %%t%d = sext %s %s to i32\n", tp, src_llt, src.buf);
+                            else
+                                emit(cg, "  %%t%d = zext %s %s to i32\n", tp, src_llt, src.buf);
+                            sv = val_tmp(tp);
+                        }
+                        emit(cg, "  call i32 (ptr, ptr, ...) @sprintf("
+                                 "ptr %%t%d, ptr @.fmt.d, i32 %s)\n", cptr, sv.buf);
+                    }
                 }
                 int slen = new_tmp(cg);
                 emit(cg, "  %%t%d = call i64 @strlen(ptr %%t%d)\n", slen, cptr);
@@ -3639,8 +3707,9 @@ int codegen(Module *mod, FILE *out, int release) {
     emit(&cg, "@__przp_argv = internal global ptr null\n\n");
 
     /* format string constants */
-    emit(&cg, "@.fmt.d = private constant [3 x i8] c\"%%d\\00\"\n");
-    emit(&cg, "@.fmt.f = private constant [3 x i8] c\"%%f\\00\"\n\n");
+    emit(&cg, "@.fmt.d   = private constant [3 x i8] c\"%%d\\00\"\n");
+    emit(&cg, "@.fmt.f   = private constant [3 x i8] c\"%%f\\00\"\n");
+    emit(&cg, "@.fmt.lld = private constant [5 x i8] c\"%%lld\\00\"\n\n");
 
     /* enum variant tables (no IR to emit — enums are integer constants) */
     for (size_t i = 0; i < mod->items.len; i++) {

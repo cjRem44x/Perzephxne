@@ -6,6 +6,10 @@ extern fn system(cmd: *u8) -> i32
 extern fn malloc(n: usize) -> *u8
 extern fn free(p: *u8)
 extern fn strlen(s: *u8) -> usize
+extern fn getcwd(buf: *u8, size: usize) -> *u8
+extern fn mkdir(path: *u8, mode: u32) -> i32
+extern fn chdir(path: *u8) -> i32
+extern fn rmdir(path: *u8) -> i32
 
 # exit with a status code
 fn quit(code: i32) {
@@ -23,5 +27,29 @@ fn getenv_str(name: str) -> str {
 # run: execute a shell command, return exit status
 fn run(cmd: str) -> i32 {
     ret system(cmd.data)
+}
+
+# cwd: return the current working directory as a str (heap-allocated)
+fn cwd() -> str {
+    buf: *u8 = malloc(4096)
+    got: *u8 = getcwd(buf, 4096)
+    if got == null { ret @str_raw(buf, 0) }
+    n: usize = strlen(buf)
+    ret @str_raw(buf, n)
+}
+
+# mkdir_p: create a directory with rwxr-xr-x permissions; returns true on success or if it already exists
+fn mkdir_dir(path: str) -> bool {
+    ret mkdir(path.data, 493u32) == 0
+}
+
+# chdir_to: change the working directory; returns true on success
+fn chdir_to(path: str) -> bool {
+    ret chdir(path.data) == 0
+}
+
+# rmdir_dir: remove an empty directory; returns true on success
+fn rmdir_dir(path: str) -> bool {
+    ret rmdir(path.data) == 0
 }
 
