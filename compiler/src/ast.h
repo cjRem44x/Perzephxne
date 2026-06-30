@@ -184,6 +184,7 @@ struct Stmt {
             int         mutable;   /* 1 = mutable (=), 0 = immutable (:) */
             Expr       *init;      /* may be NULL */
             int         infer;     /* 1 = := or ::, widen to platform max type */
+            int         is_fail_err; /* 1 = err-side of val,err: !T destructure */
         } let;
 
         struct { Expr *target; AssignOp op; Expr *val; } assign;

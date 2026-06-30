@@ -1556,6 +1556,41 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                 return val_tmp(f1);
             }
 
+            /* @is_ok(r: !T) → bool: check error code == 0 */
+            if (!strcmp(name, "is_ok") || !strcmp(name, "is_err")) {
+                if (e->builtin.args.len < 1)
+                    fatal_at(e->span, "@%s requires one argument", name);
+                Type *rty = NULL;
+                Val rv = cg_expr(cg, e->builtin.args.data[0], &rty);
+                if (!rty || rty->kind != TY_FAILABLE)
+                    fatal_at(e->span, "@%s argument must be a failable type (!T)", name);
+                const char *fail_llt = llvm_type(rty);
+                int ev = new_tmp(cg);
+                emit(cg, "  %%t%d = extractvalue %s %s, 1\n", ev, fail_llt, rv.buf);
+                int cmp = new_tmp(cg);
+                if (!strcmp(name, "is_ok"))
+                    emit(cg, "  %%t%d = icmp eq i32 %%t%d, 0\n", cmp, ev);
+                else
+                    emit(cg, "  %%t%d = icmp ne i32 %%t%d, 0\n", cmp, ev);
+                if (out_ty) { Type *bt = ARENA_NEW(cg->arena, Type); bt->kind = TY_BOOL; *out_ty = bt; }
+                return val_tmp(cmp);
+            }
+
+            /* @unwrap(r: !T) → T: extract the value from a failable */
+            if (!strcmp(name, "unwrap")) {
+                if (e->builtin.args.len < 1)
+                    fatal_at(e->span, "@unwrap requires one argument");
+                Type *rty = NULL;
+                Val rv = cg_expr(cg, e->builtin.args.data[0], &rty);
+                if (!rty || rty->kind != TY_FAILABLE)
+                    fatal_at(e->span, "@unwrap argument must be a failable type (!T)");
+                const char *fail_llt = llvm_type(rty);
+                int vv = new_tmp(cg);
+                emit(cg, "  %%t%d = extractvalue %s %s, 0\n", vv, fail_llt, rv.buf);
+                if (out_ty) *out_ty = rty->ptr.inner;
+                return val_tmp(vv);
+            }
+
             /* @debug / @release — compile-time build mode booleans */
             if (!strcmp(name, "debug")) {
                 if (out_ty) { Type *bt = ARENA_NEW(cg->arena, Type); bt->kind = TY_BOOL; *out_ty = bt; }
@@ -2839,7 +2874,7 @@ static void cg_stmt(CG *cg, Stmt *s) {
         }
 
         case STMT_LET: {
-            int is_fail_err = s->let.ty && s->let.ty->kind == TY_FAILABLE;
+            int is_fail_err = s->let.is_fail_err; /* err-side of val,err: !T destructure */
             /* allocate storage */
             int alloca = new_tmp(cg);
             const char *llt = s->let.ty ? effective_llvm_type(cg, s->let.ty) : "i32";
@@ -2941,8 +2976,13 @@ static void cg_stmt(CG *cg, Stmt *s) {
                     } else if (is_struct) {
                         /* struct returned by value from a call — store directly */
                         emit(cg, "  store %s %s, ptr %%t%d\n", llvm_type(init_ty), init.buf, alloca);
+                    } else if (!is_fail_err && s->let.ty && s->let.ty->kind == TY_FAILABLE
+                               && init_ty && init_ty->kind == TY_FAILABLE) {
+                        /* standalone failable variable: r: !T = fn() — store full struct */
+                        const char *fail_llt = llvm_type(init_ty);
+                        emit(cg, "  store %s %s, ptr %%t%d\n", fail_llt, init.buf, alloca);
                     } else if (!is_fail_err && init_ty && init_ty->kind == TY_FAILABLE) {
-                        /* val-side of failable destructure: extract field 0, cache aggregate */
+                        /* val-side of failable destructure: val: T = fn() — extract field 0 */
                         cg->last_fail_init = s->let.init;
                         cg->last_fail_val  = init;
                         cg->last_fail_ty   = init_ty;
@@ -2950,12 +2990,6 @@ static void cg_stmt(CG *cg, Stmt *s) {
                         int vv = new_tmp(cg);
                         emit(cg, "  %%t%d = extractvalue %s %s, 0\n", vv, fail_llt, init.buf);
                         emit(cg, "  store %s %%t%d, ptr %%t%d\n", llt, vv, alloca);
-                    } else if (is_fail_err && init_ty && init_ty->kind == TY_FAILABLE) {
-                        /* err-side without cache (standalone failable let) */
-                        const char *fail_llt = llvm_type(init_ty);
-                        int ev = new_tmp(cg);
-                        emit(cg, "  %%t%d = extractvalue %s %s, 1\n", ev, fail_llt, init.buf);
-                        emit(cg, "  store i32 %%t%d, ptr %%t%d\n", ev, alloca);
                     } else {
                         const char *store_ty = init_ty ? effective_llvm_type(cg, init_ty) : llt;
                         /* coerce type if alloca type differs from init type */

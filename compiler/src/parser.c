@@ -1061,10 +1061,11 @@ static Stmt *parse_let(Parser *p) {
 
         /* err name gets the error side — we mark with a special type for sema */
         Stmt *s2 = mkstmt(p, STMT_LET, span);
-        s2->let.name    = name2;
-        s2->let.ty      = ty;   /* keep !T for the error */
-        s2->let.mutable = mut;
-        s2->let.init    = init;
+        s2->let.name         = name2;
+        s2->let.ty           = ty;   /* keep !T for the error */
+        s2->let.mutable      = mut;
+        s2->let.init         = init;
+        s2->let.is_fail_err  = 1;
         LIST_PUSH(p->arena, &bl, Stmt, s2);
 
         block->block = bl;

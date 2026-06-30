@@ -350,6 +350,7 @@ static Type *builtin_ret_ty(Sema *s, const char *name) {
                                                          return s->ty_i64;
     if (!strcmp(name, "atomic_cas"))                     return s->ty_bool;
     if (!strcmp(name, "asm") || !strcmp(name, "asm_volatile")) return s->ty_void;
+    if (!strcmp(name, "is_ok") || !strcmp(name, "is_err")) return s->ty_bool;
     return NULL;
 }
 
@@ -421,6 +422,17 @@ static Type *check_expr(Sema *s, Expr *e) {
             } else if (!strcmp(e->builtin.name, "clone") && e->builtin.args.len > 0) {
                 /* @clone(ptr: ^T) → ^T */
                 ret = e->builtin.args.data[0]->ty;
+            } else if (!strcmp(e->builtin.name, "ok") && e->builtin.args.len > 0) {
+                /* @ok(val: T) → !T */
+                ret = make_ptr(s, TY_FAILABLE, e->builtin.args.data[0]->ty);
+            } else if (!strcmp(e->builtin.name, "err") && e->builtin.args.len > 0) {
+                /* @err(code) → !T; inner type inferred from current function return type */
+                Type *cur = s->cur_ret;
+                ret = (cur && cur->kind == TY_FAILABLE) ? cur : make_ptr(s, TY_FAILABLE, s->ty_i32);
+            } else if (!strcmp(e->builtin.name, "unwrap") && e->builtin.args.len > 0) {
+                /* @unwrap(r: !T) → T */
+                Type *arg = e->builtin.args.data[0]->ty;
+                ret = (arg && arg->kind == TY_FAILABLE) ? arg->ptr.inner : arg;
             } else if (!ret && e->builtin.args.len > 0) {
                 /* for min/max/abs: inherit first arg type */
                 ret = e->builtin.args.data[0]->ty;
@@ -884,9 +896,9 @@ static void check_stmt(Sema *s, Stmt *st) {
             if (!st->let.ty && ty)
                 st->let.ty = ty;
 
-            /* handle failable: val, err: !T = func() */
-            if (ty && ty->kind == TY_FAILABLE) {
-                /* This let is the err variable: define as i32 error code */
+            /* failable: distinguish err-side destructure from standalone !T variable */
+            if (ty && ty->kind == TY_FAILABLE && st->let.is_fail_err) {
+                /* err-side of val,err: !T = fn() — define as i32 error code */
                 Type *err_ty = ARENA_NEW(s->arena, Type);
                 err_ty->kind = TY_I32;
                 define(s, st->span, st->let.name, err_ty, st->let.mutable, 0);
