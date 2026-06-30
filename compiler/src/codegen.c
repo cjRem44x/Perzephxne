@@ -2435,11 +2435,18 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
             } else {
                 obj = cg_expr(cg, e->field.obj, &obj_ty);
             }
-            /* auto-deref: *Struct.field — EXPR_IDENT already loaded the ptr value;
-               just use it directly as the struct pointer for GEP */
+            /* auto-deref: *Struct.field or ^Struct.field */
             if (obj_ty && obj_ty->kind == TY_PTR && obj_ty->ptr.inner
                     && obj_ty->ptr.inner->kind == TY_NAMED)
                 obj_ty = obj_ty->ptr.inner;
+            if (obj_ty && obj_ty->kind == TY_SMART_PTR && obj_ty->ptr.inner
+                    && obj_ty->ptr.inner->kind == TY_NAMED) {
+                /* ^T: data starts at byte offset 8 (after refcount) */
+                int dp = new_tmp(cg);
+                emit(cg, "  %%t%d = getelementptr i8, ptr %s, i64 8\n", dp, obj.buf);
+                obj = val_tmp(dp);
+                obj_ty = obj_ty->ptr.inner;
+            }
             if (!obj_ty || obj_ty->kind != TY_NAMED)
                 fatal_at(e->span, "field access on non-struct value");
             StructInfo *si = find_struct(cg, obj_ty->named.name);
@@ -3203,10 +3210,17 @@ static void cg_stmt(CG *cg, Stmt *s) {
                 } else {
                     obj = cg_expr(cg, s->assign.target->field.obj, &obj_ty);
                 }
-                /* auto-deref: *Struct.field — ptr value already loaded by cg_expr */
+                /* auto-deref: *Struct.field or ^Struct.field */
                 if (obj_ty && obj_ty->kind == TY_PTR && obj_ty->ptr.inner
                         && obj_ty->ptr.inner->kind == TY_NAMED)
                     obj_ty = obj_ty->ptr.inner;
+                if (obj_ty && obj_ty->kind == TY_SMART_PTR && obj_ty->ptr.inner
+                        && obj_ty->ptr.inner->kind == TY_NAMED) {
+                    int dp = new_tmp(cg);
+                    emit(cg, "  %%t%d = getelementptr i8, ptr %s, i64 8\n", dp, obj.buf);
+                    obj = val_tmp(dp);
+                    obj_ty = obj_ty->ptr.inner;
+                }
                 if (obj_ty && obj_ty->kind == TY_NAMED) {
                     StructInfo *si = find_struct(cg, obj_ty->named.name);
                     const char *fname = s->assign.target->field.field;

@@ -630,9 +630,9 @@ static Type *check_expr(Sema *s, Expr *e) {
         case EXPR_FIELD: {
             Type *obj_ty = check_expr(s, e->field.obj);
             obj_ty = resolve_named(s, obj_ty);
-            /* auto-deref: *Struct.field transparently accesses the struct's field */
-            if (obj_ty && obj_ty->kind == TY_PTR && obj_ty->ptr.inner
-                    && obj_ty->ptr.inner->kind == TY_NAMED)
+            /* auto-deref: *Struct.field and ^Struct.method transparently access the struct */
+            if (obj_ty && (obj_ty->kind == TY_PTR || obj_ty->kind == TY_SMART_PTR)
+                    && obj_ty->ptr.inner && obj_ty->ptr.inner->kind == TY_NAMED)
                 obj_ty = obj_ty->ptr.inner;
             e->ty = NULL;
             if (obj_ty && obj_ty->kind == TY_NAMED) {
