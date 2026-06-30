@@ -435,6 +435,10 @@ static Type *check_expr(Sema *s, Expr *e) {
                 /* @unwrap(r: !T) → T */
                 Type *arg = e->builtin.args.data[0]->ty;
                 ret = (arg && arg->kind == TY_FAILABLE) ? arg->ptr.inner : arg;
+            } else if (!strcmp(e->builtin.name, "addr") && e->builtin.args.len > 0) {
+                /* @addr(x) → *T  (same as &x) */
+                Type *arg = e->builtin.args.data[0]->ty;
+                ret = make_ptr(s, TY_PTR, arg);
             } else if (!ret && e->builtin.args.len > 0) {
                 /* for min/max/abs: inherit first arg type */
                 ret = e->builtin.args.data[0]->ty;
@@ -919,6 +923,11 @@ static void check_stmt(Sema *s, Stmt *st) {
                 Type *err_ty = ARENA_NEW(s->arena, Type);
                 err_ty->kind = TY_I32;
                 define(s, st->span, st->let.name, err_ty, st->let.mutable, 0);
+            } else if (ty && ty->kind == TY_FAILABLE && st->let.infer && !st->let.is_fail_err) {
+                /* val-side of inferred failable destructure: val := fn() — unwrap to inner type */
+                ty = ty->ptr.inner;
+                st->let.ty = ty;
+                define(s, st->span, st->let.name, ty, st->let.mutable, 0);
             } else {
                 define(s, st->span, st->let.name, ty, st->let.mutable, 0);
             }
@@ -1108,8 +1117,9 @@ static void check_stmt(Sema *s, Stmt *st) {
             int is_fail = (st->block.len == 2
                 && st->block.data[0]->kind == STMT_LET
                 && st->block.data[1]->kind == STMT_LET
-                && st->block.data[1]->let.ty
-                && st->block.data[1]->let.ty->kind == TY_FAILABLE);
+                && (st->block.data[1]->let.is_fail_err
+                    || (st->block.data[1]->let.ty
+                        && st->block.data[1]->let.ty->kind == TY_FAILABLE)));
             if (!is_fail) push_scope(s);
             for (size_t i = 0; i < st->block.len; i++)
                 check_stmt(s, st->block.data[i]);

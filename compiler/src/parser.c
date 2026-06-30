@@ -1065,6 +1065,35 @@ static Stmt *parse_let(Parser *p) {
         else name2 = expect(p, TOK_IDENT).sval;
     }
 
+    /* two-name inferred form: val, err := fn()  or  val, err :: fn() */
+    if (name2 && (check(p, TOK_COLONEQ) || check(p, TOK_COLONCOLON))) {
+        int mut = eat(p, TOK_COLONEQ) ? 1 : (advance(p), 0);
+        Expr *init = parse_expr(p);
+
+        Stmt *block = mkstmt(p, STMT_BLOCK, span);
+        StmtList bl = {0};
+
+        Stmt *s1 = mkstmt(p, STMT_LET, span);
+        s1->let.name    = name1;
+        s1->let.ty      = NULL;  /* resolved by sema from failable inner type */
+        s1->let.mutable = mut;
+        s1->let.init    = init;
+        s1->let.infer   = 1;
+        LIST_PUSH(p->arena, &bl, Stmt, s1);
+
+        Stmt *s2 = mkstmt(p, STMT_LET, span);
+        s2->let.name        = name2;
+        s2->let.ty          = NULL;
+        s2->let.mutable     = mut;
+        s2->let.init        = init;
+        s2->let.infer       = 1;
+        s2->let.is_fail_err = 1;
+        LIST_PUSH(p->arena, &bl, Stmt, s2);
+
+        block->block = bl;
+        return block;
+    }
+
     expect(p, TOK_COLON);
 
     /* type annotation */

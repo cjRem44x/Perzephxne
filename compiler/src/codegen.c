@@ -998,6 +998,17 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                 return val_tmp(cres);
             }
 
+            /* @addr(x) — address-of, same as &x */
+            if (!strcmp(name, "addr") && e->builtin.args.len >= 1) {
+                Expr *arg = e->builtin.args.data[0];
+                if (arg->kind == EXPR_IDENT) {
+                    Symbol *sym = lookup(cg, arg->ident.name);
+                    if (sym) return val_str(sym->llvm_name);
+                }
+                /* fallback: evaluate and return pointer (struct/array already returns alloca) */
+                return cg_expr(cg, arg, out_ty);
+            }
+
             /* @unreachable / @todo */
             if (!strcmp(name, "unreachable") || !strcmp(name, "todo")) {
                 emit(cg, "  call void @exit(i32 1)\n");
@@ -2237,6 +2248,12 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                             arg_vals[i] = val_tmp(sv);
                         }
                     }
+                    if (arg_tys[i] && arg_tys[i]->kind == TY_ARRAY) {
+                        int sv = new_tmp(cg);
+                        emit(cg, "  %%t%d = load %s, ptr %s\n",
+                             sv, llvm_type(arg_tys[i]), arg_vals[i].buf);
+                        arg_vals[i] = val_tmp(sv);
+                    }
                 }
 
                 int t = new_tmp(cg);
@@ -2319,6 +2336,12 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                              sv, effective_llvm_type(cg, arg_tys[i]), arg_vals[i].buf);
                         arg_vals[i] = val_tmp(sv);
                     }
+                }
+                if (arg_tys[i] && arg_tys[i]->kind == TY_ARRAY) {
+                    int sv = new_tmp(cg);
+                    emit(cg, "  %%t%d = load %s, ptr %s\n",
+                         sv, llvm_type(arg_tys[i]), arg_vals[i].buf);
+                    arg_vals[i] = val_tmp(sv);
                 }
             }
 
@@ -3864,8 +3887,9 @@ static void cg_stmt(CG *cg, Stmt *s) {
             int is_fail = (s->block.len == 2
                 && s->block.data[0]->kind == STMT_LET
                 && s->block.data[1]->kind == STMT_LET
-                && s->block.data[1]->let.ty
-                && s->block.data[1]->let.ty->kind == TY_FAILABLE);
+                && (s->block.data[1]->let.is_fail_err
+                    || (s->block.data[1]->let.ty
+                        && s->block.data[1]->let.ty->kind == TY_FAILABLE)));
             if (!is_fail) push_scope(cg);
             for (size_t i = 0; i < s->block.len; i++)
                 cg_stmt(cg, s->block.data[i]);
