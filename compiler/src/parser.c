@@ -120,18 +120,21 @@ static const char *type_to_str(Type *ty, Arena *a) {
 
 static void record_gen_inst(Parser *p, const char *mangled, const char *base,
                              Type **args, size_t n_args) {
-    /* Skip if any arg is still a type parameter (we're inside a generic body).
-       Such pseudo-instantiations can't be emitted as concrete LLVM types. */
+    /* If any arg is still a type parameter (we're inside a generic body), mark
+       the entry as deferred rather than skipping it entirely.  Sema will derive
+       the concrete version when the enclosing generic template is instantiated. */
+    int deferred = 0;
     for (size_t j = 0; j < n_args; j++) {
         if (!args[j] || args[j]->kind != TY_NAMED) continue;
         for (size_t k = 0; k < p->n_cur_type_params; k++) {
-            if (!strcmp(args[j]->named.name, p->cur_type_params[k])) return;
+            if (!strcmp(args[j]->named.name, p->cur_type_params[k])) { deferred = 1; break; }
         }
+        if (deferred) break;
     }
     /* skip duplicates */
     for (size_t i = 0; i < p->gen_insts.len; i++)
         if (!strcmp(p->gen_insts.data[i].mangled, mangled)) return;
-    GenInst gi = { .mangled = mangled, .base = base, .args = args, .n_args = n_args };
+    GenInst gi = { .mangled = mangled, .base = base, .args = args, .n_args = n_args, .deferred = deferred };
     SLICE_PUSH(p->arena, &p->gen_insts, GenInst, gi);
 }
 

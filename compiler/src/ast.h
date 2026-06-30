@@ -312,8 +312,9 @@ struct Item {
 typedef struct {
     const char *mangled;  /* e.g. "Box__i32"  */
     const char *base;     /* e.g. "Box"        */
-    Type      **args;     /* concrete type args */
+    Type      **args;     /* concrete type args (may be TY_NAMED placeholder if deferred) */
     size_t      n_args;
+    int         deferred; /* 1 = args contain type-param placeholders; derive at instantiation time */
 } GenInst;
 
 typedef struct { GenInst *data; size_t len; } GenInstList;

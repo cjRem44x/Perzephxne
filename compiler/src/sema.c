@@ -257,6 +257,8 @@ static int ty_coerces(Type *from, Type *to) {
     if (from->kind == TY_F64 && ty_is_float(to)) return 1;
     /* null coerces to any pointer */
     if (from->kind == TY_PTR && !from->ptr.inner && ty_is_ptr(to)) return 1;
+    /* raw pointer (*T) coerces to any other raw pointer (*T') — C-style unsafe cast */
+    if (from->kind == TY_PTR && to->kind == TY_PTR) return 1;
     /* enum ↔ integer: integer types coerce into enum named types and vice versa */
     if (ty_is_int(from) && to->kind   == TY_NAMED) return 1;
     if (from->kind == TY_NAMED && ty_is_int(to))   return 1;
@@ -562,6 +564,17 @@ static Type *check_expr(Sema *s, Expr *e) {
                 if (!arg_ok) {
                     sema_error(s, e->span, "expected %zu arguments, got %zu",
                                callee_ty->fn.params.len, e->call.args.len);
+                } else {
+                    /* check each argument type against the declared parameter type */
+                    size_t ncheck = callee_ty->fn.params.len;
+                    for (size_t i = 0; i < ncheck; i++) {
+                        Type *param_ty = callee_ty->fn.params.data[i];
+                        Type *arg_ty   = e->call.args.data[i]->ty;
+                        if (param_ty && arg_ty && !ty_coerces(arg_ty, param_ty))
+                            sema_error(s, e->call.args.data[i]->span,
+                                       "argument %zu: expected '%s', got '%s'",
+                                       i + 1, ty_str(param_ty), ty_str(arg_ty));
+                    }
                 }
                 e->ty = callee_ty->fn.ret;
             } else {
@@ -764,6 +777,30 @@ static Type *check_expr(Sema *s, Expr *e) {
                 Type *t = make_ty(s, TY_NAMED);
                 t->named.name = e->struct_lit.ty_name;
                 e->ty = t;
+            }
+            /* validate struct field names and types */
+            for (StructEntry *se = s->structs; se; se = se->next) {
+                if (strcmp(se->name, e->struct_lit.ty_name)) continue;
+                for (size_t i = 0; i < e->struct_lit.fields.len; i++) {
+                    const char *fname = e->struct_lit.fields.data[i].name;
+                    Type *val_ty = e->struct_lit.fields.data[i].val->ty;
+                    Type *field_ty = NULL;
+                    for (size_t fi = 0; fi < se->fields->len; fi++) {
+                        if (!strcmp(se->fields->data[fi].name, fname)) {
+                            field_ty = se->fields->data[fi].ty;
+                            break;
+                        }
+                    }
+                    if (!field_ty) {
+                        sema_error(s, e->span, "struct '%s' has no field '%s'",
+                                   e->struct_lit.ty_name, fname);
+                    } else if (val_ty && !ty_coerces(val_ty, field_ty)) {
+                        sema_error(s, e->struct_lit.fields.data[i].val->span,
+                                   "field '%s': expected '%s', got '%s'",
+                                   fname, ty_str(field_ty), ty_str(val_ty));
+                    }
+                }
+                break;
             }
             /* validate tagged union construction: exactly one field, valid variant */
             for (UnionInfo *ui = s->unions; ui; ui = ui->next) {
@@ -1808,6 +1845,67 @@ static void init_builtins(Sema *s) {
     s->ty_f64   = make_ty(s, TY_F64);
 }
 
+/* Append a new Item to mod->items, growing the arena-allocated array. */
+static void append_inst(Sema *s, Module *mod, Item *inst) {
+    size_t nl = mod->items.len + 1;
+    Item **nd = ARENA_ALLOC(s->arena, Item *, nl);
+    memcpy(nd, mod->items.data, mod->items.len * sizeof(Item *));
+    nd[mod->items.len] = inst;
+    mod->items.data = nd;
+    mod->items.len  = nl;
+}
+
+/* After instantiating a template with (tparams → concretes), scan the current
+   set of deferred gen_insts for any whose args reference one of tparams.
+   For each match, substitute to get concrete args, build the concrete mangled
+   name, and append a new non-deferred GenInst to mod->gen_insts so the
+   worklist loop in pass 1.5 will pick it up. */
+static void derive_transitive_insts(Sema *s, Module *mod,
+                                     const char **tparams, size_t n_tparams,
+                                     Type **concretes, size_t n_concretes) {
+    if (!tparams || n_tparams == 0 || n_tparams != n_concretes) return;
+    /* snapshot length: newly appended entries in this call are not re-scanned */
+    size_t snap = mod->gen_insts.len;
+    for (size_t di = 0; di < snap; di++) {
+        GenInst dgi = mod->gen_insts.data[di]; /* value copy — array may move */
+        if (!dgi.deferred) continue;
+        /* check if any arg references one of tparams */
+        int relevant = 0;
+        for (size_t ai = 0; ai < dgi.n_args && !relevant; ai++) {
+            if (!dgi.args[ai] || dgi.args[ai]->kind != TY_NAMED) continue;
+            for (size_t pi = 0; pi < n_tparams; pi++)
+                if (!strcmp(dgi.args[ai]->named.name, tparams[pi])) { relevant = 1; break; }
+        }
+        if (!relevant) continue;
+        /* build concrete args via subst_type */
+        Type **cargs = ARENA_ALLOC(s->arena, Type *, dgi.n_args);
+        for (size_t ai = 0; ai < dgi.n_args; ai++)
+            cargs[ai] = subst_type(dgi.args[ai], tparams, concretes, n_concretes, s->arena);
+        /* rebuild mangled name: base__arg0[__arg1...] */
+        char mang[512];
+        int pos = snprintf(mang, sizeof(mang), "%s", dgi.base);
+        for (size_t ai = 0; ai < dgi.n_args; ai++) {
+            const char *as = gen_type_str(cargs[ai], s->arena);
+            pos += snprintf(mang + pos, sizeof(mang) - (size_t)pos, "__%s", as);
+        }
+        /* skip if already registered or already queued */
+        if (lookup(s, mang)) continue;
+        int queued = 0;
+        for (size_t qi = 0; qi < mod->gen_insts.len; qi++)
+            if (!strcmp(mod->gen_insts.data[qi].mangled, mang)) { queued = 1; break; }
+        if (queued) continue;
+        /* append concrete gen_inst to the worklist */
+        char *mn = arena_strdup(s->arena, mang);
+        GenInst ngi = { mn, dgi.base, cargs, dgi.n_args, 0 };
+        size_t nl = mod->gen_insts.len + 1;
+        GenInst *nd = ARENA_ALLOC(s->arena, GenInst, nl);
+        memcpy(nd, mod->gen_insts.data, mod->gen_insts.len * sizeof(GenInst));
+        nd[mod->gen_insts.len] = ngi;
+        mod->gen_insts.data = nd;
+        mod->gen_insts.len  = nl;
+    }
+}
+
 /* ── Entry point ──────────────────────────────────────────────────────────── */
 
 int sema_check(Module *mod) {
@@ -1823,40 +1921,44 @@ int sema_check(Module *mod) {
     for (size_t i = 0; i < mod->items.len; i++)
         register_item(&s, mod->items.data[i]);
 
-    /* pass 1.5: instantiate generics recorded during parsing */
+    /* pass 1.5: instantiate generics (worklist — mod->gen_insts may grow each iteration) */
     for (size_t i = 0; i < mod->gen_insts.len; i++) {
-        GenInst *gi = &mod->gen_insts.data[i];
-        if (!lookup(&s, gi->mangled)) {
+        /* Use a value copy: the data pointer may move when derive_transitive_insts
+           appends new entries to mod->gen_insts. */
+        GenInst gi = mod->gen_insts.data[i];
+        /* skip deferred entries (args contain type-param placeholders); they are
+           resolved into concrete entries by derive_transitive_insts below */
+        if (gi.deferred) continue;
+
+        if (!lookup(&s, gi.mangled)) {
             GenericTemplate *gt = NULL;
             for (GenericTemplate *g = s.generics; g; g = g->next)
-                if (!strcmp(g->name, gi->base)) { gt = g; break; }
+                if (!strcmp(g->name, gi.base)) { gt = g; break; }
             if (gt) {
-                Item *inst = instantiate(gt->item, gi->mangled, gi->args, gi->n_args, s.arena);
-                /* append to module so pass 2 checks it */
-                size_t new_len = mod->items.len + 1;
-                Item **new_data = ARENA_ALLOC(s.arena, Item *, new_len);
-                memcpy(new_data, mod->items.data, mod->items.len * sizeof(Item *));
-                new_data[mod->items.len] = inst;
-                mod->items.data = new_data;
-                mod->items.len  = new_len;
+                Item *inst = instantiate(gt->item, gi.mangled, gi.args, gi.n_args, s.arena);
+                append_inst(&s, mod, inst);
                 register_item(&s, inst);
+                /* derive concrete gen_insts for nested generic uses inside this template */
+                const char **tp  = NULL; size_t ntp = 0;
+                if (gt->item->kind == ITEM_FN) {
+                    tp = gt->item->fn.type_params; ntp = gt->item->fn.n_type_params;
+                } else if (gt->item->kind == ITEM_STRUCT) {
+                    tp = gt->item->struct_.type_params; ntp = gt->item->struct_.n_type_params;
+                }
+                derive_transitive_insts(&s, mod, tp, ntp, gi.args, gi.n_args);
             }
             /* else: not a known generic — pass 2 will report the error */
         }
-        /* also instantiate any matching generic impl block for this concrete type.
-           gen_insts entries have unique mangled names (parser dedups them), so
-           each (base, args) combination is only seen once here. */
+        /* also instantiate any matching generic impl block for this concrete type */
         for (GenericImplTemplate *git = s.impl_generics; git; git = git->next) {
-            if (strcmp(git->item->impl.ty_name, gi->base)) continue;
-            Item *impl_inst = instantiate_impl(git->item, gi->mangled, gi->args, gi->n_args, s.arena);
+            if (strcmp(git->item->impl.ty_name, gi.base)) continue;
+            Item *impl_inst = instantiate_impl(git->item, gi.mangled, gi.args, gi.n_args, s.arena);
             if (!impl_inst) continue;
-            size_t new_len = mod->items.len + 1;
-            Item **new_data = ARENA_ALLOC(s.arena, Item *, new_len);
-            memcpy(new_data, mod->items.data, mod->items.len * sizeof(Item *));
-            new_data[mod->items.len] = impl_inst;
-            mod->items.data = new_data;
-            mod->items.len  = new_len;
+            append_inst(&s, mod, impl_inst);
             register_item(&s, impl_inst);
+            derive_transitive_insts(&s, mod,
+                                    git->item->impl.type_params, git->item->impl.n_type_params,
+                                    gi.args, gi.n_args);
         }
     }
 
