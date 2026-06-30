@@ -914,12 +914,19 @@ static void check_stmt(Sema *s, Stmt *st) {
             Type *lhs = check_expr(s, st->assign.target);
             Type *rhs = check_expr(s, st->assign.val);
 
-            /* check mutability for simple ident targets */
-            if (st->assign.target->kind == EXPR_IDENT) {
-                Sym *sym = lookup(s, st->assign.target->ident.name);
-                if (sym && !sym->is_mut)
-                    sema_error(s, st->span, "cannot assign to immutable binding '%s'",
-                               st->assign.target->ident.name);
+            /* trace lvalue root to check mutability */
+            {
+                Expr *root = st->assign.target;
+                while (root->kind == EXPR_FIELD) root = root->field.obj;
+                while (root->kind == EXPR_INDEX) root = root->index.arr;
+                while (root->kind == EXPR_DEREF || root->kind == EXPR_SMARTDEREF)
+                    root = root->deref.operand;
+                if (root->kind == EXPR_IDENT) {
+                    Sym *sym = lookup(s, root->ident.name);
+                    if (sym && !sym->is_mut)
+                        sema_error(s, st->span, "cannot assign to immutable binding '%s'",
+                                   root->ident.name);
+                }
             }
 
             if (lhs && rhs && !ty_coerces(rhs, lhs))
