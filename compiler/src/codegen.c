@@ -2472,6 +2472,12 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
             int fp = new_tmp(cg);
             emit(cg, "  %%t%d = getelementptr %%%s, ptr %s, i32 0, i32 %d\n",
                  fp, obj_ty->named.name, obj.buf, fidx);
+            /* struct/array fields: return the field ptr so chained access works */
+            int field_is_agg = fty
+                && (fty->kind == TY_ARRAY
+                    || (fty->kind == TY_NAMED && !find_enum(cg, fty->named.name)));
+            if (field_is_agg)
+                return val_tmp(fp);
             int t = new_tmp(cg);
             emit(cg, "  %%t%d = load %s, ptr %%t%d\n", t, llvm_type(fty), fp);
             return val_tmp(t);
