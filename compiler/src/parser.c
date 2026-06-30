@@ -1232,8 +1232,8 @@ static Stmt *parse_stmt(Parser *p) {
                     advance(p);
                     const char *idx_name = NULL;
                     if (eat(p, TOK_COMMA)) {
-                        idx_name  = elem_name;
-                        elem_name = cur(p).sval;
+                        /* for elem, idx => arr — element first, index second */
+                        idx_name = cur(p).sval;
                         expect(p, TOK_IDENT);
                     }
                     expect(p, TOK_FATARROW);
@@ -1458,9 +1458,8 @@ static Stmt *parse_stmt(Parser *p) {
                 advance(p); /* consume elem name */
                 const char *idx_name = NULL;
                 if (eat(p, TOK_COMMA)) {
-                    /* for idx, elem => EXPR */
-                    idx_name  = elem_name;
-                    elem_name = cur(p).sval;
+                    /* for elem, idx => EXPR — element first, index second */
+                    idx_name = cur(p).sval;
                     expect(p, TOK_IDENT);
                 }
                 expect(p, TOK_FATARROW);

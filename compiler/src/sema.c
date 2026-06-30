@@ -804,6 +804,9 @@ static Type *check_expr(Sema *s, Expr *e) {
                 t->named.name = e->struct_lit.ty_name;
                 e->ty = t;
             }
+            /* resolve type alias: update ty_name so codegen and validation use the real name */
+            if (e->ty && e->ty->kind == TY_NAMED)
+                e->struct_lit.ty_name = e->ty->named.name;
             /* validate struct field names and types */
             for (StructEntry *se = s->structs; se; se = se->next) {
                 if (strcmp(se->name, e->struct_lit.ty_name)) continue;
