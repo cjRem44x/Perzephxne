@@ -18,6 +18,8 @@ typedef struct {
     /* type params currently in scope (set while parsing a generic fn/struct body) */
     const char **cur_type_params;
     size_t       n_cur_type_params;
+    /* pending '>' from splitting '>>' during generic type arg parsing */
+    int         pending_gt;
 } Parser;
 
 /* ── helpers ──────────────────────────────────────────────────────────────── */
@@ -32,10 +34,17 @@ static void advance(Parser *p) {
 static Token cur(Parser *p)  { return p->cur; }
 static Token peek(Parser *p) { return p->peek; }
 
-static int check(Parser *p, TokenKind k)  { return p->cur.kind == k; }
+static int check(Parser *p, TokenKind k) {
+    if (k == TOK_GT && p->pending_gt > 0) return 1;
+    return p->cur.kind == k;
+}
 static int check2(Parser *p, TokenKind k) { return p->peek.kind == k; }
 
 static Token expect(Parser *p, TokenKind k) {
+    if (k == TOK_GT && p->pending_gt > 0) {
+        p->pending_gt--;
+        return p->cur; /* return synthetic GT (span is approximate) */
+    }
     if (p->cur.kind != k)
         fatal_at(p->cur.span, "expected %s, got %s",
                  tok_kind_str(k), tok_kind_str(p->cur.kind));
@@ -45,6 +54,7 @@ static Token expect(Parser *p, TokenKind k) {
 }
 
 static int eat(Parser *p, TokenKind k) {
+    if (k == TOK_GT && p->pending_gt > 0) { p->pending_gt--; return 1; }
     if (p->cur.kind == k) { advance(p); return 1; }
     return 0;
 }
@@ -158,6 +168,10 @@ static int looks_like_generic_args(Parser *p) {
             case TOK_GT:
                 depth--;
                 if (depth == 0) return 1;
+                break;
+            case TOK_SHR: /* '>>' closes two levels */
+                depth -= 2;
+                if (depth <= 0) return 1;
                 break;
             case TOK_IDENT: case TOK_COMMA: case TOK_STAR: case TOK_CARET:
             case TOK_LBRACKET: case TOK_RBRACKET: case TOK_BANG: case TOK_DOT:
@@ -311,6 +325,13 @@ static Type *parse_type(Parser *p) {
             Type **args = NULL;
             size_t n_args = 0;
             while (!check(p, TOK_GT) && !check(p, TOK_EOF)) {
+                /* '>>' closes this arg list AND the outer one — split it */
+                if (p->cur.kind == TOK_SHR && p->pending_gt == 0) {
+                    p->pending_gt = 1;
+                    /* convert '>>' to first '>' by mutating cur token kind */
+                    p->cur.kind = TOK_GT;
+                    break;
+                }
                 Type *arg = parse_type(p);
                 const char *arg_str = type_to_str(arg, p->arena);
                 size_t curlen = strlen(mangled);

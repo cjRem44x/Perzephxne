@@ -2776,6 +2776,16 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                 FieldInit *fi = &e->struct_lit.fields.data[i];
                 Type *val_ty = NULL;
                 Val fv = cg_expr(cg, fi->val, &val_ty);
+                /* struct/array values are returned as alloca ptrs — load them */
+                if (val_ty && val_ty->kind == TY_NAMED && !find_enum(cg, val_ty->named.name)) {
+                    int lv = new_tmp(cg);
+                    emit(cg, "  %%t%d = load %s, ptr %s\n", lv, llvm_type(val_ty), fv.buf);
+                    fv = val_tmp(lv);
+                } else if (val_ty && val_ty->kind == TY_ARRAY) {
+                    int lv = new_tmp(cg);
+                    emit(cg, "  %%t%d = load %s, ptr %s\n", lv, llvm_type(val_ty), fv.buf);
+                    fv = val_tmp(lv);
+                }
                 int fidx = si ? struct_field_index(si, fi->name) : (int)i;
                 if (fidx < 0) fidx = (int)i;
                 /* use field type for store; coerce value if integer widths differ */
