@@ -135,6 +135,36 @@ static void record_gen_inst(Parser *p, const char *mangled, const char *base,
     SLICE_PUSH(p->arena, &p->gen_insts, GenInst, gi);
 }
 
+/* Lookahead (non-consuming) to disambiguate `Name<A, B, ...>` generic
+   instantiation syntax from a `<` comparison in expression position.
+   p->cur must be TOK_LT. Scans forward (using a private copy of the lexer
+   once the 3-token lookahead buffer is exhausted) for a balanced run of
+   type-shaped tokens terminated by a matching '>'. Bails out (returns 0)
+   on anything that can't appear inside a type list — in particular, a
+   bare COMMA is a near-certain signal of a generic arg list, since commas
+   never appear directly inside a comparison expression. */
+static int looks_like_generic_args(Parser *p) {
+    Token buf[3] = { p->peek, p->peek2, p->peek3 };
+    size_t bi = 0;
+    Lexer  probe = p->lexer;
+    int    depth = 1;
+    for (;;) {
+        Token t = (bi < 3) ? buf[bi++] : lexer_next(&probe);
+        switch (t.kind) {
+            case TOK_LT: depth++; break;
+            case TOK_GT:
+                depth--;
+                if (depth == 0) return 1;
+                break;
+            case TOK_IDENT: case TOK_COMMA: case TOK_STAR: case TOK_CARET:
+            case TOK_LBRACKET: case TOK_RBRACKET: case TOK_BANG: case TOK_DOT:
+                break;
+            default:
+                return 0;
+        }
+    }
+}
+
 /* ── forward declarations ─────────────────────────────────────────────────── */
 
 static Type    *parse_type(Parser *p);
@@ -602,20 +632,29 @@ static Expr *parse_primary(Parser *p) {
         case TOK_IDENT: {
             advance(p);
             const char *name = t.sval;
-            /* generic struct literal / call: Name<T>{ ... } or Name<T>(...)
-               Heuristic: cur='<', peek2='>' → single-token type arg generic.
-               This catches Name<Prim>, Name<UserType> but not Name<*T>, Name<[]T>. */
-            if (check(p, TOK_LT) && p->peek2.kind == TOK_GT) {
+            /* generic struct literal / call: Name<T,...>{ ... } or Name<T,...>(...)
+               Heuristic: cur='<' and the tokens up to the matching '>' look
+               like a type-argument list (see looks_like_generic_args). */
+            if (check(p, TOK_LT) && looks_like_generic_args(p)) {
                 advance(p); /* consume '<' */
-                Type *arg = parse_type(p);
-                expect(p, TOK_GT);
-                const char *arg_str = type_to_str(arg, p->arena);
                 char mangled_buf[512];
-                snprintf(mangled_buf, sizeof(mangled_buf), "%s__%s", name, arg_str);
+                snprintf(mangled_buf, sizeof(mangled_buf), "%s", name);
+                Type **args = NULL;
+                size_t n_args = 0;
+                while (!check(p, TOK_GT) && !check(p, TOK_EOF)) {
+                    Type *arg = parse_type(p);
+                    const char *arg_str = type_to_str(arg, p->arena);
+                    size_t curlen = strlen(mangled_buf);
+                    snprintf(mangled_buf + curlen, sizeof(mangled_buf) - curlen, "__%s", arg_str);
+                    Type **new_args = arena_alloc(p->arena, (n_args + 1) * sizeof(Type *));
+                    if (n_args) memcpy(new_args, args, n_args * sizeof(Type *));
+                    new_args[n_args++] = arg;
+                    args = new_args;
+                    eat(p, TOK_COMMA);
+                }
+                expect(p, TOK_GT);
                 const char *mangled = arena_strdup(p->arena, mangled_buf);
-                Type **args = arena_alloc(p->arena, sizeof(Type *));
-                args[0] = arg;
-                record_gen_inst(p, mangled, name, args, 1);
+                record_gen_inst(p, mangled, name, args, n_args);
                 if (!p->no_struct_lit && check(p, TOK_LBRACE) && peek(p).kind == TOK_DOT) {
                     /* generic struct literal */
                     advance(p); /* consume '{' */
