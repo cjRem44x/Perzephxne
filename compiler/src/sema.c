@@ -259,6 +259,8 @@ static int ty_coerces(Type *from, Type *to) {
     if (from->kind == TY_PTR && !from->ptr.inner && ty_is_ptr(to)) return 1;
     /* raw pointer (*T) coerces to any other raw pointer (*T') — C-style unsafe cast */
     if (from->kind == TY_PTR && to->kind == TY_PTR) return 1;
+    /* str coerces to any raw pointer (*T) — C interop: callee receives .data field */
+    if (from->kind == TY_STR && to->kind == TY_PTR) return 1;
     /* enum ↔ integer: integer types coerce into enum named types and vice versa */
     if (ty_is_int(from) && to->kind   == TY_NAMED) return 1;
     if (from->kind == TY_NAMED && ty_is_int(to))   return 1;
