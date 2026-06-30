@@ -20,6 +20,8 @@ typedef struct {
     size_t       n_cur_type_params;
     /* pending '>' from splitting '>>' during generic type arg parsing */
     int         pending_gt;
+    /* pending '=' from splitting '>=' during generic type arg parsing */
+    int         pending_gteq;
 } Parser;
 
 /* ── helpers ──────────────────────────────────────────────────────────────── */
@@ -36,6 +38,7 @@ static Token peek(Parser *p) { return p->peek; }
 
 static int check(Parser *p, TokenKind k) {
     if (k == TOK_GT && p->pending_gt > 0) return 1;
+    if (k == TOK_EQ && p->pending_gteq > 0) return 1;
     return p->cur.kind == k;
 }
 static int check2(Parser *p, TokenKind k) { return p->peek.kind == k; }
@@ -44,6 +47,10 @@ static Token expect(Parser *p, TokenKind k) {
     if (k == TOK_GT && p->pending_gt > 0) {
         p->pending_gt--;
         return p->cur; /* return synthetic GT (span is approximate) */
+    }
+    if (k == TOK_EQ && p->pending_gteq > 0) {
+        p->pending_gteq--;
+        return p->cur; /* return synthetic EQ */
     }
     if (p->cur.kind != k)
         fatal_at(p->cur.span, "expected %s, got %s",
@@ -55,6 +62,7 @@ static Token expect(Parser *p, TokenKind k) {
 
 static int eat(Parser *p, TokenKind k) {
     if (k == TOK_GT && p->pending_gt > 0) { p->pending_gt--; return 1; }
+    if (k == TOK_EQ && p->pending_gteq > 0) { p->pending_gteq--; return 1; }
     if (p->cur.kind == k) { advance(p); return 1; }
     return 0;
 }
@@ -329,6 +337,12 @@ static Type *parse_type(Parser *p) {
                 if (p->cur.kind == TOK_SHR && p->pending_gt == 0) {
                     p->pending_gt = 1;
                     /* convert '>>' to first '>' by mutating cur token kind */
+                    p->cur.kind = TOK_GT;
+                    break;
+                }
+                /* '>=' closes this arg list and leaves '=' for the caller */
+                if (p->cur.kind == TOK_GTEQ) {
+                    p->pending_gteq = 1;
                     p->cur.kind = TOK_GT;
                     break;
                 }

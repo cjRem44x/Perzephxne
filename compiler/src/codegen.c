@@ -2107,6 +2107,20 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
             int is_flt = type_is_float(op_ty);
             int is_sgn = type_is_signed(op_ty);
 
+            /* string equality/inequality: strcmp(a_ptr, b_ptr) == 0 */
+            int is_str_cmp = (e->binop.op == BINOP_EQ || e->binop.op == BINOP_NE)
+                             && lt && lt->kind == TY_STR;
+            if (is_str_cmp) {
+                int lp = new_tmp(cg), rp = new_tmp(cg), cmp = new_tmp(cg);
+                emit(cg, "  %%t%d = extractvalue { ptr, i64 } %s, 0\n", lp, l.buf);
+                emit(cg, "  %%t%d = extractvalue { ptr, i64 } %s, 0\n", rp, r.buf);
+                emit(cg, "  %%t%d = call i32 @strcmp(ptr %%t%d, ptr %%t%d)\n", cmp, lp, rp);
+                const char *icmp_op = (e->binop.op == BINOP_EQ) ? "eq" : "ne";
+                emit(cg, "  %%t%d = icmp %s i32 %%t%d, 0\n", t, icmp_op, cmp);
+                if (out_ty) *out_ty = e->ty;
+                return val_tmp(t);
+            }
+
             switch (e->binop.op) {
                 case BINOP_ADD: emit(cg, "  %%t%d = %s %s %s, %s\n", t, is_flt?"fadd":"add", llt, l.buf, r.buf); break;
                 case BINOP_SUB: emit(cg, "  %%t%d = %s %s %s, %s\n", t, is_flt?"fsub":"sub", llt, l.buf, r.buf); break;
