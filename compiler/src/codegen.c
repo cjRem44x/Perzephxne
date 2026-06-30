@@ -70,6 +70,7 @@ typedef struct Scope {
     int            is_loop;     /* 1 if this scope is the body of a loop */
     int            break_label; /* label to branch to on break */
     int            cont_label;  /* label to branch to on continue */
+    const char    *loop_name;   /* named loop label, or NULL */
 } Scope;
 
 typedef struct {
@@ -151,6 +152,7 @@ static void push_loop_scope(CG *cg, int break_l, int cont_l) {
     s->is_loop     = 1;
     s->break_label = break_l;
     s->cont_label  = cont_l;
+    s->loop_name   = NULL;
     cg->scope = s;
 }
 
@@ -3058,16 +3060,19 @@ static void cg_stmt(CG *cg, Stmt *s) {
             int end_l  = new_label(cg);
             emit_br(cg, "  br label %%l%d\n", cond_l);
             emit_label(cg, cond_l);
+            /* while cond => tick() — call tick before testing condition */
+            if (s->while_.do_fn)
+                emit(cg, "  call void @%s()\n", s->while_.do_fn);
             if (s->while_.cond) {
                 Val cond = cg_expr(cg, s->while_.cond, NULL);
                 emit_br(cg, "  br i1 %s, label %%l%d, label %%l%d\n",
                         cond.buf, body_l, end_l);
             } else {
-                /* loop {} — unconditional */
                 emit_br(cg, "  br label %%l%d\n", body_l);
             }
             emit_label(cg, body_l);
             push_loop_scope(cg, end_l, cond_l);
+            cg->scope->loop_name = s->while_.label;
             for (size_t i = 0; i < s->while_.body.len; i++)
                 cg_stmt(cg, s->while_.body.data[i]);
             pop_scope(cg);
@@ -3102,6 +3107,7 @@ static void cg_stmt(CG *cg, Stmt *s) {
 
                 emit_label(cg, body_l);
                 push_loop_scope(cg, end_l, inc_l);
+                cg->scope->loop_name = s->for_.label;
                 /* expose the loop variable */
                 if (fc->elem) {
                     Type *i64_ty = ARENA_NEW(cg->arena, Type);
@@ -3175,6 +3181,7 @@ static void cg_stmt(CG *cg, Stmt *s) {
 
                 emit_label(cg, body_l);
                 push_loop_scope(cg, end_l, inc_l);
+                cg->scope->loop_name = s->for_.label;
 
                 /* load current element */
                 int ep_t = new_tmp(cg);
@@ -3212,9 +3219,44 @@ static void cg_stmt(CG *cg, Stmt *s) {
                 emit(cg, "  store i64 %%t%d, ptr %%t%d\n", inc2_t, idx_alloca);
                 emit_br(cg, "  br label %%l%d\n", cond_l);
                 emit_label(cg, end_l);
-            } else {
-                emit(cg, "  ; unsupported for kind\n");
+            } else if (fc->kind == FOR_C) {
+                /* for i := init, cond, step { body } */
+                push_scope(cg);
+                if (fc->init) cg_stmt(cg, fc->init);
+
+                int cond_l = new_label(cg);
+                int body_l = new_label(cg);
+                int step_l = new_label(cg);
+                int end_l  = new_label(cg);
+
+                emit_br(cg, "  br label %%l%d\n", cond_l);
+                emit_label(cg, cond_l);
+                if (fc->cond) {
+                    Val cv = cg_expr(cg, fc->cond, NULL);
+                    emit_br(cg, "  br i1 %s, label %%l%d, label %%l%d\n",
+                            cv.buf, body_l, end_l);
+                } else {
+                    emit_br(cg, "  br label %%l%d\n", body_l);
+                }
+
+                emit_label(cg, body_l);
+                push_loop_scope(cg, end_l, step_l);
+                cg->scope->loop_name = s->for_.label;
+                for (size_t j = 0; j < s->for_.body.len; j++)
+                    cg_stmt(cg, s->for_.body.data[j]);
+                pop_scope(cg);
+
+                emit_br(cg, "  br label %%l%d\n", step_l);
+                emit_label(cg, step_l);
+                if (fc->step) cg_stmt(cg, fc->step);
+                emit_br(cg, "  br label %%l%d\n", cond_l);
+                emit_label(cg, end_l);
+                pop_scope(cg); /* init scope */
             }
+
+            /* wire up loop label for named break/continue */
+            if (fc->kind == FOR_RANGE || fc->kind == FOR_EACH || fc->kind == FOR_EACH_IDX)
+                ; /* label already set after push_loop_scope above */
             break;
         }
 
@@ -3399,11 +3441,17 @@ static void cg_stmt(CG *cg, Stmt *s) {
         }
 
         case STMT_BREAK: {
+            const char *target = s->break_.label;
             Scope *loop_sc = NULL;
             for (Scope *sc = cg->scope; sc; sc = sc->parent) {
                 emit_defers_for_scope(cg, sc);
                 emit_rc_drops_for_scope(cg, sc);
-                if (sc->is_loop) { loop_sc = sc; break; }
+                if (sc->is_loop) {
+                    if (!target || (sc->loop_name && !strcmp(sc->loop_name, target))) {
+                        loop_sc = sc;
+                        break;
+                    }
+                }
             }
             if (loop_sc)
                 emit_br(cg, "  br label %%l%d\n", loop_sc->break_label);
@@ -3411,11 +3459,17 @@ static void cg_stmt(CG *cg, Stmt *s) {
         }
 
         case STMT_CONTINUE: {
+            const char *target = s->cont.label;
             Scope *loop_sc = NULL;
             for (Scope *sc = cg->scope; sc; sc = sc->parent) {
                 emit_defers_for_scope(cg, sc);
                 emit_rc_drops_for_scope(cg, sc);
-                if (sc->is_loop) { loop_sc = sc; break; }
+                if (sc->is_loop) {
+                    if (!target || (sc->loop_name && !strcmp(sc->loop_name, target))) {
+                        loop_sc = sc;
+                        break;
+                    }
+                }
             }
             if (loop_sc)
                 emit_br(cg, "  br label %%l%d\n", loop_sc->cont_label);

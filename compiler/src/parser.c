@@ -1081,6 +1081,124 @@ static Stmt *parse_stmt(Parser *p) {
          })))) {
         const char *lname = cur(p).sval;
         advance(p); advance(p); /* consume ident and ':' */
+        /* if label precedes a loop, attach it to the loop instead of emitting STMT_LABEL */
+        if (check(p, TOK_WHILE)) {
+            advance(p);
+            p->no_struct_lit = 1;
+            Expr *cond = parse_expr(p);
+            p->no_struct_lit = 0;
+            const char *do_fn = NULL;
+            if (eat(p, TOK_FATARROW)) {
+                do_fn = expect(p, TOK_IDENT).sval;
+                if (check(p, TOK_LPAREN)) { advance(p); expect(p, TOK_RPAREN); }
+            }
+            StmtList body = parse_block(p);
+            Stmt *s = mkstmt(p, STMT_WHILE, span);
+            s->while_.cond  = cond;
+            s->while_.do_fn = do_fn;
+            s->while_.body  = body;
+            s->while_.label = lname;
+            return s;
+        }
+        if (check(p, TOK_FOR)) {
+            advance(p);
+            ForClause clause = {0};
+            /* C-style: for i := 0, cond, step { } */
+            if (check(p, TOK_IDENT) && check2(p, TOK_COLONEQ)) {
+                const char *init_name = cur(p).sval;
+                Span init_span = cur(p).span;
+                advance(p); advance(p);
+                Expr *init_val = parse_expr(p);
+                Stmt *init_stmt = mkstmt(p, STMT_LET, span_merge(init_span, init_val->span));
+                init_stmt->let.name    = init_name;
+                init_stmt->let.ty      = NULL;
+                init_stmt->let.mutable = 1;
+                init_stmt->let.infer   = 1;
+                init_stmt->let.init    = init_val;
+                expect(p, TOK_COMMA);
+                Expr *cond_expr = parse_expr(p);
+                expect(p, TOK_COMMA);
+                Expr *step_lhs = parse_expr(p);
+                Stmt *step_stmt = NULL;
+                if (check(p, TOK_INC) || check(p, TOK_DEC)) {
+                    int is_inc = check(p, TOK_INC);
+                    advance(p);
+                    Expr *one = mkexpr(p, EXPR_INT, step_lhs->span);
+                    one->ival = 1;
+                    step_stmt = mkstmt(p, STMT_ASSIGN, step_lhs->span);
+                    step_stmt->assign.target = step_lhs;
+                    step_stmt->assign.op     = is_inc ? ASSIGN_ADD : ASSIGN_SUB;
+                    step_stmt->assign.val    = one;
+                } else if (is_assign_op(cur(p).kind)) {
+                    TokenKind op = cur(p).kind;
+                    advance(p);
+                    Expr *rhs = parse_expr(p);
+                    step_stmt = mkstmt(p, STMT_ASSIGN, span_merge(step_lhs->span, rhs->span));
+                    step_stmt->assign.target = step_lhs;
+                    step_stmt->assign.op     = tok_to_assignop(op);
+                    step_stmt->assign.val    = rhs;
+                } else {
+                    step_stmt = mkstmt(p, STMT_EXPR, step_lhs->span);
+                    step_stmt->expr = step_lhs;
+                }
+                clause.kind = FOR_C;
+                clause.init = init_stmt;
+                clause.cond = cond_expr;
+                clause.step = step_stmt;
+                StmtList body = parse_block(p);
+                Stmt *s = mkstmt(p, STMT_FOR, span);
+                s->for_.clause = clause;
+                s->for_.body   = body;
+                s->for_.label  = lname;
+                return s;
+            }
+            /* range / for-each */
+            if (check(p, TOK_INT) || check(p, TOK_IDENT)) {
+                if (check(p, TOK_IDENT) && (check2(p, TOK_FATARROW) || check2(p, TOK_COMMA))) {
+                    const char *elem_name = cur(p).sval;
+                    advance(p);
+                    const char *idx_name = NULL;
+                    if (eat(p, TOK_COMMA)) {
+                        idx_name  = elem_name;
+                        elem_name = cur(p).sval;
+                        expect(p, TOK_IDENT);
+                    }
+                    expect(p, TOK_FATARROW);
+                    Expr *rhs = parse_expr(p);
+                    if (rhs->kind == EXPR_BINOP &&
+                        (rhs->binop.op == BINOP_RANGE || rhs->binop.op == BINOP_RANGE_INC)) {
+                        clause.kind      = FOR_RANGE;
+                        clause.inclusive = (rhs->binop.op == BINOP_RANGE_INC);
+                        clause.elem      = elem_name;
+                        clause.iter      = rhs->binop.l;
+                        clause.range_end = rhs->binop.r;
+                    } else {
+                        clause.kind = idx_name ? FOR_EACH_IDX : FOR_EACH;
+                        clause.elem = elem_name;
+                        clause.idx  = idx_name;
+                        clause.iter = rhs;
+                    }
+                } else {
+                    Expr *start = parse_expr_bp(p, 21);
+                    if (check(p, TOK_DOTDOT) || check(p, TOK_DOTDOTEQ)) {
+                        clause.kind      = FOR_RANGE;
+                        clause.inclusive = check(p, TOK_DOTDOTEQ);
+                        advance(p);
+                        clause.iter      = start;
+                        clause.range_end = parse_expr(p);
+                    } else {
+                        fatal_at(cur(p).span, "unexpected token in for loop");
+                    }
+                }
+            }
+            StmtList body = parse_block(p);
+            Stmt *s = mkstmt(p, STMT_FOR, span);
+            s->for_.clause = clause;
+            s->for_.body   = body;
+            s->for_.label  = lname;
+            return s;
+        }
+        /* plain label (goto target) */
         Stmt *s = mkstmt(p, STMT_LABEL, span);
         s->label_.name = lname;
         return s;
@@ -1202,9 +1320,57 @@ static Stmt *parse_stmt(Parser *p) {
         advance(p);
         ForClause clause = {0};
 
-        /* detect C-style: for i := 0, ... */
-        if (check(p, TOK_IDENT) && check2(p, TOK_COLON)) {
-            /* Could be: for i := 0,  */
+        /* C-style: for i := 0, cond, step { } */
+        if (check(p, TOK_IDENT) && check2(p, TOK_COLONEQ)) {
+            const char *init_name = cur(p).sval;
+            Span init_span = cur(p).span;
+            advance(p); /* consume ident */
+            advance(p); /* consume := */
+            Expr *init_val = parse_expr(p);
+            /* build init as STMT_LET mutable-infer */
+            Stmt *init_stmt = mkstmt(p, STMT_LET, span_merge(init_span, init_val->span));
+            init_stmt->let.name    = init_name;
+            init_stmt->let.ty      = NULL;
+            init_stmt->let.mutable = 1;
+            init_stmt->let.infer   = 1;
+            init_stmt->let.init    = init_val;
+            expect(p, TOK_COMMA);
+            Expr *cond_expr = parse_expr(p);
+            expect(p, TOK_COMMA);
+            /* parse step: IDENT OP EXPR  or  IDENT++/IDENT-- */
+            Expr *step_lhs = parse_expr(p);
+            Stmt *step_stmt = NULL;
+            if (check(p, TOK_INC) || check(p, TOK_DEC)) {
+                int is_inc = check(p, TOK_INC);
+                advance(p);
+                Expr *one = mkexpr(p, EXPR_INT, step_lhs->span);
+                one->ival = 1;
+                step_stmt = mkstmt(p, STMT_ASSIGN, step_lhs->span);
+                step_stmt->assign.target = step_lhs;
+                step_stmt->assign.op     = is_inc ? ASSIGN_ADD : ASSIGN_SUB;
+                step_stmt->assign.val    = one;
+            } else if (is_assign_op(cur(p).kind)) {
+                TokenKind op = cur(p).kind;
+                advance(p);
+                Expr *rhs = parse_expr(p);
+                step_stmt = mkstmt(p, STMT_ASSIGN, span_merge(step_lhs->span, rhs->span));
+                step_stmt->assign.target = step_lhs;
+                step_stmt->assign.op     = tok_to_assignop(op);
+                step_stmt->assign.val    = rhs;
+            } else {
+                step_stmt = mkstmt(p, STMT_EXPR, step_lhs->span);
+                step_stmt->expr = step_lhs;
+            }
+            clause.kind = FOR_C;
+            clause.init = init_stmt;
+            clause.cond = cond_expr;
+            clause.step = step_stmt;
+            StmtList body = parse_block(p);
+            Stmt *s = mkstmt(p, STMT_FOR, span);
+            s->for_.clause = clause;
+            s->for_.body   = body;
+            s->for_.label  = NULL;
+            return s;
         }
 
         /* for IDENT => EXPR..EXPR  — range with named variable
@@ -1295,6 +1461,19 @@ static Stmt *parse_stmt(Parser *p) {
 
     /* expression or assignment */
     Expr *lhs = parse_expr(p);
+
+    /* postfix ++ / -- as statement */
+    if (check(p, TOK_INC) || check(p, TOK_DEC)) {
+        int is_inc = check(p, TOK_INC);
+        advance(p);
+        Expr *one = mkexpr(p, EXPR_INT, lhs->span);
+        one->ival = 1;
+        Stmt *s = mkstmt(p, STMT_ASSIGN, lhs->span);
+        s->assign.target = lhs;
+        s->assign.op     = is_inc ? ASSIGN_ADD : ASSIGN_SUB;
+        s->assign.val    = one;
+        return s;
+    }
 
     if (is_assign_op(cur(p).kind)) {
         TokenKind op = cur(p).kind;

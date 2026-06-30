@@ -23,6 +23,7 @@ typedef enum {
 
     /* arithmetic */
     TOK_PLUS, TOK_MINUS, TOK_STAR, TOK_SLASH, TOK_PERCENT,
+    TOK_INC, TOK_DEC,    /* ++ -- */
 
     /* bitwise */
     TOK_AMP, TOK_PIPE, TOK_CARET, TOK_TILDE, TOK_SHL, TOK_SHR,
