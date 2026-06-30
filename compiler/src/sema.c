@@ -1500,6 +1500,8 @@ static StmtList clone_stmts(StmtList sl, Arena *a) {
     return r;
 }
 
+static void subst_stmts(StmtList sl, const char **params, Type **concretes, size_t n, Arena *a);
+
 static void subst_expr(Expr *e, const char **params, Type **concretes, size_t n, Arena *a) {
     if (!e) return;
     switch (e->kind) {
