@@ -49,6 +49,7 @@ typedef struct Symbol {
     const char    *name;
     const char    *llvm_name; /* @name or %name */
     int            is_global;
+    int            is_fn_ref;  /* 1 = top-level function (not a stored fn ptr) */
     Type          *ty;
 } Symbol;
 
@@ -211,6 +212,20 @@ static void define_sym(CG *cg, const char *name, const char *llvm, int global, T
     s->name      = name;
     s->llvm_name = llvm;
     s->is_global = global;
+    s->is_fn_ref = 0;
+    s->ty        = ty;
+    s->next      = cg->scope->syms;
+    cg->scope->syms = s;
+}
+
+static void define_fn_sym(CG *cg, const char *name, Type *ty) {
+    char buf[256];
+    snprintf(buf, sizeof(buf), "@%s", name);
+    Symbol *s = ARENA_NEW(cg->arena, Symbol);
+    s->name      = name;
+    s->llvm_name = arena_strdup(cg->arena, buf);
+    s->is_global = 1;
+    s->is_fn_ref = 1;
     s->ty        = ty;
     s->next      = cg->scope->syms;
     cg->scope->syms = s;
@@ -337,6 +352,46 @@ static const char *effective_llvm_type(CG *cg, Type *ty) {
         /* structs and tagged unions: %Name */
     }
     return llvm_type(ty);
+}
+
+static int type_bit_width(Type *ty) {
+    if (!ty) return 32;
+    switch (ty->kind) {
+        case TY_BOOL: case TY_I8: case TY_U8: case TY_CHAR: return 8;
+        case TY_I16: case TY_U16: return 16;
+        case TY_I32: case TY_U32: case TY_F32: return 32;
+        default: return 64;
+    }
+}
+
+/* transform GCC single-letter register constraint to LLVM {regname} form */
+static void emit_asm_reg_constraint(CG *cg, const char *seg, Type *out_inner) {
+    /* only transform plain register letters, pass through everything else */
+    static const struct { char l; const char *r8; const char *r16; const char *r32; const char *r64; } regs[] = {
+        {'a', "al",  "ax",  "eax", "rax"}, {'b', "bl",  "bx",  "ebx", "rbx"},
+        {'c', "cl",  "cx",  "ecx", "rcx"}, {'d', "dl",  "dx",  "edx", "rdx"},
+        {'S', NULL,  "si",  "esi", "rsi"}, {'D', NULL,  "di",  "edi", "rdi"},
+        {0}
+    };
+    /* seg is like "=a" or "a" */
+    const char *p = seg;
+    int is_out = (*p == '=');
+    if (is_out) { emit(cg, "="); p++; }
+    char letter = *p;
+    if (*(p + 1) == '\0') { /* single letter */
+        int bw = out_inner ? type_bit_width(out_inner) : 32;
+        for (int i = 0; regs[i].l; i++) {
+            if (regs[i].l == letter) {
+                const char *rn = (bw <= 8 && regs[i].r8)  ? regs[i].r8
+                               : (bw <= 16 && regs[i].r16) ? regs[i].r16
+                               : (bw <= 32 && regs[i].r32) ? regs[i].r32
+                               : regs[i].r64;
+                emit(cg, "{%s}", rn);
+                return;
+            }
+        }
+    }
+    emit(cg, "%s", p); /* pass through (already has braces, or 'r', 'm', etc.) */
 }
 
 static int struct_field_index(StructInfo *si, const char *field) {
@@ -510,6 +565,9 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
             if (!sym)
                 fatal_at(e->span, "undefined identifier '%s'", e->ident.name);
             if (out_ty) *out_ty = sym->ty;
+            /* Top-level function reference: return @name as a ptr value (no load). */
+            if (sym->is_fn_ref)
+                return val_str(sym->llvm_name);
             /* Struct/array values: return alloca ptr (no load). Enums/scalars: load. */
             if (sym->ty && sym->ty->kind == TY_ARRAY)
                 return val_str(sym->llvm_name);
@@ -1587,6 +1645,126 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                 return val_tmp(tb);
             }
 
+            /* @asm(inst, constraints, operands...) / @asm_volatile(...)
+               Convention: output constraints (=X) come first, inputs after.
+               Output operands must be pointers (&var); the asm results are
+               extracted from the return struct and stored to those ptrs.
+               Input operands are passed as values to the asm call. */
+            if (!strcmp(name, "asm") || !strcmp(name, "asm_volatile")) {
+                int is_volatile = !strcmp(name, "asm_volatile");
+                if (e->builtin.args.len < 2)
+                    fatal_at(e->span, "@asm requires at least: instruction string, constraints string");
+                const char *inst   = (e->builtin.args.data[0]->kind == EXPR_STR)
+                                     ? e->builtin.args.data[0]->sval : "";
+                const char *constr = (e->builtin.args.data[1]->kind == EXPR_STR)
+                                     ? e->builtin.args.data[1]->sval : "";
+                /* split constraints by comma to count outputs vs inputs */
+                char constr_copy[512];
+                strncpy(constr_copy, constr, sizeof(constr_copy) - 1);
+                constr_copy[sizeof(constr_copy) - 1] = '\0';
+                int n_segs = 0;
+                const char *segs[32];
+                {
+                    char *tok = strtok(constr_copy, ",");
+                    while (tok && n_segs < 32) { segs[n_segs++] = tok; tok = strtok(NULL, ","); }
+                }
+                int n_out = 0;
+                for (int i = 0; i < n_segs; i++)
+                    if (segs[i][0] == '=') n_out++;
+                /* evaluate all operands */
+                int n_ops = (int)e->builtin.args.len - 2;
+                Val   *op_vals = n_ops > 0 ? malloc(sizeof(Val)   * n_ops) : NULL;
+                Type **op_tys  = n_ops > 0 ? malloc(sizeof(Type*) * n_ops) : NULL;
+                for (int i = 0; i < n_ops; i++) {
+                    op_tys[i] = NULL;
+                    op_vals[i] = cg_expr(cg, e->builtin.args.data[i + 2], &op_tys[i]);
+                }
+                int n_in = n_ops - n_out;
+                int t = new_tmp(cg);
+                /* helper: emit transformed constraint string */
+                #define EMIT_CONSTRS() do { \
+                    char cc[512]; strncpy(cc, constr, sizeof(cc)-1); cc[sizeof(cc)-1]='\0'; \
+                    int _ci = 0; char *_tok = strtok(cc, ","); \
+                    while (_tok) { \
+                        if (_ci) emit(cg, ","); \
+                        int _is_out = (_tok[0] == '='); \
+                        Type *_inner = (_is_out && _ci < n_out && op_tys[_ci] \
+                                        && op_tys[_ci]->kind == TY_PTR) \
+                                       ? op_tys[_ci]->ptr.inner : NULL; \
+                        emit_asm_reg_constraint(cg, _tok, _inner); \
+                        _ci++; _tok = strtok(NULL, ","); \
+                    } \
+                } while(0)
+
+                if (n_out == 0) {
+                    /* void return — inputs only */
+                    emit(cg, "  call void asm %s\"", is_volatile ? "sideeffect " : "");
+                    emit(cg, "%s\", \"", inst);
+                    EMIT_CONSTRS();
+                    emit(cg, "\"(");
+                    for (int i = 0; i < n_in; i++) {
+                        if (i) emit(cg, ", ");
+                        const char *llt = op_tys[i] ? effective_llvm_type(cg, op_tys[i]) : "i64";
+                        emit(cg, "%s %s", llt, op_vals[i].buf);
+                    }
+                    emit(cg, ")\n");
+                } else if (n_out == 1) {
+                    Type *inner = (n_ops > 0 && op_tys[0] && op_tys[0]->kind == TY_PTR)
+                                  ? op_tys[0]->ptr.inner : NULL;
+                    const char *ret_t = inner ? effective_llvm_type(cg, inner) : "i32";
+                    emit(cg, "  %%t%d = call %s asm %s\"", t, ret_t,
+                         is_volatile ? "sideeffect " : "");
+                    emit(cg, "%s\", \"", inst);
+                    EMIT_CONSTRS();
+                    emit(cg, "\"(");
+                    for (int i = n_out; i < n_ops; i++) {
+                        if (i > n_out) emit(cg, ", ");
+                        const char *llt = op_tys[i] ? effective_llvm_type(cg, op_tys[i]) : "i64";
+                        emit(cg, "%s %s", llt, op_vals[i].buf);
+                    }
+                    emit(cg, ")\n");
+                    emit(cg, "  store %s %%t%d, ptr %s\n", ret_t, t, op_vals[0].buf);
+                } else {
+                    emit(cg, "  %%t%d = call { ", t);
+                    for (int i = 0; i < n_out; i++) {
+                        if (i) emit(cg, ", ");
+                        Type *inner_i = (op_tys[i] && op_tys[i]->kind == TY_PTR)
+                                        ? op_tys[i]->ptr.inner : NULL;
+                        emit(cg, "%s", inner_i ? effective_llvm_type(cg, inner_i) : "i32");
+                    }
+                    emit(cg, " } asm %s\"", is_volatile ? "sideeffect " : "");
+                    emit(cg, "%s\", \"", inst);
+                    EMIT_CONSTRS();
+                    emit(cg, "\"(");
+                    for (int i = n_out; i < n_ops; i++) {
+                        if (i > n_out) emit(cg, ", ");
+                        const char *llt = op_tys[i] ? effective_llvm_type(cg, op_tys[i]) : "i64";
+                        emit(cg, "%s %s", llt, op_vals[i].buf);
+                    }
+                    emit(cg, ")\n");
+                    for (int i = 0; i < n_out; i++) {
+                        Type *inner_i = (op_tys[i] && op_tys[i]->kind == TY_PTR)
+                                        ? op_tys[i]->ptr.inner : NULL;
+                        const char *out_t = inner_i ? effective_llvm_type(cg, inner_i) : "i32";
+                        int ev = new_tmp(cg);
+                        emit(cg, "  %%t%d = extractvalue { ", ev);
+                        for (int k = 0; k < n_out; k++) {
+                            if (k) emit(cg, ", ");
+                            Type *inner_k = (op_tys[k] && op_tys[k]->kind == TY_PTR)
+                                            ? op_tys[k]->ptr.inner : NULL;
+                            emit(cg, "%s", inner_k ? effective_llvm_type(cg, inner_k) : "i32");
+                        }
+                        emit(cg, " } %%t%d, %d\n", t, i);
+                        emit(cg, "  store %s %%t%d, ptr %s\n", out_t, ev, op_vals[i].buf);
+                    }
+                }
+                #undef EMIT_CONSTRS
+                if (op_vals) free(op_vals);
+                if (op_tys)  free(op_tys);
+                if (out_ty) *out_ty = NULL;
+                return val_tmp(t);
+            }
+
             fatal_at(e->span, "unknown builtin '@%s'", name);
         }
 
@@ -1973,6 +2151,16 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                 for (size_t i = 0; i < nargs; i++) {
                     arg_tys[i]  = NULL;
                     arg_vals[i] = cg_expr(cg, e->call.args.data[i], &arg_tys[i]);
+                    if (arg_tys[i] && arg_tys[i]->kind == TY_NAMED
+                            && find_struct(cg, arg_tys[i]->named.name)) {
+                        ExprKind ak = e->call.args.data[i]->kind;
+                        if (ak == EXPR_IDENT || ak == EXPR_STRUCT_LIT) {
+                            int sv = new_tmp(cg);
+                            emit(cg, "  %%t%d = load %s, ptr %s\n",
+                                 sv, effective_llvm_type(cg, arg_tys[i]), arg_vals[i].buf);
+                            arg_vals[i] = val_tmp(sv);
+                        }
+                    }
                 }
 
                 int t = new_tmp(cg);
@@ -2008,16 +2196,28 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
             const char *fn_name;
             Type *callee_ty = NULL;
             const char *ret_llt = "i32";
+            int is_indirect = 0;
 
             if (e->call.callee->kind == EXPR_IDENT) {
-                snprintf(fn_name_buf, sizeof(fn_name_buf), "@%s",
-                         e->call.callee->ident.name);
-                fn_name = fn_name_buf;
-                /* look up return type from sema-annotated callee expression */
-                callee_ty = e->call.callee->ty;
+                Symbol *csym = lookup(cg, e->call.callee->ident.name);
+                if (csym && !csym->is_fn_ref && csym->ty && csym->ty->kind == TY_FN) {
+                    /* local fn ptr variable: load then indirect call */
+                    int ft = new_tmp(cg);
+                    emit(cg, "  %%t%d = load ptr, ptr %s\n", ft, csym->llvm_name);
+                    snprintf(fn_name_buf, sizeof(fn_name_buf), "%%t%d", ft);
+                    fn_name   = fn_name_buf;
+                    callee_ty = csym->ty;
+                    is_indirect = 1;
+                } else {
+                    snprintf(fn_name_buf, sizeof(fn_name_buf), "@%s",
+                             e->call.callee->ident.name);
+                    fn_name = fn_name_buf;
+                    callee_ty = e->call.callee->ty;
+                }
             } else {
                 Val cv = cg_expr(cg, e->call.callee, &callee_ty);
                 fn_name = cv.buf;
+                is_indirect = 1;
             }
 
             if (callee_ty && callee_ty->kind == TY_FN)
@@ -2032,6 +2232,18 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
             for (size_t i = 0; i < nargs; i++) {
                 arg_tys[i] = NULL;
                 arg_vals[i] = cg_expr(cg, e->call.args.data[i], &arg_tys[i]);
+                /* EXPR_IDENT and EXPR_STRUCT_LIT return alloca ptrs for struct types;
+                   load the actual struct value before passing by value */
+                if (arg_tys[i] && arg_tys[i]->kind == TY_NAMED
+                        && find_struct(cg, arg_tys[i]->named.name)) {
+                    ExprKind ak = e->call.args.data[i]->kind;
+                    if (ak == EXPR_IDENT || ak == EXPR_STRUCT_LIT) {
+                        int sv = new_tmp(cg);
+                        emit(cg, "  %%t%d = load %s, ptr %s\n",
+                             sv, effective_llvm_type(cg, arg_tys[i]), arg_vals[i].buf);
+                        arg_vals[i] = val_tmp(sv);
+                    }
+                }
             }
 
             /* coerce arguments to callee param types when known */
@@ -2081,10 +2293,24 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
             }
             int is_void_call = !strcmp(ret_llt, "void");
             int t = new_tmp(cg);
-            if (is_void_call)
+            if (is_indirect && callee_ty && callee_ty->kind == TY_FN) {
+                /* indirect call: must include the function type signature */
+                if (is_void_call) emit(cg, "  call void (");
+                else              emit(cg, "  %%t%d = call %s (", t, ret_llt);
+                for (size_t i = 0; i < callee_ty->fn.params.len; i++) {
+                    if (i) emit(cg, ", ");
+                    emit(cg, "%s", effective_llvm_type(cg, callee_ty->fn.params.data[i]));
+                }
+                if (callee_ty->fn.variadic) {
+                    if (callee_ty->fn.params.len) emit(cg, ", ");
+                    emit(cg, "...");
+                }
+                emit(cg, ") %s(", fn_name);
+            } else if (is_void_call) {
                 emit(cg, "  call void %s(", fn_name);
-            else
+            } else {
                 emit(cg, "  %%t%d = call %s %s(", t, ret_llt, fn_name);
+            }
             for (size_t i = 0; i < nargs; i++) {
                 const char *llt = effective_llvm_type(cg, arg_tys[i]);
                 if (i) emit(cg, ", ");
@@ -3858,6 +4084,58 @@ int codegen(Module *mod, FILE *out, int release) {
         if (item->kind == ITEM_EXTERN_FN)  cg_extern_fn(&cg, item);
     }
     emit(&cg, "\n");
+
+    /* register all functions and extern fns in the global scope so they can be
+       used as first-class values (fn pointers) inside function bodies */
+    for (size_t i = 0; i < mod->items.len; i++) {
+        Item *item = mod->items.data[i];
+        if (item->kind == ITEM_FN && item->fn.n_type_params == 0) {
+            Type *ty = ARENA_NEW(cg.arena, Type);
+            ty->kind = TY_FN;
+            ty->fn.ret = item->fn.ret;
+            ty->fn.params.len = item->fn.params.len;
+            if (item->fn.params.len > 0) {
+                ty->fn.params.data = ARENA_ALLOC(cg.arena, Type *, item->fn.params.len);
+                for (size_t j = 0; j < item->fn.params.len; j++)
+                    ty->fn.params.data[j] = item->fn.params.data[j].ty;
+            }
+            ty->fn.variadic = item->fn.variadic;
+            define_fn_sym(&cg, item->name, ty);
+        }
+        if (item->kind == ITEM_EXTERN_FN) {
+            Type *ty = ARENA_NEW(cg.arena, Type);
+            ty->kind = TY_FN;
+            ty->fn.ret = item->extern_fn.ret;
+            ty->fn.params.len = item->extern_fn.params.len;
+            if (item->extern_fn.params.len > 0) {
+                ty->fn.params.data = ARENA_ALLOC(cg.arena, Type *, item->extern_fn.params.len);
+                for (size_t j = 0; j < item->extern_fn.params.len; j++)
+                    ty->fn.params.data[j] = item->extern_fn.params.data[j].ty;
+            }
+            ty->fn.variadic = item->extern_fn.variadic;
+            define_fn_sym(&cg, item->name, ty);
+        }
+    }
+    /* also register impl methods */
+    for (size_t i = 0; i < mod->items.len; i++) {
+        Item *item = mod->items.data[i];
+        if (item->kind != ITEM_IMPL) continue;
+        for (size_t j = 0; j < item->impl.methods.len; j++) {
+            Item *m = item->impl.methods.data[j];
+            if (m->kind != ITEM_FN || m->fn.n_type_params > 0) continue;
+            Type *ty = ARENA_NEW(cg.arena, Type);
+            ty->kind = TY_FN;
+            ty->fn.ret = m->fn.ret;
+            ty->fn.params.len = m->fn.params.len;
+            if (m->fn.params.len > 0) {
+                ty->fn.params.data = ARENA_ALLOC(cg.arena, Type *, m->fn.params.len);
+                for (size_t j2 = 0; j2 < m->fn.params.len; j2++)
+                    ty->fn.params.data[j2] = m->fn.params.data[j2].ty;
+            }
+            ty->fn.variadic = m->fn.variadic;
+            define_fn_sym(&cg, m->name, ty);
+        }
+    }
 
     /* functions — rename user's `main` to `__przp_main` */
     int has_main = 0;

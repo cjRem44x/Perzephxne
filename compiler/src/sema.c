@@ -339,6 +339,7 @@ static Type *builtin_ret_ty(Sema *s, const char *name) {
         !strcmp(name, "atomic_xor")  || !strcmp(name, "atomic_swap"))
                                                          return s->ty_i64;
     if (!strcmp(name, "atomic_cas"))                     return s->ty_bool;
+    if (!strcmp(name, "asm") || !strcmp(name, "asm_volatile")) return s->ty_void;
     return NULL;
 }
 
@@ -1294,6 +1295,166 @@ static Type *subst_type(Type *ty, const char **params, Type **concretes,
     return copy;
 }
 
+/* ── Deep-copy helpers for generic instantiation ──────────────────────────── *
+ * subst_expr/subst_stmts mutate nodes in place, so we must clone the template
+ * body before substituting, otherwise successive instantiations corrupt each
+ * other.                                                                       */
+
+static Expr     *clone_expr (Expr    *e,  Arena *a);
+static Stmt     *clone_stmt (Stmt    *s,  Arena *a);
+static StmtList  clone_stmts(StmtList sl, Arena *a);
+
+static ExprList clone_exprlist(ExprList el, Arena *a) {
+    if (!el.len) return el;
+    ExprList r;
+    r.len  = el.len;
+    r.data = ARENA_ALLOC(a, Expr *, el.len);
+    for (size_t i = 0; i < el.len; i++) r.data[i] = clone_expr(el.data[i], a);
+    return r;
+}
+
+static WhenArmList clone_when_arms(WhenArmList wal, Arena *a) {
+    if (!wal.len) return wal;
+    WhenArmList r;
+    r.len  = wal.len;
+    r.data = ARENA_ALLOC(a, WhenArm, wal.len);
+    for (size_t i = 0; i < wal.len; i++) {
+        r.data[i]      = wal.data[i];
+        r.data[i].pats = clone_exprlist(wal.data[i].pats, a);
+        r.data[i].body = clone_stmt(wal.data[i].body, a);
+    }
+    return r;
+}
+
+static Expr *clone_expr(Expr *e, Arena *a) {
+    if (!e) return NULL;
+    Expr *c = ARENA_NEW(a, Expr);
+    *c = *e;
+    switch (e->kind) {
+        case EXPR_BUILTIN:
+            c->builtin.args = clone_exprlist(e->builtin.args, a);
+            break;
+        case EXPR_CAST:
+            c->cast.val = clone_expr(e->cast.val, a);
+            break;
+        case EXPR_BINOP:
+            c->binop.l = clone_expr(e->binop.l, a);
+            c->binop.r = clone_expr(e->binop.r, a);
+            break;
+        case EXPR_UNOP:
+            c->unop.operand = clone_expr(e->unop.operand, a);
+            break;
+        case EXPR_CALL:
+            c->call.callee = clone_expr(e->call.callee, a);
+            c->call.args   = clone_exprlist(e->call.args, a);
+            break;
+        case EXPR_INDEX:
+            c->index.arr = clone_expr(e->index.arr, a);
+            c->index.idx = clone_expr(e->index.idx, a);
+            break;
+        case EXPR_FIELD:
+            c->field.obj = clone_expr(e->field.obj, a);
+            break;
+        case EXPR_DEREF: case EXPR_SMARTDEREF:
+            c->deref.operand = clone_expr(e->deref.operand, a);
+            break;
+        case EXPR_WHEN:
+            c->when.cond = clone_expr(e->when.cond, a);
+            c->when.arms = clone_when_arms(e->when.arms, a);
+            break;
+        case EXPR_IF:
+            c->if_expr.cond  = clone_expr(e->if_expr.cond, a);
+            c->if_expr.then_ = clone_stmt(e->if_expr.then_, a);
+            c->if_expr.else_ = clone_stmt(e->if_expr.else_, a);
+            break;
+        case EXPR_STRUCT_LIT: {
+            FieldInitList fl = e->struct_lit.fields;
+            if (fl.len) {
+                FieldInit *nf = ARENA_ALLOC(a, FieldInit, fl.len);
+                for (size_t i = 0; i < fl.len; i++) {
+                    nf[i]     = fl.data[i];
+                    nf[i].val = clone_expr(fl.data[i].val, a);
+                }
+                c->struct_lit.fields.data = nf;
+            }
+            break;
+        }
+        case EXPR_ARRAY_LIT:
+            c->array_lit = clone_exprlist(e->array_lit, a);
+            break;
+        default: break;
+    }
+    return c;
+}
+
+static Stmt *clone_stmt(Stmt *s, Arena *a) {
+    if (!s) return NULL;
+    Stmt *c = ARENA_NEW(a, Stmt);
+    *c = *s;
+    switch (s->kind) {
+        case STMT_LET:
+            c->let.init = clone_expr(s->let.init, a);
+            break;
+        case STMT_ASSIGN:
+            c->assign.target = clone_expr(s->assign.target, a);
+            c->assign.val    = clone_expr(s->assign.val, a);
+            break;
+        case STMT_EXPR:
+            c->expr = clone_expr(s->expr, a);
+            break;
+        case STMT_IF: {
+            IfBranchList bl = s->if_.branches;
+            if (bl.len) {
+                IfBranch *nb = ARENA_ALLOC(a, IfBranch, bl.len);
+                for (size_t i = 0; i < bl.len; i++) {
+                    nb[i].cond = clone_expr(bl.data[i].cond, a);
+                    nb[i].body = clone_stmts(bl.data[i].body, a);
+                }
+                c->if_.branches.data = nb;
+            }
+            c->if_.else_body = clone_stmts(s->if_.else_body, a);
+            break;
+        }
+        case STMT_WHILE:
+            c->while_.cond = clone_expr(s->while_.cond, a);
+            c->while_.body = clone_stmts(s->while_.body, a);
+            break;
+        case STMT_FOR: {
+            c->for_.clause.iter      = clone_expr(s->for_.clause.iter, a);
+            c->for_.clause.range_end = clone_expr(s->for_.clause.range_end, a);
+            c->for_.clause.cond      = clone_expr(s->for_.clause.cond, a);
+            c->for_.clause.init      = clone_stmt(s->for_.clause.init, a);
+            c->for_.clause.step      = clone_stmt(s->for_.clause.step, a);
+            c->for_.body             = clone_stmts(s->for_.body, a);
+            break;
+        }
+        case STMT_WHEN:
+            c->when.val  = clone_expr(s->when.val, a);
+            c->when.arms = clone_when_arms(s->when.arms, a);
+            break;
+        case STMT_DEFER:
+            c->defer = clone_stmts(s->defer, a);
+            break;
+        case STMT_RET:
+            c->ret.val = clone_expr(s->ret.val, a);
+            break;
+        case STMT_BLOCK:
+            c->block = clone_stmts(s->block, a);
+            break;
+        default: break;
+    }
+    return c;
+}
+
+static StmtList clone_stmts(StmtList sl, Arena *a) {
+    if (!sl.len) return sl;
+    StmtList r;
+    r.len  = sl.len;
+    r.data = ARENA_ALLOC(a, Stmt *, sl.len);
+    for (size_t i = 0; i < sl.len; i++) r.data[i] = clone_stmt(sl.data[i], a);
+    return r;
+}
+
 static void subst_expr(Expr *e, const char **params, Type **concretes, size_t n, Arena *a) {
     if (!e) return;
     switch (e->kind) {
@@ -1423,7 +1584,8 @@ static Item *instantiate(Item *tmpl, const char *mangled_name,
                                    params, concretes, n_concretes, a);
         }
         inst->fn.params.data = np;
-        inst->fn.ret = subst_type(tmpl->fn.ret, params, concretes, n_concretes, a);
+        inst->fn.ret  = subst_type(tmpl->fn.ret, params, concretes, n_concretes, a);
+        inst->fn.body = clone_stmts(tmpl->fn.body, a);
         subst_stmts(inst->fn.body, params, concretes, n_concretes, a);
     }
     return inst;

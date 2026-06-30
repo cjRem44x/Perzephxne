@@ -15,6 +15,9 @@ typedef struct {
     Arena      *arena;
     GenInstList gen_insts; /* generic instantiations seen during parse */
     int         no_struct_lit; /* suppress struct-literal parsing in conditions */
+    /* type params currently in scope (set while parsing a generic fn/struct body) */
+    const char **cur_type_params;
+    size_t       n_cur_type_params;
 } Parser;
 
 /* ── helpers ──────────────────────────────────────────────────────────────── */
@@ -117,6 +120,14 @@ static const char *type_to_str(Type *ty, Arena *a) {
 
 static void record_gen_inst(Parser *p, const char *mangled, const char *base,
                              Type **args, size_t n_args) {
+    /* Skip if any arg is still a type parameter (we're inside a generic body).
+       Such pseudo-instantiations can't be emitted as concrete LLVM types. */
+    for (size_t j = 0; j < n_args; j++) {
+        if (!args[j] || args[j]->kind != TY_NAMED) continue;
+        for (size_t k = 0; k < p->n_cur_type_params; k++) {
+            if (!strcmp(args[j]->named.name, p->cur_type_params[k])) return;
+        }
+    }
     /* skip duplicates */
     for (size_t i = 0; i < p->gen_insts.len; i++)
         if (!strcmp(p->gen_insts.data[i].mangled, mangled)) return;
@@ -1070,13 +1081,10 @@ static Stmt *parse_stmt(Parser *p) {
              TokenKind p3  = p->peek3.kind;
              /* definitely a type annotation if followed by mutable/new-immutable = / :: */
              int is_decl = (p3 == TOK_EQ || p3 == TOK_COLONCOLON);
-             /* also a type annotation if immutable (p3==:) and peek2 is a known primitive */
-             if (!is_decl && p3 == TOK_COLON && n)
-                 is_decl = (!strcmp(n,"i8")||!strcmp(n,"i16")||!strcmp(n,"i32")||
-                             !strcmp(n,"i64")||!strcmp(n,"u8")||!strcmp(n,"u16")||
-                             !strcmp(n,"u32")||!strcmp(n,"u64")||!strcmp(n,"f16")||
-                             !strcmp(n,"f32")||!strcmp(n,"f64")||!strcmp(n,"usize")||
-                             !strcmp(n,"bool")||!strcmp(n,"str")||!strcmp(n,"char"));
+             /* generic type: Name<T, U> — peek3 is '<' */
+             if (!is_decl && p3 == TOK_LT) is_decl = 1;
+             /* immutable (p3==:) with any ident type — treat as var decl */
+             if (!is_decl && p3 == TOK_COLON && n) is_decl = 1;
              !is_decl; /* true → treat as label */
          })))) {
         const char *lname = cur(p).sval;
@@ -1601,6 +1609,12 @@ static Item *parse_item(Parser *p) {
             }
             expect(p, TOK_GT);
         }
+        /* Expose type params for the entire signature + body so record_gen_inst
+           can skip template-internal generic uses like Box<T>. */
+        const char **saved_tp  = p->cur_type_params;
+        size_t       saved_ntp = p->n_cur_type_params;
+        p->cur_type_params   = type_params;
+        p->n_cur_type_params = n_type_params;
         expect(p, TOK_LPAREN);
         ParamList params = {0};
         int variadic = 0;
@@ -1617,6 +1631,8 @@ static Item *parse_item(Parser *p) {
         Type *ret = NULL;
         if (eat(p, TOK_ARROW)) ret = parse_type(p);
         StmtList body = parse_block(p);
+        p->cur_type_params   = saved_tp;
+        p->n_cur_type_params = saved_ntp;
         Item *item = ARENA_NEW(p->arena, Item);
         item->kind               = ITEM_FN;
         item->name               = name;
@@ -1654,6 +1670,11 @@ static Item *parse_item(Parser *p) {
             expect(p, TOK_GT);
         }
         expect(p, TOK_LBRACE);
+        /* expose type params so field types like Box<T> don't get recorded as gen_insts */
+        const char **saved_stp  = p->cur_type_params;
+        size_t       saved_sntp = p->n_cur_type_params;
+        p->cur_type_params   = type_params;
+        p->n_cur_type_params = n_type_params;
         FieldList fields = {0};
         while (!check(p, TOK_RBRACE) && !check(p, TOK_EOF)) {
             const char *fn2 = expect(p, TOK_IDENT).sval;
@@ -1663,6 +1684,8 @@ static Item *parse_item(Parser *p) {
             SLICE_PUSH(p->arena, &fields, Field, f);
             eat(p, TOK_COMMA);
         }
+        p->cur_type_params   = saved_stp;
+        p->n_cur_type_params = saved_sntp;
         expect(p, TOK_RBRACE);
         Item *item = ARENA_NEW(p->arena, Item);
         item->kind                   = ITEM_STRUCT;
