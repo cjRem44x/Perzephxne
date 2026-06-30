@@ -600,10 +600,22 @@ static Type *check_expr(Sema *s, Expr *e) {
         case EXPR_INDEX: {
             Type *arr_ty = check_expr(s, e->index.arr);
             Type *idx_ty = check_expr(s, e->index.idx);
-            if (idx_ty && !ty_is_int(idx_ty))
+            /* range index (arr[lo..hi]) produces a slice */
+            int is_range_idx = e->index.idx && e->index.idx->kind == EXPR_BINOP
+                && (e->index.idx->binop.op == BINOP_RANGE
+                    || e->index.idx->binop.op == BINOP_RANGE_INC);
+            if (!is_range_idx && idx_ty && !ty_is_int(idx_ty))
                 sema_error(s, e->span, "array index must be integer, got '%s'", ty_str(idx_ty));
             if (arr_ty) {
-                if (arr_ty->kind == TY_ARRAY || arr_ty->kind == TY_SLICE)
+                if (is_range_idx) {
+                    /* arr[lo..hi] → slice of element type */
+                    Type *elem = NULL;
+                    if (arr_ty->kind == TY_ARRAY || arr_ty->kind == TY_SLICE)
+                        elem = arr_ty->array.inner;
+                    else if (arr_ty->kind == TY_STR)
+                        elem = s->ty_char;
+                    e->ty = elem ? make_ptr(s, TY_SLICE, elem) : NULL;
+                } else if (arr_ty->kind == TY_ARRAY || arr_ty->kind == TY_SLICE)
                     e->ty = arr_ty->array.inner;
                 else if (arr_ty->kind == TY_STR)
                     e->ty = s->ty_char;

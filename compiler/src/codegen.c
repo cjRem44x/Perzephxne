@@ -2490,6 +2490,60 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
         case EXPR_INDEX: {
             Type *at = NULL;
             Val arr = cg_expr(cg, e->index.arr, &at);
+
+            /* range index: arr[lo..hi] → { ptr, i64 } slice */
+            int is_range = e->index.idx && e->index.idx->kind == EXPR_BINOP
+                && (e->index.idx->binop.op == BINOP_RANGE
+                    || e->index.idx->binop.op == BINOP_RANGE_INC);
+            if (is_range) {
+                Val lo = cg_expr(cg, e->index.idx->binop.l, NULL);
+                Val hi = cg_expr(cg, e->index.idx->binop.r, NULL);
+
+                /* determine elem type and raw base pointer */
+                Type *elem_ty = NULL;
+                const char *elem_llt = "i8";
+                const char *base_ptr = arr.buf;
+                if (at && (at->kind == TY_ARRAY || at->kind == TY_SLICE)) {
+                    elem_ty  = at->array.inner;
+                    elem_llt = elem_ty ? llvm_type(elem_ty) : "i8";
+                }
+                if (at && at->kind == TY_SLICE) {
+                    int dp = new_tmp(cg);
+                    emit(cg, "  %%t%d = extractvalue { ptr, i64 } %s, 0\n", dp, arr.buf);
+                    char buf[32]; snprintf(buf, sizeof(buf), "%%t%d", dp);
+                    base_ptr = arena_strdup(cg->arena, buf);
+                }
+
+                /* data ptr = GEP(base, lo) */
+                int data_ptr = new_tmp(cg);
+                emit(cg, "  %%t%d = getelementptr %s, ptr %s, i64 %s\n",
+                     data_ptr, elem_llt, base_ptr, lo.buf);
+
+                /* len = hi - lo  (inclusive: hi - lo + 1) */
+                int len_t = new_tmp(cg);
+                emit(cg, "  %%t%d = sub i64 %s, %s\n", len_t, hi.buf, lo.buf);
+                if (e->index.idx->binop.op == BINOP_RANGE_INC) {
+                    int len2 = new_tmp(cg);
+                    emit(cg, "  %%t%d = add i64 %%t%d, 1\n", len2, len_t);
+                    len_t = len2;
+                }
+
+                /* build { ptr, i64 } slice via alloca */
+                int sa = new_tmp(cg);
+                emit(cg, "  %%t%d = alloca { ptr, i64 }\n", sa);
+                int p0 = new_tmp(cg);
+                emit(cg, "  %%t%d = getelementptr { ptr, i64 }, ptr %%t%d, i32 0, i32 0\n", p0, sa);
+                emit(cg, "  store ptr %%t%d, ptr %%t%d\n", data_ptr, p0);
+                int p1 = new_tmp(cg);
+                emit(cg, "  %%t%d = getelementptr { ptr, i64 }, ptr %%t%d, i32 0, i32 1\n", p1, sa);
+                emit(cg, "  store i64 %%t%d, ptr %%t%d\n", len_t, p1);
+                int res = new_tmp(cg);
+                emit(cg, "  %%t%d = load { ptr, i64 }, ptr %%t%d\n", res, sa);
+
+                if (out_ty) *out_ty = e->ty; /* []T set by sema */
+                return val_tmp(res);
+            }
+
             Val idx = cg_expr(cg, e->index.idx, NULL);
 
             const char *elem_llt = "i8";
