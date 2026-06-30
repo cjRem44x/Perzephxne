@@ -1539,8 +1539,33 @@ static void subst_expr(Expr *e, const char **params, Type **concretes, size_t n,
             break;
         case EXPR_IF:
             subst_expr(e->if_expr.cond, params, concretes, n, a);
+            if (e->if_expr.then_) {
+                StmtList tmp = { &e->if_expr.then_, 1 };
+                subst_stmts(tmp, params, concretes, n, a);
+            }
+            if (e->if_expr.else_) {
+                StmtList tmp = { &e->if_expr.else_, 1 };
+                subst_stmts(tmp, params, concretes, n, a);
+            }
+            break;
+        case EXPR_WHEN:
+            subst_expr(e->when.cond, params, concretes, n, a);
+            for (size_t wi = 0; wi < e->when.arms.len; wi++) {
+                WhenArm *arm = &e->when.arms.data[wi];
+                for (size_t pi = 0; pi < arm->pats.len; pi++)
+                    subst_expr(arm->pats.data[pi], params, concretes, n, a);
+                if (arm->body) {
+                    StmtList tmp = { &arm->body, 1 };
+                    subst_stmts(tmp, params, concretes, n, a);
+                }
+            }
+            break;
+        case EXPR_ARRAY_LIT:
+            for (size_t ai = 0; ai < e->array_lit.len; ai++)
+                subst_expr(e->array_lit.data[ai], params, concretes, n, a);
             break;
         case EXPR_CAST:
+            e->cast.ty_name = subst_mangled(e->cast.ty_name, params, concretes, n, a);
             subst_expr(e->cast.val, params, concretes, n, a);
             break;
         default: break;
@@ -1579,7 +1604,30 @@ static void subst_stmts(StmtList sl, const char **params, Type **concretes,
                 subst_stmts(st->while_.body, params, concretes, n, a);
                 break;
             case STMT_FOR:
+                subst_expr(st->for_.clause.iter,      params, concretes, n, a);
+                subst_expr(st->for_.clause.range_end, params, concretes, n, a);
+                subst_expr(st->for_.clause.cond,      params, concretes, n, a);
+                if (st->for_.clause.init) {
+                    StmtList tmp = { &st->for_.clause.init, 1 };
+                    subst_stmts(tmp, params, concretes, n, a);
+                }
+                if (st->for_.clause.step) {
+                    StmtList tmp = { &st->for_.clause.step, 1 };
+                    subst_stmts(tmp, params, concretes, n, a);
+                }
                 subst_stmts(st->for_.body, params, concretes, n, a);
+                break;
+            case STMT_WHEN:
+                subst_expr(st->when.val, params, concretes, n, a);
+                for (size_t wi = 0; wi < st->when.arms.len; wi++) {
+                    WhenArm *arm = &st->when.arms.data[wi];
+                    for (size_t pi = 0; pi < arm->pats.len; pi++)
+                        subst_expr(arm->pats.data[pi], params, concretes, n, a);
+                    if (arm->body) {
+                        StmtList tmp = { &arm->body, 1 };
+                        subst_stmts(tmp, params, concretes, n, a);
+                    }
+                }
                 break;
             case STMT_BLOCK:
                 subst_stmts(st->block, params, concretes, n, a);
