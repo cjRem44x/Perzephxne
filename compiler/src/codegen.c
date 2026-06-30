@@ -2142,8 +2142,24 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
 
                 Type *obj_ty = NULL;
                 Val self_val;
-                if (!is_static)
+                const char *self_llt = "ptr";
+                if (!is_static) {
                     self_val = cg_expr(cg, e->call.callee->field.obj, &obj_ty);
+                    /* self_val.buf is the receiver's alloca ptr; if the method's
+                       self param is declared by value (not *T/^T), load the
+                       struct value before passing it, matching the function's
+                       declared signature. */
+                    Symbol *msym = lookup(cg, mangled);
+                    if (msym && msym->ty && msym->ty->kind == TY_FN && msym->ty->fn.params.len > 0) {
+                        Type *self_param_ty = msym->ty->fn.params.data[0];
+                        if (self_param_ty && self_param_ty->kind != TY_PTR && self_param_ty->kind != TY_SMART_PTR) {
+                            self_llt = effective_llvm_type(cg, self_param_ty);
+                            int sv = new_tmp(cg);
+                            emit(cg, "  %%t%d = load %s, ptr %s\n", sv, self_llt, self_val.buf);
+                            self_val = val_tmp(sv);
+                        }
+                    }
+                }
 
                 size_t nargs = e->call.args.len;
                 Val   *arg_vals = nargs ? malloc(sizeof(Val)   * nargs) : NULL;
@@ -2176,9 +2192,9 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                     }
                 } else {
                     if (is_void)
-                        emit(cg, "  call void @%s(ptr %s", mangled, self_val.buf);
+                        emit(cg, "  call void @%s(%s %s", mangled, self_llt, self_val.buf);
                     else
-                        emit(cg, "  %%t%d = call %s @%s(ptr %s", t, ret_llt, mangled, self_val.buf);
+                        emit(cg, "  %%t%d = call %s @%s(%s %s", t, ret_llt, mangled, self_llt, self_val.buf);
                     for (size_t i = 0; i < nargs; i++) {
                         const char *llt = effective_llvm_type(cg, arg_tys[i]);
                         emit(cg, ", %s %s", llt, arg_vals[i].buf);
