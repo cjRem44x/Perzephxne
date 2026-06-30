@@ -1970,8 +1970,15 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                 else if (!strcmp(src_llt,"i16")) src_bits=16;
                 else if (!strcmp(src_llt,"i32")) src_bits=32;
                 else if (!strcmp(src_llt,"i64")) src_bits=64;
+                int is_src_float = type_is_float(src_ty);
                 int is_src_signed = type_is_signed(src_ty);
+                /* float → integer: fptosi / fptoui */
+                #define FLOAT_TO_INT(dst_llt) do { \
+                    const char *op = is_src_signed ? "fptosi" : "fptoui"; \
+                    emit(cg, "  %%t%d = %s %s %s to %s\n", t, op, src_llt, src.buf, dst_llt); \
+                } while(0)
                 #define INT_CAST(dst_llt, dst_bits) do { \
+                    if (is_src_float) { FLOAT_TO_INT(dst_llt); break; } \
                     const char *op = (dst_bits < src_bits) ? "trunc" \
                                    : (dst_bits > src_bits) ? (is_src_signed ? "sext" : "zext") \
                                    : NULL; \
@@ -1988,6 +1995,7 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                 else if (!strcmp(dst,"u64"))   INT_CAST("i64",64);
                 else if (!strcmp(dst,"usize")) INT_CAST("i64",64);
                 #undef INT_CAST
+                #undef FLOAT_TO_INT
                 else if (!strcmp(dst,"f32")) {
                     if (type_is_float(src_ty))
                         emit(cg, "  %%t%d = fptrunc %s %s to float\n", t, src_llt, src.buf);
