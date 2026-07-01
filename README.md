@@ -155,12 +155,33 @@ v: Vec2 = Vec2{.x = 3.0, .y = 4.0}
 struct Box[T] { value: T }
 
 impl Box[T] {
+    fn new(v: T) -> Box[T] { ret Box[T]{.value = v} }  # static constructor
     fn get(self: *Box[T]) -> T { ret self.value }
     fn set(self: *Box[T], v: T) { self.value = v }
 }
 
-b: Box[i32] = Box[i32]{.value = 42}
+b: Box[i32] = Box[i32].new(42)   # Generic[T].method() calls a static method
 @pf("value = {b.get()}\n")
+b.set(99)
+@pf("value = {b.get()}\n")
+```
+
+### Enums
+
+```
+enum Direction { North, South, East, West }
+enum Status { Ok, Err = 1, Timeout = 2 }
+
+d: Direction = Direction.North
+
+when d {
+    Direction.North => @pf("north\n")
+    Direction.South => @pf("south\n")
+    Direction.East  => @pf("east\n")
+    Direction.West  => @pf("west\n")
+}
+
+if d == Direction.North { @pf("heading north\n") }
 ```
 
 ### Unions
@@ -322,7 +343,7 @@ version = "0.1.0"
 | `przp build` | debug build |
 | `przp build --release` | optimized release build |
 | `przp run` | build and run |
-| `przp sac <files> -o=Name` | compile files without a project |
+| `przp sac <files> -o=Name` | compile one or more files without a project |
 
 ---
 
