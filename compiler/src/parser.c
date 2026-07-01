@@ -14,7 +14,8 @@ typedef struct {
     Token       peek3;     /* 4-token lookahead for label vs type disambiguation */
     Arena      *arena;
     GenInstList gen_insts; /* generic instantiations seen during parse */
-    int         no_struct_lit; /* suppress struct-literal parsing in conditions */
+    int         no_struct_lit;    /* suppress struct-literal parsing in conditions */
+    int         in_when_arm_body; /* parsing a when-arm body: stop .ident => eagerly */
     /* type params currently in scope (set while parsing a generic fn/struct body) */
     const char **cur_type_params;
     size_t       n_cur_type_params;
@@ -921,7 +922,9 @@ static Expr *parse_primary(Parser *p) {
                     advance(p);
                 }
                 expect(p, TOK_FATARROW);
+                p->in_when_arm_body = 1;
                 arm.body = parse_stmt(p);
+                p->in_when_arm_body = 0;
                 eat(p, TOK_COMMA);
                 SLICE_PUSH(p->arena, &arms, WhenArm, arm);
             }
@@ -981,16 +984,15 @@ static Expr *parse_postfix(Parser *p, Expr *e) {
             e = d;
         } else if (check(p, TOK_DOT)) {
             /* Don't consume .ident as field access when it looks like the start
-               of the next when-arm pattern AND the current expression is not a
-               simple identifier (Name.Variant is a valid enum variant pattern).
-               Examples that should stop: @pf(...).NextVariant =>
-               Examples that should continue: Dir.North => */
-            if (e->kind != EXPR_IDENT &&
-                p->peek.kind == TOK_IDENT &&
+               of the next when-arm pattern.
+               Inside a when-arm body (in_when_arm_body=1), always stop.
+               Outside a body (parsing the arm's own pattern), stop only for
+               non-ident LHS so that Enum.Variant patterns still work. */
+            if (p->peek.kind == TOK_IDENT &&
                 (p->peek2.kind == TOK_FATARROW ||
                  ((p->peek2.kind == TOK_IDENT || p->peek2.kind == TOK_UNDER) &&
                   p->peek3.kind == TOK_FATARROW))) {
-                break;
+                if (p->in_when_arm_body || e->kind != EXPR_IDENT) break;
             }
             advance(p);
             Token fname = expect(p, TOK_IDENT);
@@ -1481,7 +1483,9 @@ static Stmt *parse_stmt(Parser *p) {
                 advance(p);
             }
             expect(p, TOK_FATARROW);
+            p->in_when_arm_body = 1;
             arm.body = parse_stmt(p);
+            p->in_when_arm_body = 0;
             eat(p, TOK_COMMA);
             SLICE_PUSH(p->arena, &arms, WhenArm, arm);
         }
