@@ -251,8 +251,8 @@ static Type *resolve_named(Sema *s, Type *ty) {
 static int ty_coerces(Type *from, Type *to) {
     if (!from || !to) return 1; /* unknown types pass silently */
     if (ty_eq(from, to)) return 1;
-    /* integer literals (i32 default) coerce to any integer width */
-    if (from->kind == TY_I32 && ty_is_int(to)) return 1;
+    /* integer types coerce to any other integer width (truncation/extension) */
+    if (ty_is_int(from) && ty_is_int(to)) return 1;
     /* f64 default coerces to any float */
     if (from->kind == TY_F64 && ty_is_float(to)) return 1;
     /* null coerces to any pointer */

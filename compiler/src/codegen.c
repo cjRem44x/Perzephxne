@@ -858,20 +858,66 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
 
             /* @args — returns []str (argc/argv from main, passed via globals) */
             if (!strcmp(name, "args")) {
-                int t = new_tmp(cg);
-                emit(cg, "  %%t%d = load i32, ptr @__przp_argc\n", t);
-                int t2 = new_tmp(cg);
-                emit(cg, "  %%t%d = load ptr, ptr @__przp_argv\n", t2);
-                /* pack into { ptr, i64 } slice */
+                int argc_i32 = new_tmp(cg);
+                emit(cg, "  %%t%d = load i32, ptr @__przp_argc\n", argc_i32);
+                int argc64 = new_tmp(cg);
+                emit(cg, "  %%t%d = sext i32 %%t%d to i64\n", argc64, argc_i32);
+                int argv_raw = new_tmp(cg);
+                emit(cg, "  %%t%d = load ptr, ptr @__przp_argv\n", argv_raw);
+                /* alloc fat-pointer array: argc * 16 bytes */
+                int byte_count = new_tmp(cg);
+                emit(cg, "  %%t%d = mul i64 %%t%d, 16\n", byte_count, argc64);
+                int fat_arr = new_tmp(cg);
+                emit(cg, "  %%t%d = call ptr @malloc(i64 %%t%d)\n", fat_arr, byte_count);
+                /* loop to fill fat pointers: for i in 0..argc */
+                char entry_lbl[32];
+                if (cg->cur_label < 0) snprintf(entry_lbl, sizeof(entry_lbl), "%%entry");
+                else snprintf(entry_lbl, sizeof(entry_lbl), "%%l%d", cg->cur_label);
+                int loop_hdr = new_label(cg);
+                int loop_body = new_label(cg);
+                int loop_end = new_label(cg);
+                /* pre-reserve i_next so phi can reference it forward */
+                int i_phi = new_tmp(cg);
+                int i_next = new_tmp(cg);
+                emit_br(cg, "  br label %%l%d\n", loop_hdr);
+                emit_label(cg, loop_hdr);
+                emit(cg, "  %%t%d = phi i64 [ 0, %s ], [ %%t%d, %%l%d ]\n",
+                     i_phi, entry_lbl, i_next, loop_body);
+                int i_cmp = new_tmp(cg);
+                emit(cg, "  %%t%d = icmp slt i64 %%t%d, %%t%d\n", i_cmp, i_phi, argc64);
+                emit_br(cg, "  br i1 %%t%d, label %%l%d, label %%l%d\n",
+                        i_cmp, loop_body, loop_end);
+                emit_label(cg, loop_body);
+                /* load argv[i] */
+                int raw_p = new_tmp(cg);
+                emit(cg, "  %%t%d = getelementptr ptr, ptr %%t%d, i64 %%t%d\n",
+                     raw_p, argv_raw, i_phi);
+                int raw = new_tmp(cg);
+                emit(cg, "  %%t%d = load ptr, ptr %%t%d\n", raw, raw_p);
+                int slen = new_tmp(cg);
+                emit(cg, "  %%t%d = call i64 @strlen(ptr %%t%d)\n", slen, raw);
+                /* dst = fat_arr + i * 16 */
+                int dst_off = new_tmp(cg);
+                emit(cg, "  %%t%d = mul i64 %%t%d, 16\n", dst_off, i_phi);
+                int dst = new_tmp(cg);
+                emit(cg, "  %%t%d = getelementptr i8, ptr %%t%d, i64 %%t%d\n",
+                     dst, fat_arr, dst_off);
+                emit(cg, "  store ptr %%t%d, ptr %%t%d\n", raw, dst);
+                int dst8 = new_tmp(cg);
+                emit(cg, "  %%t%d = getelementptr i8, ptr %%t%d, i64 8\n", dst8, dst);
+                emit(cg, "  store i64 %%t%d, ptr %%t%d\n", slen, dst8);
+                /* i_next = i + 1  (uses pre-reserved tmp) */
+                emit(cg, "  %%t%d = add i64 %%t%d, 1\n", i_next, i_phi);
+                emit_br(cg, "  br label %%l%d\n", loop_hdr);
+                emit_label(cg, loop_end);
+                /* return { ptr fat_arr, i64 argc64 } as []str slice */
                 int sl = new_tmp(cg);
                 emit(cg, "  %%t%d = alloca { ptr, i64 }\n", sl);
                 int p0 = new_tmp(cg);
                 emit(cg, "  %%t%d = getelementptr { ptr, i64 }, ptr %%t%d, i32 0, i32 0\n", p0, sl);
-                emit(cg, "  store ptr %%t%d, ptr %%t%d\n", t2, p0);
+                emit(cg, "  store ptr %%t%d, ptr %%t%d\n", fat_arr, p0);
                 int p1 = new_tmp(cg);
                 emit(cg, "  %%t%d = getelementptr { ptr, i64 }, ptr %%t%d, i32 0, i32 1\n", p1, sl);
-                int argc64 = new_tmp(cg);
-                emit(cg, "  %%t%d = sext i32 %%t%d to i64\n", argc64, t);
                 emit(cg, "  store i64 %%t%d, ptr %%t%d\n", argc64, p1);
                 int res = new_tmp(cg);
                 emit(cg, "  %%t%d = load { ptr, i64 }, ptr %%t%d\n", res, sl);
@@ -2247,7 +2293,9 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                                    : (dst_bits > src_bits) ? (is_src_signed ? "sext" : "zext") \
                                    : NULL; \
                     if (op) emit(cg, "  %%t%d = %s %s %s to %s\n", t, op, src_llt, src.buf, dst_llt); \
-                    else    emit(cg, "  %%t%d = bitcast %s %s to %s\n", t, src_llt, src.buf, dst_llt); \
+                    else if (strcmp(src_llt, dst_llt) != 0) \
+                        emit(cg, "  %%t%d = bitcast %s %s to %s\n", t, src_llt, src.buf, dst_llt); \
+                    else { if (out_ty) *out_ty = e->ty; return src; } \
                 } while(0)
                 if (!strcmp(dst,"i8"))         INT_CAST("i8",  8);
                 else if (!strcmp(dst,"i16"))   INT_CAST("i16",16);
@@ -2258,6 +2306,7 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                 else if (!strcmp(dst,"u32"))   INT_CAST("i32",32);
                 else if (!strcmp(dst,"u64"))   INT_CAST("i64",64);
                 else if (!strcmp(dst,"usize")) INT_CAST("i64",64);
+                else if (!strcmp(dst,"char"))  INT_CAST("i8",  8);
                 #undef INT_CAST
                 #undef FLOAT_TO_INT
                 else if (!strcmp(dst,"f32")) {
@@ -3325,6 +3374,23 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                     int lv = new_tmp(cg);
                     emit(cg, "  %%t%d = load %s, ptr %s\n", lv, elem_llt, ev.buf);
                     ev = val_tmp(lv);
+                }
+                /* coerce element type to array element type if they differ */
+                const char *ev_llt = ev_ty ? effective_llvm_type(cg, ev_ty) : elem_llt;
+                if (strcmp(ev_llt, elem_llt) != 0 && !elem_needs_load) {
+                    int sw4=0, dw4=0;
+                    if (!strcmp(ev_llt,"i8"))  sw4=8;  else if (!strcmp(ev_llt,"i16")) sw4=16;
+                    else if (!strcmp(ev_llt,"i32")) sw4=32; else if (!strcmp(ev_llt,"i64")) sw4=64;
+                    if (!strcmp(elem_llt,"i8"))  dw4=8;  else if (!strcmp(elem_llt,"i16")) dw4=16;
+                    else if (!strcmp(elem_llt,"i32")) dw4=32; else if (!strcmp(elem_llt,"i64")) dw4=64;
+                    if (sw4 && dw4 && sw4 != dw4) {
+                        int ct4 = new_tmp(cg);
+                        const char *op4 = (dw4 < sw4) ? "trunc"
+                                        : (ev_ty && type_is_signed(ev_ty) ? "sext" : "zext");
+                        emit(cg, "  %%t%d = %s %s %s to %s\n", ct4, op4, ev_llt, ev.buf, elem_llt);
+                        ev = val_tmp(ct4);
+                        ev_llt = elem_llt;
+                    }
                 }
                 int ep = new_tmp(cg);
                 emit(cg, "  %%t%d = getelementptr [%zu x %s], ptr %%t%d, i32 0, i32 %zu\n",
