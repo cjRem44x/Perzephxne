@@ -2246,7 +2246,7 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                     arg_tys[i]  = NULL;
                     arg_vals[i] = cg_expr(cg, e->call.args.data[i], &arg_tys[i]);
                     if (arg_tys[i] && arg_tys[i]->kind == TY_NAMED
-                            && find_struct(cg, arg_tys[i]->named.name)) {
+                            && !find_enum(cg, arg_tys[i]->named.name)) {
                         ExprKind ak = e->call.args.data[i]->kind;
                         if (ak == EXPR_IDENT || ak == EXPR_STRUCT_LIT) {
                             int sv = new_tmp(cg);
@@ -2332,10 +2332,10 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
             for (size_t i = 0; i < nargs; i++) {
                 arg_tys[i] = NULL;
                 arg_vals[i] = cg_expr(cg, e->call.args.data[i], &arg_tys[i]);
-                /* EXPR_IDENT and EXPR_STRUCT_LIT return alloca ptrs for struct types;
-                   load the actual struct value before passing by value */
+                /* EXPR_IDENT and EXPR_STRUCT_LIT return alloca ptrs for struct/union types;
+                   load the actual struct/union value before passing by value */
                 if (arg_tys[i] && arg_tys[i]->kind == TY_NAMED
-                        && find_struct(cg, arg_tys[i]->named.name)) {
+                        && !find_enum(cg, arg_tys[i]->named.name)) {
                     ExprKind ak = e->call.args.data[i]->kind;
                     if (ak == EXPR_IDENT || ak == EXPR_STRUCT_LIT) {
                         int sv = new_tmp(cg);
