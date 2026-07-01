@@ -1,0 +1,8 @@
+unn Shape => enum {
+    circle: i32,
+}
+
+fn main() -> i32 {
+    s: Shape = Shape{.square = 4}
+    ret 0
+}

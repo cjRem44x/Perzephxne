@@ -1,0 +1,7 @@
+fn answer() -> i32 {
+    ret "bad"
+}
+
+fn main() -> i32 {
+    ret answer()
+}

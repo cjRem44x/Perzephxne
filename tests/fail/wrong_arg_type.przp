@@ -1,0 +1,8 @@
+fn take_i32(x: i32) {
+    @pf("{x}\n")
+}
+
+fn main() -> i32 {
+    take_i32("bad")
+    ret 0
+}
