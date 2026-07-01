@@ -2190,7 +2190,12 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
             const char *llt = ot ? llvm_type(ot) : "i32";
             int t = new_tmp(cg);
             switch (e->unop.op) {
-                case UNOP_NEG:    emit(cg, "  %%t%d = sub %s 0, %s\n", t, llt, o.buf); break;
+                case UNOP_NEG:
+                    if (ot && type_is_float(ot))
+                        emit(cg, "  %%t%d = fneg %s %s\n", t, llt, o.buf);
+                    else
+                        emit(cg, "  %%t%d = sub %s 0, %s\n", t, llt, o.buf);
+                    break;
                 case UNOP_NOT:    emit(cg, "  %%t%d = xor i1 %s, true\n", t, o.buf); break;
                 case UNOP_BITNOT: emit(cg, "  %%t%d = xor %s %s, -1\n", t, llt, o.buf); break;
                 case UNOP_ADDROF: {
@@ -2225,7 +2230,21 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                         Expr *ie = e->unop.operand;
                         Type *at2 = NULL;
                         Val arr2 = cg_expr(cg, ie->index.arr, &at2);
-                        Val idx2 = cg_expr(cg, ie->index.idx, NULL);
+                        Type *idx2_ty = NULL;
+                        Val idx2 = cg_expr(cg, ie->index.idx, &idx2_ty);
+                        /* extend index to i64 for GEP */
+                        if (idx2_ty && (idx2_ty->kind == TY_I8  || idx2_ty->kind == TY_I16
+                                     || idx2_ty->kind == TY_I32 || idx2_ty->kind == TY_U8
+                                     || idx2_ty->kind == TY_U16 || idx2_ty->kind == TY_U32
+                                     || idx2_ty->kind == TY_CHAR || idx2_ty->kind == TY_BOOL)) {
+                            int ext2 = new_tmp(cg);
+                            const char *ext_op2 = (idx2_ty->kind == TY_U8 || idx2_ty->kind == TY_U16
+                                               || idx2_ty->kind == TY_U32 || idx2_ty->kind == TY_CHAR
+                                               || idx2_ty->kind == TY_BOOL) ? "zext" : "sext";
+                            emit(cg, "  %%t%d = %s %s %s to i64\n", ext2, ext_op2,
+                                 llvm_type(idx2_ty), idx2.buf);
+                            idx2 = val_tmp(ext2);
+                        }
                         const char *elem_llt2 = "i8";
                         const char *data_buf2 = arr2.buf;
                         if (at2 && at2->kind == TY_SLICE) {
@@ -3425,7 +3444,22 @@ static void cg_stmt(CG *cg, Stmt *s) {
                 /* xs[i] = val  (or xs[i] op= val) */
                 Type *arr_ty = NULL;
                 Val arr = cg_expr(cg, s->assign.target->index.arr, &arr_ty);
-                Val idx = cg_expr(cg, s->assign.target->index.idx, NULL);
+                Type *idx_aty = NULL;
+                Val idx = cg_expr(cg, s->assign.target->index.idx, &idx_aty);
+
+                /* extend index to i64 for GEP */
+                if (idx_aty && (idx_aty->kind == TY_I8  || idx_aty->kind == TY_I16
+                             || idx_aty->kind == TY_I32 || idx_aty->kind == TY_U8
+                             || idx_aty->kind == TY_U16 || idx_aty->kind == TY_U32
+                             || idx_aty->kind == TY_CHAR || idx_aty->kind == TY_BOOL)) {
+                    int ext = new_tmp(cg);
+                    const char *ext_op = (idx_aty->kind == TY_U8 || idx_aty->kind == TY_U16
+                                       || idx_aty->kind == TY_U32 || idx_aty->kind == TY_CHAR
+                                       || idx_aty->kind == TY_BOOL) ? "zext" : "sext";
+                    emit(cg, "  %%t%d = %s %s %s to i64\n", ext, ext_op,
+                         llvm_type(idx_aty), idx.buf);
+                    idx = val_tmp(ext);
+                }
 
                 /* element type from sema annotation */
                 Type *elem_ty = s->assign.target->ty;
