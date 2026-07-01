@@ -164,6 +164,35 @@ static void record_gen_inst(Parser *p, const char *mangled, const char *base,
    on anything that can't appear inside a type list — in particular, a
    bare COMMA is a near-certain signal of a generic arg list, since commas
    never appear directly inside a comparison expression. */
+/* looks_like_generic_bracket_args: peek past '[' to see if contents look
+   like type-argument list (not array index): only type-compatible tokens,
+   ending at matching ']' followed by '(' */
+static int looks_like_generic_bracket_args(Parser *p) {
+    Token buf[3] = { p->peek, p->peek2, p->peek3 };
+    size_t bi = 0;
+    Lexer  probe = p->lexer;
+    int    depth = 1;
+    for (;;) {
+        Token t = (bi < 3) ? buf[bi++] : lexer_next(&probe);
+        switch (t.kind) {
+            case TOK_LBRACKET: depth++; break;
+            case TOK_RBRACKET:
+                depth--;
+                if (depth == 0) {
+                    /* Must be followed by '(' to confirm generic call */
+                    Token next = (bi < 3) ? buf[bi] : lexer_next(&probe);
+                    return next.kind == TOK_LPAREN;
+                }
+                break;
+            case TOK_IDENT: case TOK_COMMA: case TOK_STAR: case TOK_CARET:
+            case TOK_LT: case TOK_GT:
+                break;
+            default:
+                return 0;
+        }
+    }
+}
+
 static int looks_like_generic_args(Parser *p) {
     Token buf[3] = { p->peek, p->peek2, p->peek3 };
     size_t bi = 0;
@@ -673,13 +702,17 @@ static Expr *parse_primary(Parser *p) {
             /* generic struct literal / call: Name<T,...>{ ... } or Name<T,...>(...)
                Heuristic: cur='<' and the tokens up to the matching '>' look
                like a type-argument list (see looks_like_generic_args). */
-            if (check(p, TOK_LT) && looks_like_generic_args(p)) {
-                advance(p); /* consume '<' */
+            /* generic instantiation: Name[T,...] or Name<T,...> */
+            int use_bracket_gen = check(p, TOK_LBRACKET) && looks_like_generic_bracket_args(p);
+            if (use_bracket_gen || (check(p, TOK_LT) && looks_like_generic_args(p))) {
+                TokenKind open  = use_bracket_gen ? TOK_LBRACKET : TOK_LT;
+                TokenKind close = use_bracket_gen ? TOK_RBRACKET : TOK_GT;
+                advance(p); /* consume '[' or '<' */
                 char mangled_buf[512];
                 snprintf(mangled_buf, sizeof(mangled_buf), "%s", name);
                 Type **args = NULL;
                 size_t n_args = 0;
-                while (!check(p, TOK_GT) && !check(p, TOK_EOF)) {
+                while (!check(p, close) && !check(p, TOK_EOF)) {
                     Type *arg = parse_type(p);
                     const char *arg_str = type_to_str(arg, p->arena);
                     size_t curlen = strlen(mangled_buf);
@@ -690,7 +723,7 @@ static Expr *parse_primary(Parser *p) {
                     args = new_args;
                     eat(p, TOK_COMMA);
                 }
-                expect(p, TOK_GT);
+                expect(p, close);
                 const char *mangled = arena_strdup(p->arena, mangled_buf);
                 record_gen_inst(p, mangled, name, args, n_args);
                 if (!p->no_struct_lit && check(p, TOK_LBRACE) && peek(p).kind == TOK_DOT) {
@@ -942,6 +975,14 @@ static Expr *parse_postfix(Parser *p, Expr *e) {
             d->deref.operand = e;
             e = d;
         } else if (check(p, TOK_DOT)) {
+            /* Don't consume .ident when it looks like the start of the next when-arm
+               pattern: .Variant => ... or .Variant bind => ... */
+            if (p->peek.kind == TOK_IDENT &&
+                (p->peek2.kind == TOK_FATARROW ||
+                 ((p->peek2.kind == TOK_IDENT || p->peek2.kind == TOK_UNDER) &&
+                  p->peek3.kind == TOK_FATARROW))) {
+                break;
+            }
             advance(p);
             Token fname = expect(p, TOK_IDENT);
             /* qualified struct literal: alias.TypeName { .x = ... } */
@@ -1702,12 +1743,14 @@ static Item *parse_item(Parser *p) {
     if (check(p, TOK_FN)) {
         advance(p);
         const char *name = expect(p, TOK_IDENT).sval;
-        /* optional generic type params: fn foo<T, U>(...) */
+        /* optional generic type params: fn foo[T, U](...) or fn foo<T, U>(...) */
         const char **type_params = NULL;
         size_t n_type_params = 0;
-        if (check(p, TOK_LT)) {
-            advance(p); /* consume '<' */
-            while (!check(p, TOK_GT) && !check(p, TOK_EOF)) {
+        if (check(p, TOK_LBRACKET) || check(p, TOK_LT)) {
+            int use_bracket = check(p, TOK_LBRACKET);
+            advance(p); /* consume '[' or '<' */
+            TokenKind close = use_bracket ? TOK_RBRACKET : TOK_GT;
+            while (!check(p, close) && !check(p, TOK_EOF)) {
                 const char *tp = expect(p, TOK_IDENT).sval;
                 const char **new_tp = arena_alloc(p->arena, (n_type_params + 1) * sizeof(const char *));
                 if (n_type_params) memcpy(new_tp, type_params, n_type_params * sizeof(const char *));
@@ -1715,7 +1758,7 @@ static Item *parse_item(Parser *p) {
                 type_params = new_tp;
                 eat(p, TOK_COMMA);
             }
-            expect(p, TOK_GT);
+            expect(p, close);
         }
         /* Expose type params for the entire signature + body so record_gen_inst
            can skip template-internal generic uses like Box<T>. Merge with any
