@@ -847,7 +847,9 @@ static int read_manifest(Manifest *m) {
 
     enum { SEC_NONE, SEC_PACKAGE, SEC_BUILD, SEC_DEPS } section = SEC_NONE;
     char line[512];
+    int line_no = 0;
     while (fgets(line, sizeof(line), f)) {
+        line_no++;
         char *hash = strchr(line, '#');
         if (hash) *hash = '\0';
         char *s = trim_ws(line);
@@ -856,20 +858,44 @@ static int read_manifest(Manifest *m) {
         if (!strcmp(s, "[package]")) { section = SEC_PACKAGE; continue; }
         if (!strcmp(s, "[build]"))   { section = SEC_BUILD; continue; }
         if (!strcmp(s, "[deps]"))    { section = SEC_DEPS; continue; }
-        if (*s == '[') { section = SEC_NONE; continue; }
+        if (*s == '[') {
+            fprintf(stderr, "przp.toml:%d: error: unknown section '%s'\n", line_no, s);
+            fclose(f);
+            return -1;
+        }
 
         char *eq = strchr(s, '=');
-        if (!eq) continue;
+        if (!eq) {
+            fprintf(stderr, "przp.toml:%d: error: expected key = \"value\"\n", line_no);
+            fclose(f);
+            return -1;
+        }
         *eq = '\0';
         char *key = trim_ws(s);
         char *val = trim_ws(eq + 1);
 
         if (section == SEC_PACKAGE && !strcmp(key, "name")) {
-            parse_quoted_value(val, m->package_name, sizeof(m->package_name));
+            if (!parse_quoted_value(val, m->package_name, sizeof(m->package_name))) {
+                fprintf(stderr, "przp.toml:%d: error: [package].name must be a quoted string\n", line_no);
+                fclose(f);
+                return -1;
+            }
         } else if (section == SEC_PACKAGE && !strcmp(key, "version")) {
-            parse_quoted_value(val, m->version, sizeof(m->version));
+            if (!parse_quoted_value(val, m->version, sizeof(m->version))) {
+                fprintf(stderr, "przp.toml:%d: error: [package].version must be a quoted string\n", line_no);
+                fclose(f);
+                return -1;
+            }
         } else if (section == SEC_BUILD && !strcmp(key, "entry")) {
-            parse_quoted_value(val, m->entry, sizeof(m->entry));
+            if (!parse_quoted_value(val, m->entry, sizeof(m->entry))) {
+                fprintf(stderr, "przp.toml:%d: error: [build].entry must be a quoted string\n", line_no);
+                fclose(f);
+                return -1;
+            }
+        } else if (section == SEC_NONE) {
+            fprintf(stderr, "przp.toml:%d: error: key '%s' must be inside [package], [build], or [deps]\n", line_no, key);
+            fclose(f);
+            return -1;
         }
     }
     fclose(f);

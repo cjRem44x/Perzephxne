@@ -63,6 +63,8 @@ Supported fields:
 
 `[deps]` is accepted as a reserved section, but the current toolchain does not download or resolve packages. Standard library modules are shipped with the compiler and imported with paths such as `"std/io"`.
 
+Only `[package]`, `[build]`, and `[deps]` are recognized. Manifest values are quoted strings; malformed assignments, unknown sections, and invalid string values are reported as `przp.toml:line: error: ...`.
+
 ## Outputs
 
 Project builds write the binary to the current project directory:

@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-9c56ce74.js";
+            window.path_to_searchindex_js = "searchindex-a1649802.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-7f1b7573.js"></script>
@@ -302,6 +302,7 @@ entry = "src/main.przp"
 </table>
 </div>
 <p><code>[deps]</code> is accepted as a reserved section, but the current toolchain does not download or resolve packages. Standard library modules are shipped with the compiler and imported with paths such as <code>"std/io"</code>.</p>
+<p>Only <code>[package]</code>, <code>[build]</code>, and <code>[deps]</code> are recognized. Manifest values are quoted strings; malformed assignments, unknown sections, and invalid string values are reported as <code>przp.toml:line: error: ...</code>.</p>
 <h2 id="outputs"><a class="header" href="#outputs">Outputs</a></h2>
 <p>Project builds write the binary to the current project directory:</p>
 <pre><code>przp build          # ./MyProject, using [package].name

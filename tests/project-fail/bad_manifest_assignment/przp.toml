@@ -1,0 +1,5 @@
+[package]
+name "bad_manifest_assignment"
+
+[build]
+entry = "src/main.przp"
