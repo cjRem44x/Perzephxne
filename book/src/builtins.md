@@ -159,12 +159,20 @@ Failable (`!T`) values carry a result and an error flag. These builtins inspect 
 | `@is_ok(val)` | `fn(!T) -> bool` | true if the error flag is not set |
 
 ```
-val, err: !i32 = @i32("42")
-if @is_ok(val) {
-    @pf("parsed: %d\n", @ok(val))
+result: !i32 = @i32("42")
+if @is_ok(result) {
+    @pf("parsed: %d\n", @ok(result))
 } else {
-    @pf("error code: %d\n", @err(val))
+    @pf("error code: %d\n", @err(result))
 }
+```
+
+When you only need the error code, use failable destructuring instead:
+
+```
+val, err: !i32 = @i32("42")
+if err != 0 { @pf("parse failed\n") }
+else        { @pf("parsed: %d\n", val) }
 ```
 
 Plain assignment silently extracts the value (error flag discarded):

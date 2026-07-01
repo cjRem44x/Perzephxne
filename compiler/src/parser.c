@@ -397,6 +397,21 @@ static Type *parse_type(Parser *p) {
         return ty;
     }
 
+    /* (T1, T2, ...) — tuple type */
+    if (t.kind == TOK_LPAREN) {
+        advance(p);
+        TypeList elems = {0};
+        while (!check(p, TOK_RPAREN) && !check(p, TOK_EOF)) {
+            Type *elem = parse_type(p);
+            LIST_PUSH(p->arena, &elems, Type, elem);
+            if (!eat(p, TOK_COMMA)) break;
+        }
+        expect(p, TOK_RPAREN);
+        Type *ty = mktype(p, TY_TUPLE, span);
+        ty->tuple.elems = elems;
+        return ty;
+    }
+
     fatal_at(span, "expected a type, got %s", tok_kind_str(t.kind));
 }
 
@@ -524,9 +539,17 @@ static ExprList desugar_pf_interp(Parser *p, ExprList orig) {
     ExprList interp = {0};
 
     while (*s) {
-        /* /{ or /} — literal brace */
+        /* /{ or /} — literal brace (also {{ and }}) */
         if (*s == '/' && (s[1] == '{' || s[1] == '}')) {
             if (nf < sizeof(new_fmt) - 1) new_fmt[nf++] = s[1];
+            s += 2;
+        /* {{ — escaped literal '{' */
+        } else if (*s == '{' && s[1] == '{') {
+            if (nf < sizeof(new_fmt) - 1) new_fmt[nf++] = '{';
+            s += 2;
+        /* }} — escaped literal '}' */
+        } else if (*s == '}' && s[1] == '}') {
+            if (nf < sizeof(new_fmt) - 1) new_fmt[nf++] = '}';
             s += 2;
         /* { — begin interpolation */
         } else if (*s == '{') {
@@ -852,10 +875,23 @@ static Expr *parse_primary(Parser *p) {
             return e;
         }
 
-        /* grouped expression */
+        /* grouped expression or tuple: (expr) vs (expr, expr, ...) */
         case TOK_LPAREN: {
             advance(p);
             Expr *e = parse_expr(p);
+            if (check(p, TOK_COMMA)) {
+                /* tuple expression */
+                ExprList elems = {0};
+                LIST_PUSH(p->arena, &elems, Expr, e);
+                while (eat(p, TOK_COMMA)) {
+                    Expr *elem = parse_expr(p);
+                    LIST_PUSH(p->arena, &elems, Expr, elem);
+                }
+                expect(p, TOK_RPAREN);
+                Expr *te = mkexpr(p, EXPR_TUPLE, span);
+                te->array_lit = elems;
+                return te;
+            }
             expect(p, TOK_RPAREN);
             return e;
         }
@@ -1164,26 +1200,47 @@ static Stmt *parse_let(Parser *p) {
     Expr *init = parse_expr(p);
 
     if (name2) {
-        /* failable destructure — emit two let stmts wrapped in a block */
-        /* For now emit a synthetic block with two lets sharing the same init */
         Stmt *block = mkstmt(p, STMT_BLOCK, span);
         StmtList bl = {0};
 
-        Stmt *s1 = mkstmt(p, STMT_LET, span);
-        s1->let.name    = name1;
-        s1->let.ty      = ty->ptr.inner; /* !T -> T for the value */
-        s1->let.mutable = mut;
-        s1->let.init    = init;
-        LIST_PUSH(p->arena, &bl, Stmt, s1);
+        if (ty->kind == TY_FAILABLE) {
+            /* failable destructure: val, err: !T = expr */
+            Stmt *s1 = mkstmt(p, STMT_LET, span);
+            s1->let.name      = name1;
+            s1->let.ty        = ty->ptr.inner; /* !T -> T for the value */
+            s1->let.mutable   = mut;
+            s1->let.init      = init;
+            s1->let.tuple_idx = -1;
+            LIST_PUSH(p->arena, &bl, Stmt, s1);
 
-        /* err name gets the error side — we mark with a special type for sema */
-        Stmt *s2 = mkstmt(p, STMT_LET, span);
-        s2->let.name         = name2;
-        s2->let.ty           = ty;   /* keep !T for the error */
-        s2->let.mutable      = mut;
-        s2->let.init         = init;
-        s2->let.is_fail_err  = 1;
-        LIST_PUSH(p->arena, &bl, Stmt, s2);
+            Stmt *s2 = mkstmt(p, STMT_LET, span);
+            s2->let.name         = name2;
+            s2->let.ty           = ty;
+            s2->let.mutable      = mut;
+            s2->let.init         = init;
+            s2->let.is_fail_err  = 1;
+            s2->let.tuple_idx    = -1;
+            LIST_PUSH(p->arena, &bl, Stmt, s2);
+        } else {
+            /* tuple destructure: q, r: T = expr() returning (T, T) */
+            Stmt *s1 = mkstmt(p, STMT_LET, span);
+            s1->let.name          = name1;
+            s1->let.ty            = ty;
+            s1->let.mutable       = mut;
+            s1->let.init          = init;
+            s1->let.is_tuple_elem = 1;
+            s1->let.tuple_idx     = 0;
+            LIST_PUSH(p->arena, &bl, Stmt, s1);
+
+            Stmt *s2 = mkstmt(p, STMT_LET, span);
+            s2->let.name          = name2;
+            s2->let.ty            = ty;
+            s2->let.mutable       = mut;
+            s2->let.init          = init;
+            s2->let.is_tuple_elem = 1;
+            s2->let.tuple_idx     = 1;
+            LIST_PUSH(p->arena, &bl, Stmt, s2);
+        }
 
         block->block = bl;
         return block;

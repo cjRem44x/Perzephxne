@@ -35,6 +35,7 @@ typedef enum {
     TY_NAMED,        /* user type */
     TY_FAILABLE,     /* !T      */
     TY_GENERIC,      /* T (type param) */
+    TY_TUPLE,        /* (T1, T2, ...) */
 } TypeKind;
 
 struct Type {
@@ -45,6 +46,7 @@ struct Type {
         struct { Type *inner; Expr *size; }           array;     /* ARRAY */
         struct { TypeList params; Type *ret; int variadic; } fn; /* FN */
         struct { const char *name; }                  named;     /* NAMED, GENERIC */
+        struct { TypeList elems; }                    tuple;     /* TUPLE */
     };
 };
 
@@ -97,6 +99,7 @@ typedef enum {
     EXPR_IF,             /* if as expr    */
     EXPR_STRUCT_LIT,     /* Foo{.x=1}     */
     EXPR_ARRAY_LIT,      /* [1,2,3]       */
+    EXPR_TUPLE,          /* (e1, e2, ...) */
     EXPR_UNDEF,
     EXPR_NULL,
     EXPR_DISCARD,        /* _             */
@@ -184,7 +187,9 @@ struct Stmt {
             int         mutable;   /* 1 = mutable (=), 0 = immutable (:) */
             Expr       *init;      /* may be NULL */
             int         infer;     /* 1 = := or ::, widen to platform max type */
-            int         is_fail_err; /* 1 = err-side of val,err: !T destructure */
+            int         is_fail_err;  /* 1 = err-side of val,err: !T destructure */
+            int         is_tuple_elem; /* 1 = element of tuple destructure */
+            int         tuple_idx;    /* index into tuple (only when is_tuple_elem=1) */
         } let;
 
         struct { Expr *target; AssignOp op; Expr *val; } assign;

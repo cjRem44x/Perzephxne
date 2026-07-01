@@ -163,6 +163,12 @@ static int ty_eq(Type *a, Type *b) {
             return ty_eq(a->ptr.inner, b->ptr.inner);
         case TY_ARRAY:
             return ty_eq(a->array.inner, b->array.inner);
+        case TY_TUPLE: {
+            if (a->tuple.elems.len != b->tuple.elems.len) return 0;
+            for (size_t i = 0; i < a->tuple.elems.len; i++)
+                if (!ty_eq(a->tuple.elems.data[i], b->tuple.elems.data[i])) return 0;
+            return 1;
+        }
         case TY_NAMED:
         case TY_GENERIC:
             return !strcmp(a->named.name, b->named.name);
@@ -233,6 +239,7 @@ static const char *ty_str(Type *t) {
         case TY_SLICE:     return "[]<T>";
         case TY_ARRAY:     return "[N]<T>";
         case TY_FAILABLE:  return "!<T>";
+        case TY_TUPLE:     return "(<T,...>)";
         case TY_NAMED:
         case TY_GENERIC:   return t->named.name;
         default:           return "?";
@@ -277,6 +284,13 @@ static int ty_coerces(Type *from, Type *to) {
     /* [N]T1 coerces to [N]T2 if T1 coerces to T2 (e.g. [3]i32 → [3]u8) */
     if (from->kind == TY_ARRAY && to->kind == TY_ARRAY
             && ty_coerces(from->array.inner, to->array.inner)) return 1;
+    /* (T1, T2) coerces to (T1', T2') element-wise */
+    if (from->kind == TY_TUPLE && to->kind == TY_TUPLE
+            && from->tuple.elems.len == to->tuple.elems.len) {
+        for (size_t i = 0; i < from->tuple.elems.len; i++)
+            if (!ty_coerces(from->tuple.elems.data[i], to->tuple.elems.data[i])) return 0;
+        return 1;
+    }
     return 0;
 }
 
@@ -299,6 +313,10 @@ static Type *check_type(Sema *s, Type *ty) {
             for (size_t i = 0; i < ty->fn.params.len; i++)
                 ty->fn.params.data[i] = check_type(s, ty->fn.params.data[i]);
             ty->fn.ret = check_type(s, ty->fn.ret);
+            break;
+        case TY_TUPLE:
+            for (size_t i = 0; i < ty->tuple.elems.len; i++)
+                ty->tuple.elems.data[i] = check_type(s, ty->tuple.elems.data[i]);
             break;
         case TY_NAMED: {
             Sym *sym = lookup(s, ty->named.name);
@@ -882,6 +900,21 @@ static Type *check_expr(Sema *s, Expr *e) {
             break;
         }
 
+        case EXPR_TUPLE: {
+            size_t n = e->array_lit.len;
+            Type *tty = make_ty(s, TY_TUPLE);
+            Type **tdata = arena_alloc(s->arena, n * sizeof(Type *));
+            size_t tlen = 0;
+            for (size_t i = 0; i < n; i++) {
+                Type *et = check_expr(s, e->array_lit.data[i]);
+                if (et) tdata[tlen++] = et;
+            }
+            tty->tuple.elems.data = tdata;
+            tty->tuple.elems.len  = tlen;
+            e->ty = tty;
+            break;
+        }
+
         default:
             e->ty = NULL;
             break;
@@ -898,6 +931,19 @@ static void check_stmt(Sema *s, Stmt *st) {
         case STMT_LET: {
             Type *init_ty = st->let.init ? check_expr(s, st->let.init) : NULL;
             Type *decl_ty = st->let.ty ? check_type(s, st->let.ty) : NULL;
+
+            /* tuple destructure: q, r: T = fn() returning (T, T) */
+            if (st->let.is_tuple_elem && init_ty && init_ty->kind == TY_TUPLE) {
+                int idx = st->let.tuple_idx;
+                Type *elem_ty = (idx >= 0 && (size_t)idx < init_ty->tuple.elems.len)
+                                ? init_ty->tuple.elems.data[idx] : NULL;
+                if (!decl_ty && elem_ty) {
+                    decl_ty = elem_ty;
+                    st->let.ty = elem_ty;
+                }
+                define(s, st->span, st->let.name, decl_ty ? decl_ty : elem_ty, st->let.mutable, 0);
+                break;
+            }
 
             if (decl_ty && init_ty && !ty_coerces(init_ty, decl_ty)) {
                 sema_error(s, st->span,
@@ -1119,11 +1165,12 @@ static void check_stmt(Sema *s, Stmt *st) {
             break;
 
         case STMT_BLOCK: {
-            /* failable destructure block: two lets where second has !T — no new scope */
+            /* failable/tuple destructure block: two lets — no new scope */
             int is_fail = (st->block.len == 2
                 && st->block.data[0]->kind == STMT_LET
                 && st->block.data[1]->kind == STMT_LET
                 && (st->block.data[1]->let.is_fail_err
+                    || st->block.data[1]->let.is_tuple_elem
                     || (st->block.data[1]->let.ty
                         && st->block.data[1]->let.ty->kind == TY_FAILABLE)));
             if (!is_fail) push_scope(s);

@@ -99,6 +99,10 @@ typedef struct {
     const Expr  *last_fail_init;   /* init expr pointer from the val-side let */
     Val          last_fail_val;    /* aggregate value returned by cg_expr for it */
     Type        *last_fail_ty;     /* TY_FAILABLE type (needed for extractvalue) */
+    /* tuple destructure cache: q, r: T = expr() returning (T, T) */
+    const Expr  *last_tuple_init;
+    Val          last_tuple_val;
+    Type        *last_tuple_ty;
     /* current function return type (for @ok/@err builtins in STMT_RET) */
     Type        *cur_fn_ret_ty;
     /* when trailing STMT_WHEN is used as implicit return: alloca index, else -1 */
@@ -304,6 +308,19 @@ static const char *llvm_type(Type *ty) {
             bi = (bi + 1) % 8;
             snprintf(bufs[bi], sizeof(bufs[bi]), "%%%s", ty->named.name);
             return bufs[bi];
+        }
+        case TY_TUPLE: {
+            static char tbufs[8][512];
+            static int  tbi = 0;
+            tbi = (tbi + 1) % 8;
+            char *buf = tbufs[tbi];
+            int pos = snprintf(buf, 512, "{ ");
+            for (size_t i = 0; i < ty->tuple.elems.len; i++) {
+                if (i > 0) pos += snprintf(buf + pos, 512 - pos, ", ");
+                pos += snprintf(buf + pos, 512 - pos, "%s", llvm_type(ty->tuple.elems.data[i]));
+            }
+            snprintf(buf + pos, 512 - pos, " }");
+            return buf;
         }
         default:           return "ptr";
     }
@@ -3416,6 +3433,51 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
             return val_tmp(sl1);
         }
 
+        case EXPR_TUPLE: {
+            /* Build a { T1, T2, ... } aggregate using insertvalue */
+            size_t n = e->array_lit.len;
+            if (n == 0) fatal_at(e->span, "empty tuple");
+            if (n > 64)  fatal_at(e->span, "tuple too large (max 64 elements)");
+
+            /* Evaluate all elements */
+            Val elem_vals[64]; Type *elem_tys[64];
+            char real_tup_llt[512];
+            int rpos = snprintf(real_tup_llt, sizeof(real_tup_llt), "{ ");
+            for (size_t i = 0; i < n; i++) {
+                elem_tys[i] = NULL;
+                elem_vals[i] = cg_expr(cg, e->array_lit.data[i], &elem_tys[i]);
+                if (i > 0) rpos += snprintf(real_tup_llt + rpos, sizeof(real_tup_llt) - rpos, ", ");
+                rpos += snprintf(real_tup_llt + rpos, sizeof(real_tup_llt) - rpos, "%s",
+                                 elem_tys[i] ? llvm_type(elem_tys[i]) : "i64");
+            }
+            snprintf(real_tup_llt + rpos, sizeof(real_tup_llt) - rpos, " }");
+
+            /* Build aggregate via insertvalue */
+            int acc = new_tmp(cg);
+            emit(cg, "  %%t%d = insertvalue %s undef, %s %s, 0\n", acc, real_tup_llt,
+                 elem_tys[0] ? llvm_type(elem_tys[0]) : "i64", elem_vals[0].buf);
+            for (size_t i = 1; i < n; i++) {
+                int prev = acc;
+                acc = new_tmp(cg);
+                emit(cg, "  %%t%d = insertvalue %s %%t%d, %s %s, %zu\n", acc, real_tup_llt,
+                     prev, elem_tys[i] ? llvm_type(elem_tys[i]) : "i64", elem_vals[i].buf, i);
+            }
+
+            /* Build a TY_TUPLE type for out_ty */
+            if (out_ty) {
+                Type *tty = ARENA_NEW(cg->arena, Type);
+                tty->kind = TY_TUPLE;
+                Type **tdata = arena_alloc(cg->arena, n * sizeof(Type *));
+                size_t tlen = 0;
+                for (size_t i = 0; i < n; i++)
+                    if (elem_tys[i]) tdata[tlen++] = elem_tys[i];
+                tty->tuple.elems.data = tdata;
+                tty->tuple.elems.len  = tlen;
+                *out_ty = tty;
+            }
+            return val_tmp(acc);
+        }
+
         default:
             fatal_at(e->span, "unhandled expression kind %d in codegen", (int)e->kind);
     }
@@ -3469,6 +3531,33 @@ static void cg_stmt(CG *cg, Stmt *s) {
                     emit(cg, "  %%t%d = extractvalue %s %s, 1\n",
                          ev, fail_llt, cg->last_fail_val.buf);
                     emit(cg, "  store i32 %%t%d, ptr %%t%d\n", ev, alloca);
+                } else if (s->let.is_tuple_elem) {
+                    /* tuple destructure: q, r: T = expr() returning (T, T) */
+                    int idx = s->let.tuple_idx;
+                    Val tup_val; Type *tup_ty = NULL;
+                    if (idx == 0 || s->let.init != cg->last_tuple_init || !cg->last_tuple_ty) {
+                        /* evaluate the tuple expression */
+                        tup_val = cg_expr(cg, s->let.init, &tup_ty);
+                        cg->last_tuple_init = s->let.init;
+                        cg->last_tuple_val  = tup_val;
+                        cg->last_tuple_ty   = tup_ty;
+                    } else {
+                        tup_val = cg->last_tuple_val;
+                        tup_ty  = cg->last_tuple_ty;
+                    }
+                    if (tup_ty && tup_ty->kind == TY_TUPLE) {
+                        const char *tup_llt = llvm_type(tup_ty);
+                        /* get element type from tuple */
+                        const char *elem_llt = llt;
+                        if ((size_t)idx < tup_ty->tuple.elems.len)
+                            elem_llt = llvm_type(tup_ty->tuple.elems.data[idx]);
+                        int ev = new_tmp(cg);
+                        emit(cg, "  %%t%d = extractvalue %s %s, %d\n", ev, tup_llt, tup_val.buf, idx);
+                        emit(cg, "  store %s %%t%d, ptr %%t%d\n", elem_llt, ev, alloca);
+                    } else {
+                        /* not a tuple — try to store directly (error will manifest as type mismatch) */
+                        emit(cg, "  store %s %s, ptr %%t%d\n", llt, tup_val.buf, alloca);
+                    }
                 } else {
                     Type *init_ty = NULL;
                     Val init = cg_expr(cg, s->let.init, &init_ty);
@@ -4436,11 +4525,12 @@ static void cg_stmt(CG *cg, Stmt *s) {
         }
 
         case STMT_BLOCK: {
-            /* failable destructure: two lets where second has !T — no new scope */
+            /* failable/tuple destructure: two lets — no new scope (vars visible to caller) */
             int is_fail = (s->block.len == 2
                 && s->block.data[0]->kind == STMT_LET
                 && s->block.data[1]->kind == STMT_LET
                 && (s->block.data[1]->let.is_fail_err
+                    || s->block.data[1]->let.is_tuple_elem
                     || (s->block.data[1]->let.ty
                         && s->block.data[1]->let.ty->kind == TY_FAILABLE)));
             if (!is_fail) push_scope(cg);
