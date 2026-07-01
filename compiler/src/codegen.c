@@ -441,7 +441,7 @@ static const char *pf_specifier(Type *ty) {
         case TY_CHAR: return "%c";
         case TY_BOOL: return "%d";
         case TY_F16: case TY_F32: case TY_F64: return "%f";
-        case TY_STR: return "%s";
+        case TY_STR: return "%.*s"; /* precision + ptr — honours fat-pointer len field */
         case TY_PTR: return "%p";
         default:     return "%d";
     }
@@ -615,15 +615,25 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                         ivals[i] = cg_expr(cg, e->builtin.args.data[i], &itys[i]);
                     }
 
-                    /* Pre-extract ptr field for str args (str is { ptr, i64 }) */
+                    /* Pre-extract ptr AND len fields for str args (str is { ptr, i64 }).
+                       Both are needed for %.*s which takes (int precision, char *ptr). */
+                    Val *str_len_vals = malloc(sizeof(Val) * na);
                     for (size_t i = 1; i < na; i++) {
                         if (itys[i] && itys[i]->kind == TY_STR) {
                             int sv = new_tmp(cg);
                             emit(cg, "  %%t%d = extractvalue { ptr, i64 } %s, 0\n",
                                  sv, ivals[i].buf);
                             printable[i] = val_tmp(sv);
+                            /* extract length, truncate i64 → i32 for printf's * precision */
+                            int lv = new_tmp(cg);
+                            emit(cg, "  %%t%d = extractvalue { ptr, i64 } %s, 1\n",
+                                 lv, ivals[i].buf);
+                            int lv32 = new_tmp(cg);
+                            emit(cg, "  %%t%d = trunc i64 %%t%d to i32\n", lv32, lv);
+                            str_len_vals[i] = val_tmp(lv32);
                         } else {
                             printable[i] = ivals[i];
+                            str_len_vals[i] = val_str("0");
                         }
                     }
 
@@ -702,12 +712,19 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                         emit(cg, "  %%t%d = call i32 (ptr, ...) @printf(ptr %%t%d", t, ft);
                     }
                     for (size_t i = 1; i < na; i++) {
-                        emit(cg, ", %s %s", iprint_llts[i], iprint_final[i].buf);
+                        if (itys[i] && itys[i]->kind == TY_STR) {
+                            /* %.*s takes (int precision, char *ptr) */
+                            emit(cg, ", i32 %s, ptr %s",
+                                 str_len_vals[i].buf, iprint_final[i].buf);
+                        } else {
+                            emit(cg, ", %s %s", iprint_llts[i], iprint_final[i].buf);
+                        }
                     }
                     emit(cg, ")\n");
                     free(iprint_final);
                     free(iprint_llts);
 
+                    free(str_len_vals);
                     free(ivals); free(itys); free(printable);
                     return val_tmp(t);
                 }
@@ -728,17 +745,25 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                     emit(cg, "  %%t%d = extractvalue { ptr, i64 } %s, 0\n", sp0, pf_vals[0].buf);
                     fmt_ptr = val_tmp(sp0);
                 }
-                /* pre-emit coercions (extractvalue / fpext) before the call */
+                /* pre-emit coercions (extractvalue / fpext) before the call;
+                   str args: extract ptr (field 0) AND len (field 1, trunc to i32) for %.*s */
+                Val *pf_str_lens = malloc(sizeof(Val) * na);
                 for (size_t i = 1; i < na; i++) {
                     if (pf_tys[i] && pf_tys[i]->kind == TY_STR) {
                         int sp = new_tmp(cg);
                         emit(cg, "  %%t%d = extractvalue { ptr, i64 } %s, 0\n", sp, pf_vals[i].buf);
                         pf_final[i] = val_tmp(sp);
                         pf_llts[i]  = "ptr";
+                        int lv = new_tmp(cg);
+                        emit(cg, "  %%t%d = extractvalue { ptr, i64 } %s, 1\n", lv, pf_vals[i].buf);
+                        int lv32 = new_tmp(cg);
+                        emit(cg, "  %%t%d = trunc i64 %%t%d to i32\n", lv32, lv);
+                        pf_str_lens[i] = val_tmp(lv32);
                     } else {
                         const char *llt;
                         pf_final[i] = promote_vararg(cg, pf_vals[i], pf_tys[i], &llt);
                         pf_llts[i]  = llt;
+                        pf_str_lens[i] = val_str("0");
                     }
                 }
                 int t = new_tmp(cg);
@@ -753,13 +778,17 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                          t, fmt_ptr.buf);
                 }
                 for (size_t i = 1; i < na; i++) {
-                    emit(cg, ", %s %s", pf_llts[i], pf_final[i].buf);
+                    if (pf_tys[i] && pf_tys[i]->kind == TY_STR)
+                        emit(cg, ", i32 %s, ptr %s", pf_str_lens[i].buf, pf_final[i].buf);
+                    else
+                        emit(cg, ", %s %s", pf_llts[i], pf_final[i].buf);
                 }
                 emit(cg, ")\n");
                 free(pf_vals);
                 free(pf_final);
                 free(pf_llts);
                 free(pf_tys);
+                free(pf_str_lens);
                 return val_tmp(t);
             }
 
@@ -881,15 +910,23 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                 size_t na2 = e->builtin.args.len;
                 Expr *fmt_arg2 = e->builtin.args.data[0];
                 /* build the same format string as @pf */
-                Val   *fv  = malloc(sizeof(Val)   * na2);
-                Type **fty = malloc(sizeof(Type*) * na2);
+                Val   *fv      = malloc(sizeof(Val)   * na2);
+                Val   *fv_lens = malloc(sizeof(Val)   * na2);
+                Type **fty     = malloc(sizeof(Type*) * na2);
                 for (size_t i = 1; i < na2; i++) {
                     fty[i] = NULL;
                     fv[i]  = cg_expr(cg, e->builtin.args.data[i], &fty[i]);
                     if (fty[i] && fty[i]->kind == TY_STR) {
                         int sv = new_tmp(cg);
                         emit(cg, "  %%t%d = extractvalue { ptr, i64 } %s, 0\n", sv, fv[i].buf);
-                        fv[i] = val_tmp(sv);
+                        int lv = new_tmp(cg);
+                        emit(cg, "  %%t%d = extractvalue { ptr, i64 } %s, 1\n", lv, fv[i].buf);
+                        int lv32 = new_tmp(cg);
+                        emit(cg, "  %%t%d = trunc i64 %%t%d to i32\n", lv32, lv);
+                        fv[i]      = val_tmp(sv);
+                        fv_lens[i] = val_tmp(lv32);
+                    } else {
+                        fv_lens[i] = val_str("0");
                     }
                 }
                 char pf2[4096]; size_t pf2n = 0; size_t ai2 = 1;
@@ -931,7 +968,7 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                 emit(cg, "  %%t%d = call ptr @malloc(i64 4096)\n", buf2);
                 int sp2 = new_tmp(cg);
                 /* pre-emit fpext coercions before the sprintf call;
-                   str args are already raw ptr from the extraction loop above */
+                   str args are already raw ptr+len from the extraction loop above */
                 Val         *fmt_final = malloc(sizeof(Val)        * na2);
                 const char **fmt_llts  = malloc(sizeof(const char*)* na2);
                 for (size_t i = 1; i < na2; i++) {
@@ -946,11 +983,15 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                 }
                 emit(cg, "  %%t%d = call i32 (ptr, ptr, ...) @sprintf(ptr %%t%d, ptr %%t%d", sp2, buf2, ft2);
                 for (size_t i = 1; i < na2; i++) {
-                    emit(cg, ", %s %s", fmt_llts[i], fmt_final[i].buf);
+                    if (fty[i] && fty[i]->kind == TY_STR)
+                        emit(cg, ", i32 %s, ptr %s", fv_lens[i].buf, fmt_final[i].buf);
+                    else
+                        emit(cg, ", %s %s", fmt_llts[i], fmt_final[i].buf);
                 }
                 emit(cg, ")\n");
                 free(fmt_final);
                 free(fmt_llts);
+                free(fv_lens);
                 int slen = new_tmp(cg);
                 emit(cg, "  %%t%d = call i64 @strlen(ptr %%t%d)\n", slen, buf2);
                 int sa = new_tmp(cg);
