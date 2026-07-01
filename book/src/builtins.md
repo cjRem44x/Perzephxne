@@ -78,12 +78,15 @@ b3: bool = @bool("yes")    # false
 | `@offsetof(T, field)` | byte offset of a struct field |
 | `@bitcast(T, val)` | reinterpret bits — same size required |
 | `@zeroed(T)` | zero value of type `T` |
-| `@new(T)` | heap-allocate one `T`, return `*T` |
-| `@clone(val)` | heap-copy a value, return `*T` |
-| `@free(ptr)` | free heap memory |
+| `@alo(T)` | heap-allocate one `T`, return `*T` (raw pointer, manual `@free`) |
+| `@new(T)` | heap-allocate one `T`, return `^T` (RC-managed) |
+| `@clone(val)` | increment RC of a `^T`, return shared `^T` |
+| `@free(ptr)` | free raw `*T` heap memory |
 | `@memcpy(dst, src, n)` | copy `n` bytes from src to dst |
 | `@memmove(dst, src, n)` | copy `n` bytes, handles overlap |
 | `@memset(dst, byte, n)` | fill `n` bytes with `byte` |
+| `@addr(expr)` | address of a variable, field, or index expression — like `&` but usable in more contexts |
+| `@str_raw(ptr, len)` | construct a `str` fat pointer from a raw `*u8` and a `usize` length |
 
 ```
 f: f32    = 1.0
@@ -144,6 +147,40 @@ bits: u32 = @bitcast(u32, f)   # raw bit pattern — 0x3F800000
 |---|---|---|
 | `@args` | `-> []str` | command-line arguments |
 | `@exit(code)` | `fn(i32)` | exit process immediately |
+
+## Failable Values
+
+Failable (`!T`) values carry a result and an error flag. These builtins inspect and extract them.
+
+| Builtin | Signature | Description |
+|---|---|---|
+| `@ok(val)` | `fn(!T) -> T` | extract the value; panics if the error flag is set |
+| `@unwrap(val)` | `fn(!T) -> T` | alias for `@ok` |
+| `@err(val)` | `fn(!T) -> i32` | extract the error code (0 = success) |
+| `@is_ok(val)` | `fn(!T) -> bool` | true if the error flag is not set |
+
+```
+result: !i32 = @i32("42")
+if @is_ok(result) {
+    @pf("parsed: %d\n", @ok(result))
+} else {
+    @pf("error code: %d\n", @err(result))
+}
+```
+
+When you only need the error code, use failable destructuring instead:
+
+```
+val, err: !i32 = @i32("42")
+if err != 0 { @pf("parse failed\n") }
+else        { @pf("parsed: %d\n", val) }
+```
+
+Plain assignment silently extracts the value (error flag discarded):
+
+```
+n: i32 = @i32("42")   # flag ignored
+```
 
 ## Checked Arithmetic
 

@@ -1,0 +1,67 @@
+# std/atomic — lock-free atomic integer operations
+#
+# All operations use sequentially-consistent (seq_cst) memory ordering.
+# The underlying value must be i64-aligned (8 bytes).
+#
+# Usage:
+#   import(atomic = "std/atomic")
+#
+#   counter: i64 = 0
+#   atomic.add(&counter, 1)
+#   v: i64 = atomic.load(&counter)
+
+# load: atomically read the value at ptr
+fn load(ptr: *i64) -> i64 {
+    ret @atomic_load(ptr)
+}
+
+# store: atomically write val to ptr
+fn store(ptr: *i64, val: i64) {
+    @atomic_store(ptr, val)
+}
+
+# add: atomically add val to *ptr, return the old value
+fn add(ptr: *i64, val: i64) -> i64 {
+    ret @atomic_add(ptr, val)
+}
+
+# sub: atomically subtract val from *ptr, return the old value
+fn sub(ptr: *i64, val: i64) -> i64 {
+    ret @atomic_sub(ptr, val)
+}
+
+# bit_and: atomically AND *ptr with val, return the old value
+fn bit_and(ptr: *i64, val: i64) -> i64 {
+    ret @atomic_and(ptr, val)
+}
+
+# bit_or: atomically OR *ptr with val, return the old value
+fn bit_or(ptr: *i64, val: i64) -> i64 {
+    ret @atomic_or(ptr, val)
+}
+
+# xor: atomically XOR *ptr with val, return the old value
+fn xor(ptr: *i64, val: i64) -> i64 {
+    ret @atomic_xor(ptr, val)
+}
+
+# swap: atomically replace *ptr with val, return the old value
+fn swap(ptr: *i64, val: i64) -> i64 {
+    ret @atomic_swap(ptr, val)
+}
+
+# cas: compare-and-swap — if *ptr == expected, set *ptr = desired.
+# Returns true if the swap happened.
+fn cas(ptr: *i64, expected: i64, desired: i64) -> bool {
+    ret @atomic_cas(ptr, expected, desired)
+}
+
+# inc: atomically increment *ptr by 1, return the new value
+fn inc(ptr: *i64) -> i64 {
+    ret @atomic_add(ptr, 1) + 1
+}
+
+# dec: atomically decrement *ptr by 1, return the new value
+fn dec(ptr: *i64) -> i64 {
+    ret @atomic_sub(ptr, 1) - 1
+}

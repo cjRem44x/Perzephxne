@@ -14,7 +14,15 @@ typedef struct {
     Token       peek3;     /* 4-token lookahead for label vs type disambiguation */
     Arena      *arena;
     GenInstList gen_insts; /* generic instantiations seen during parse */
-    int         no_struct_lit; /* suppress struct-literal parsing in conditions */
+    int         no_struct_lit;    /* suppress struct-literal parsing in conditions */
+    int         in_when_arm_body; /* parsing a when-arm body: stop .ident => eagerly */
+    /* type params currently in scope (set while parsing a generic fn/struct body) */
+    const char **cur_type_params;
+    size_t       n_cur_type_params;
+    /* pending '>' from splitting '>>' during generic type arg parsing */
+    int         pending_gt;
+    /* pending '=' from splitting '>=' during generic type arg parsing */
+    int         pending_gteq;
 } Parser;
 
 /* ── helpers ──────────────────────────────────────────────────────────────── */
@@ -29,10 +37,22 @@ static void advance(Parser *p) {
 static Token cur(Parser *p)  { return p->cur; }
 static Token peek(Parser *p) { return p->peek; }
 
-static int check(Parser *p, TokenKind k)  { return p->cur.kind == k; }
+static int check(Parser *p, TokenKind k) {
+    if (k == TOK_GT && p->pending_gt > 0) return 1;
+    if (k == TOK_EQ && p->pending_gteq > 0) return 1;
+    return p->cur.kind == k;
+}
 static int check2(Parser *p, TokenKind k) { return p->peek.kind == k; }
 
 static Token expect(Parser *p, TokenKind k) {
+    if (k == TOK_GT && p->pending_gt > 0) {
+        p->pending_gt--;
+        return p->cur; /* return synthetic GT (span is approximate) */
+    }
+    if (k == TOK_EQ && p->pending_gteq > 0) {
+        p->pending_gteq--;
+        return p->cur; /* return synthetic EQ */
+    }
     if (p->cur.kind != k)
         fatal_at(p->cur.span, "expected %s, got %s",
                  tok_kind_str(k), tok_kind_str(p->cur.kind));
@@ -42,6 +62,8 @@ static Token expect(Parser *p, TokenKind k) {
 }
 
 static int eat(Parser *p, TokenKind k) {
+    if (k == TOK_GT && p->pending_gt > 0) { p->pending_gt--; return 1; }
+    if (k == TOK_EQ && p->pending_gteq > 0) { p->pending_gteq--; return 1; }
     if (p->cur.kind == k) { advance(p); return 1; }
     return 0;
 }
@@ -117,11 +139,86 @@ static const char *type_to_str(Type *ty, Arena *a) {
 
 static void record_gen_inst(Parser *p, const char *mangled, const char *base,
                              Type **args, size_t n_args) {
+    /* If any arg is still a type parameter (we're inside a generic body), mark
+       the entry as deferred rather than skipping it entirely.  Sema will derive
+       the concrete version when the enclosing generic template is instantiated. */
+    int deferred = 0;
+    for (size_t j = 0; j < n_args; j++) {
+        if (!args[j] || args[j]->kind != TY_NAMED) continue;
+        for (size_t k = 0; k < p->n_cur_type_params; k++) {
+            if (!strcmp(args[j]->named.name, p->cur_type_params[k])) { deferred = 1; break; }
+        }
+        if (deferred) break;
+    }
     /* skip duplicates */
     for (size_t i = 0; i < p->gen_insts.len; i++)
         if (!strcmp(p->gen_insts.data[i].mangled, mangled)) return;
-    GenInst gi = { .mangled = mangled, .base = base, .args = args, .n_args = n_args };
+    GenInst gi = { .mangled = mangled, .base = base, .args = args, .n_args = n_args, .deferred = deferred };
     SLICE_PUSH(p->arena, &p->gen_insts, GenInst, gi);
+}
+
+/* Lookahead (non-consuming) to disambiguate `Name<A, B, ...>` generic
+   instantiation syntax from a `<` comparison in expression position.
+   p->cur must be TOK_LT. Scans forward (using a private copy of the lexer
+   once the 3-token lookahead buffer is exhausted) for a balanced run of
+   type-shaped tokens terminated by a matching '>'. Bails out (returns 0)
+   on anything that can't appear inside a type list — in particular, a
+   bare COMMA is a near-certain signal of a generic arg list, since commas
+   never appear directly inside a comparison expression. */
+/* looks_like_generic_bracket_args: peek past '[' to see if contents look
+   like type-argument list (not array index): only type-compatible tokens,
+   ending at matching ']' followed by '(' */
+static int looks_like_generic_bracket_args(Parser *p) {
+    Token buf[3] = { p->peek, p->peek2, p->peek3 };
+    size_t bi = 0;
+    Lexer  probe = p->lexer;
+    int    depth = 1;
+    for (;;) {
+        Token t = (bi < 3) ? buf[bi++] : lexer_next(&probe);
+        switch (t.kind) {
+            case TOK_LBRACKET: depth++; break;
+            case TOK_RBRACKET:
+                depth--;
+                if (depth == 0) {
+                    /* Followed by '(' (call), '{' (struct literal), or '.' (method) */
+                    Token next = (bi < 3) ? buf[bi] : lexer_next(&probe);
+                    return next.kind == TOK_LPAREN || next.kind == TOK_LBRACE
+                        || next.kind == TOK_DOT;
+                }
+                break;
+            case TOK_IDENT: case TOK_COMMA: case TOK_STAR: case TOK_CARET:
+            case TOK_LT: case TOK_GT:
+                break;
+            default:
+                return 0;
+        }
+    }
+}
+
+static int looks_like_generic_args(Parser *p) {
+    Token buf[3] = { p->peek, p->peek2, p->peek3 };
+    size_t bi = 0;
+    Lexer  probe = p->lexer;
+    int    depth = 1;
+    for (;;) {
+        Token t = (bi < 3) ? buf[bi++] : lexer_next(&probe);
+        switch (t.kind) {
+            case TOK_LT: depth++; break;
+            case TOK_GT:
+                depth--;
+                if (depth == 0) return 1;
+                break;
+            case TOK_SHR: /* '>>' closes two levels */
+                depth -= 2;
+                if (depth <= 0) return 1;
+                break;
+            case TOK_IDENT: case TOK_COMMA: case TOK_STAR: case TOK_CARET:
+            case TOK_LBRACKET: case TOK_RBRACKET: case TOK_BANG: case TOK_DOT:
+                break;
+            default:
+                return 0;
+        }
+    }
 }
 
 /* ── forward declarations ─────────────────────────────────────────────────── */
@@ -258,15 +355,31 @@ static Type *parse_type(Parser *p) {
         } else {
             ty->named.name = t.sval;
         }
-        /* generic type args: Name<T, U> → Name__T__U */
-        if (cur(p).kind == TOK_LT) {
-            advance(p); /* consume '<' */
+        /* generic type args: Name<T, U> or Name[T, U] → Name__T__U */
+        if (cur(p).kind == TOK_LT || cur(p).kind == TOK_LBRACKET) {
+            int use_bracket = cur(p).kind == TOK_LBRACKET;
+            advance(p);
+            TokenKind close_tok = use_bracket ? TOK_RBRACKET : TOK_GT;
             char mangled[512];
             snprintf(mangled, sizeof(mangled), "%s", ty->named.name);
             const char *base = ty->named.name;
             Type **args = NULL;
             size_t n_args = 0;
-            while (!check(p, TOK_GT) && !check(p, TOK_EOF)) {
+            while (!check(p, close_tok) && !check(p, TOK_EOF)) {
+                if (!use_bracket) {
+                    /* '>>' closes this arg list AND the outer one — split it */
+                    if (p->cur.kind == TOK_SHR && p->pending_gt == 0) {
+                        p->pending_gt = 1;
+                        p->cur.kind = TOK_GT;
+                        break;
+                    }
+                    /* '>=' closes this arg list and leaves '=' for the caller */
+                    if (p->cur.kind == TOK_GTEQ) {
+                        p->pending_gteq = 1;
+                        p->cur.kind = TOK_GT;
+                        break;
+                    }
+                }
                 Type *arg = parse_type(p);
                 const char *arg_str = type_to_str(arg, p->arena);
                 size_t curlen = strlen(mangled);
@@ -277,10 +390,30 @@ static Type *parse_type(Parser *p) {
                 args = new_args;
                 eat(p, TOK_COMMA);
             }
-            expect(p, TOK_GT);
+            expect(p, close_tok);
             ty->named.name = arena_strdup(p->arena, mangled);
             record_gen_inst(p, ty->named.name, base, args, n_args);
         }
+        return ty;
+    }
+
+    /* (T1, T2) or (name: T1, name: T2) — tuple/named-return type */
+    if (t.kind == TOK_LPAREN) {
+        advance(p);
+        TypeList elems = {0};
+        while (!check(p, TOK_RPAREN) && !check(p, TOK_EOF)) {
+            /* named field: skip "ident :" prefix — names are documentation only */
+            if (check(p, TOK_IDENT) && check2(p, TOK_COLON)) {
+                advance(p); /* name */
+                advance(p); /* ':' */
+            }
+            Type *elem = parse_type(p);
+            LIST_PUSH(p->arena, &elems, Type, elem);
+            if (!eat(p, TOK_COMMA)) break;
+        }
+        expect(p, TOK_RPAREN);
+        Type *ty = mktype(p, TY_TUPLE, span);
+        ty->tuple.elems = elems;
         return ty;
     }
 
@@ -411,9 +544,17 @@ static ExprList desugar_pf_interp(Parser *p, ExprList orig) {
     ExprList interp = {0};
 
     while (*s) {
-        /* /{ or /} — literal brace */
+        /* /{ or /} — literal brace (also {{ and }}) */
         if (*s == '/' && (s[1] == '{' || s[1] == '}')) {
             if (nf < sizeof(new_fmt) - 1) new_fmt[nf++] = s[1];
+            s += 2;
+        /* {{ — escaped literal '{' */
+        } else if (*s == '{' && s[1] == '{') {
+            if (nf < sizeof(new_fmt) - 1) new_fmt[nf++] = '{';
+            s += 2;
+        /* }} — escaped literal '}' */
+        } else if (*s == '}' && s[1] == '}') {
+            if (nf < sizeof(new_fmt) - 1) new_fmt[nf++] = '}';
             s += 2;
         /* { — begin interpolation */
         } else if (*s == '{') {
@@ -591,20 +732,33 @@ static Expr *parse_primary(Parser *p) {
         case TOK_IDENT: {
             advance(p);
             const char *name = t.sval;
-            /* generic struct literal / call: Name<T>{ ... } or Name<T>(...)
-               Heuristic: cur='<', peek2='>' → single-token type arg generic.
-               This catches Name<Prim>, Name<UserType> but not Name<*T>, Name<[]T>. */
-            if (check(p, TOK_LT) && p->peek2.kind == TOK_GT) {
-                advance(p); /* consume '<' */
-                Type *arg = parse_type(p);
-                expect(p, TOK_GT);
-                const char *arg_str = type_to_str(arg, p->arena);
+            /* generic struct literal / call: Name<T,...>{ ... } or Name<T,...>(...)
+               Heuristic: cur='<' and the tokens up to the matching '>' look
+               like a type-argument list (see looks_like_generic_args). */
+            /* generic instantiation: Name[T,...] or Name<T,...> */
+            int use_bracket_gen = check(p, TOK_LBRACKET) && looks_like_generic_bracket_args(p);
+            if (use_bracket_gen || (check(p, TOK_LT) && looks_like_generic_args(p))) {
+                TokenKind open  = use_bracket_gen ? TOK_LBRACKET : TOK_LT;
+                TokenKind close = use_bracket_gen ? TOK_RBRACKET : TOK_GT;
+                advance(p); /* consume '[' or '<' */
                 char mangled_buf[512];
-                snprintf(mangled_buf, sizeof(mangled_buf), "%s__%s", name, arg_str);
+                snprintf(mangled_buf, sizeof(mangled_buf), "%s", name);
+                Type **args = NULL;
+                size_t n_args = 0;
+                while (!check(p, close) && !check(p, TOK_EOF)) {
+                    Type *arg = parse_type(p);
+                    const char *arg_str = type_to_str(arg, p->arena);
+                    size_t curlen = strlen(mangled_buf);
+                    snprintf(mangled_buf + curlen, sizeof(mangled_buf) - curlen, "__%s", arg_str);
+                    Type **new_args = arena_alloc(p->arena, (n_args + 1) * sizeof(Type *));
+                    if (n_args) memcpy(new_args, args, n_args * sizeof(Type *));
+                    new_args[n_args++] = arg;
+                    args = new_args;
+                    eat(p, TOK_COMMA);
+                }
+                expect(p, close);
                 const char *mangled = arena_strdup(p->arena, mangled_buf);
-                Type **args = arena_alloc(p->arena, sizeof(Type *));
-                args[0] = arg;
-                record_gen_inst(p, mangled, name, args, 1);
+                record_gen_inst(p, mangled, name, args, n_args);
                 if (!p->no_struct_lit && check(p, TOK_LBRACE) && peek(p).kind == TOK_DOT) {
                     /* generic struct literal */
                     advance(p); /* consume '{' */
@@ -679,8 +833,9 @@ static Expr *parse_primary(Parser *p) {
             return e;
         }
 
-        /* unary not */
-        case TOK_NOT: {
+        /* unary not — both 'not' keyword and '!' are accepted */
+        case TOK_NOT:
+        case TOK_BANG: {
             advance(p);
             Expr *operand = parse_expr_bp(p, 30);
             Expr *e = mkexpr(p, EXPR_UNOP, span_merge(span, operand->span));
@@ -725,10 +880,23 @@ static Expr *parse_primary(Parser *p) {
             return e;
         }
 
-        /* grouped expression */
+        /* grouped expression or tuple: (expr) vs (expr, expr, ...) */
         case TOK_LPAREN: {
             advance(p);
             Expr *e = parse_expr(p);
+            if (check(p, TOK_COMMA)) {
+                /* tuple expression */
+                ExprList elems = {0};
+                LIST_PUSH(p->arena, &elems, Expr, e);
+                while (eat(p, TOK_COMMA)) {
+                    Expr *elem = parse_expr(p);
+                    LIST_PUSH(p->arena, &elems, Expr, elem);
+                }
+                expect(p, TOK_RPAREN);
+                Expr *te = mkexpr(p, EXPR_TUPLE, span);
+                te->array_lit = elems;
+                return te;
+            }
             expect(p, TOK_RPAREN);
             return e;
         }
@@ -781,20 +949,23 @@ static Expr *parse_primary(Parser *p) {
             while (!check(p, TOK_RBRACE) && !check(p, TOK_EOF)) {
                 WhenArm arm = {0};
                 arm.span = cur(p).span;
-                /* parse pattern(s): pat1 | pat2 | ... */
-                Expr *pat = parse_expr_bp(p, 1);
+                /* parse pattern(s): pat1 | pat2 | ...
+                   use BP=9 so '|' (lbp=8) is not consumed inside a pattern */
+                Expr *pat = parse_expr_bp(p, 9);
                 LIST_PUSH(p->arena, &arm.pats, Expr, pat);
                 while (eat(p, TOK_PIPE)) {
-                    pat = parse_expr_bp(p, 1);
+                    pat = parse_expr_bp(p, 9);
                     LIST_PUSH(p->arena, &arm.pats, Expr, pat);
                 }
-                /* optional bind: `i32 name =>` */
-                if (check(p, TOK_IDENT) && check2(p, TOK_FATARROW)) {
+                /* optional bind: `i32 name =>` or `i32 _ =>` */
+                if ((check(p, TOK_IDENT) || check(p, TOK_UNDER)) && check2(p, TOK_FATARROW)) {
                     arm.bind = cur(p).sval;
                     advance(p);
                 }
                 expect(p, TOK_FATARROW);
+                p->in_when_arm_body = 1;
                 arm.body = parse_stmt(p);
+                p->in_when_arm_body = 0;
                 eat(p, TOK_COMMA);
                 SLICE_PUSH(p->arena, &arms, WhenArm, arm);
             }
@@ -853,6 +1024,17 @@ static Expr *parse_postfix(Parser *p, Expr *e) {
             d->deref.operand = e;
             e = d;
         } else if (check(p, TOK_DOT)) {
+            /* Don't consume .ident as field access when it looks like the start
+               of the next when-arm pattern.
+               Inside a when-arm body (in_when_arm_body=1), always stop.
+               Outside a body (parsing the arm's own pattern), stop only for
+               non-ident LHS so that Enum.Variant patterns still work. */
+            if (p->peek.kind == TOK_IDENT &&
+                (p->peek2.kind == TOK_FATARROW ||
+                 ((p->peek2.kind == TOK_IDENT || p->peek2.kind == TOK_UNDER) &&
+                  p->peek3.kind == TOK_FATARROW))) {
+                if (p->in_when_arm_body || e->kind != EXPR_IDENT) break;
+            }
             advance(p);
             Token fname = expect(p, TOK_IDENT);
             /* qualified struct literal: alias.TypeName { .x = ... } */
@@ -976,6 +1158,35 @@ static Stmt *parse_let(Parser *p) {
         else name2 = expect(p, TOK_IDENT).sval;
     }
 
+    /* two-name inferred form: val, err := fn()  or  val, err :: fn() */
+    if (name2 && (check(p, TOK_COLONEQ) || check(p, TOK_COLONCOLON))) {
+        int mut = eat(p, TOK_COLONEQ) ? 1 : (advance(p), 0);
+        Expr *init = parse_expr(p);
+
+        Stmt *block = mkstmt(p, STMT_BLOCK, span);
+        StmtList bl = {0};
+
+        Stmt *s1 = mkstmt(p, STMT_LET, span);
+        s1->let.name    = name1;
+        s1->let.ty      = NULL;  /* resolved by sema from failable inner type */
+        s1->let.mutable = mut;
+        s1->let.init    = init;
+        s1->let.infer   = 1;
+        LIST_PUSH(p->arena, &bl, Stmt, s1);
+
+        Stmt *s2 = mkstmt(p, STMT_LET, span);
+        s2->let.name        = name2;
+        s2->let.ty          = NULL;
+        s2->let.mutable     = mut;
+        s2->let.init        = init;
+        s2->let.infer       = 1;
+        s2->let.is_fail_err = 1;
+        LIST_PUSH(p->arena, &bl, Stmt, s2);
+
+        block->block = bl;
+        return block;
+    }
+
     expect(p, TOK_COLON);
 
     /* type annotation */
@@ -994,25 +1205,47 @@ static Stmt *parse_let(Parser *p) {
     Expr *init = parse_expr(p);
 
     if (name2) {
-        /* failable destructure — emit two let stmts wrapped in a block */
-        /* For now emit a synthetic block with two lets sharing the same init */
         Stmt *block = mkstmt(p, STMT_BLOCK, span);
         StmtList bl = {0};
 
-        Stmt *s1 = mkstmt(p, STMT_LET, span);
-        s1->let.name    = name1;
-        s1->let.ty      = ty->ptr.inner; /* !T -> T for the value */
-        s1->let.mutable = mut;
-        s1->let.init    = init;
-        LIST_PUSH(p->arena, &bl, Stmt, s1);
+        if (ty->kind == TY_FAILABLE) {
+            /* failable destructure: val, err: !T = expr */
+            Stmt *s1 = mkstmt(p, STMT_LET, span);
+            s1->let.name      = name1;
+            s1->let.ty        = ty->ptr.inner; /* !T -> T for the value */
+            s1->let.mutable   = mut;
+            s1->let.init      = init;
+            s1->let.tuple_idx = -1;
+            LIST_PUSH(p->arena, &bl, Stmt, s1);
 
-        /* err name gets the error side — we mark with a special type for sema */
-        Stmt *s2 = mkstmt(p, STMT_LET, span);
-        s2->let.name    = name2;
-        s2->let.ty      = ty;   /* keep !T for the error */
-        s2->let.mutable = mut;
-        s2->let.init    = init;
-        LIST_PUSH(p->arena, &bl, Stmt, s2);
+            Stmt *s2 = mkstmt(p, STMT_LET, span);
+            s2->let.name         = name2;
+            s2->let.ty           = ty;
+            s2->let.mutable      = mut;
+            s2->let.init         = init;
+            s2->let.is_fail_err  = 1;
+            s2->let.tuple_idx    = -1;
+            LIST_PUSH(p->arena, &bl, Stmt, s2);
+        } else {
+            /* tuple destructure: q, r: T = expr() returning (T, T) */
+            Stmt *s1 = mkstmt(p, STMT_LET, span);
+            s1->let.name          = name1;
+            s1->let.ty            = ty;
+            s1->let.mutable       = mut;
+            s1->let.init          = init;
+            s1->let.is_tuple_elem = 1;
+            s1->let.tuple_idx     = 0;
+            LIST_PUSH(p->arena, &bl, Stmt, s1);
+
+            Stmt *s2 = mkstmt(p, STMT_LET, span);
+            s2->let.name          = name2;
+            s2->let.ty            = ty;
+            s2->let.mutable       = mut;
+            s2->let.init          = init;
+            s2->let.is_tuple_elem = 1;
+            s2->let.tuple_idx     = 1;
+            LIST_PUSH(p->arena, &bl, Stmt, s2);
+        }
 
         block->block = bl;
         return block;
@@ -1070,17 +1303,134 @@ static Stmt *parse_stmt(Parser *p) {
              TokenKind p3  = p->peek3.kind;
              /* definitely a type annotation if followed by mutable/new-immutable = / :: */
              int is_decl = (p3 == TOK_EQ || p3 == TOK_COLONCOLON);
-             /* also a type annotation if immutable (p3==:) and peek2 is a known primitive */
-             if (!is_decl && p3 == TOK_COLON && n)
-                 is_decl = (!strcmp(n,"i8")||!strcmp(n,"i16")||!strcmp(n,"i32")||
-                             !strcmp(n,"i64")||!strcmp(n,"u8")||!strcmp(n,"u16")||
-                             !strcmp(n,"u32")||!strcmp(n,"u64")||!strcmp(n,"f16")||
-                             !strcmp(n,"f32")||!strcmp(n,"f64")||!strcmp(n,"usize")||
-                             !strcmp(n,"bool")||!strcmp(n,"str")||!strcmp(n,"char"));
+             /* generic type: Name<T, U> or Name[T, U] — peek3 is '<' or '[' */
+             if (!is_decl && (p3 == TOK_LT || p3 == TOK_LBRACKET)) is_decl = 1;
+             /* immutable (p3==:) with any ident type — treat as var decl */
+             if (!is_decl && p3 == TOK_COLON && n) is_decl = 1;
+             /* module-qualified type: v: mod.Type ... — peek3 is '.' */
+             if (!is_decl && p3 == TOK_DOT) is_decl = 1;
              !is_decl; /* true → treat as label */
          })))) {
         const char *lname = cur(p).sval;
         advance(p); advance(p); /* consume ident and ':' */
+        /* if label precedes a loop, attach it to the loop instead of emitting STMT_LABEL */
+        if (check(p, TOK_WHILE)) {
+            advance(p);
+            p->no_struct_lit = 1;
+            Expr *cond = parse_expr(p);
+            p->no_struct_lit = 0;
+            const char *do_fn = NULL;
+            if (eat(p, TOK_FATARROW)) {
+                do_fn = expect(p, TOK_IDENT).sval;
+                if (check(p, TOK_LPAREN)) { advance(p); expect(p, TOK_RPAREN); }
+            }
+            StmtList body = parse_block(p);
+            Stmt *s = mkstmt(p, STMT_WHILE, span);
+            s->while_.cond  = cond;
+            s->while_.do_fn = do_fn;
+            s->while_.body  = body;
+            s->while_.label = lname;
+            return s;
+        }
+        if (check(p, TOK_FOR)) {
+            advance(p);
+            ForClause clause = {0};
+            /* C-style: for i := 0, cond, step { } */
+            if (check(p, TOK_IDENT) && check2(p, TOK_COLONEQ)) {
+                const char *init_name = cur(p).sval;
+                Span init_span = cur(p).span;
+                advance(p); advance(p);
+                Expr *init_val = parse_expr(p);
+                Stmt *init_stmt = mkstmt(p, STMT_LET, span_merge(init_span, init_val->span));
+                init_stmt->let.name    = init_name;
+                init_stmt->let.ty      = NULL;
+                init_stmt->let.mutable = 1;
+                init_stmt->let.infer   = 0;
+                init_stmt->let.init    = init_val;
+                expect(p, TOK_COMMA);
+                Expr *cond_expr = parse_expr(p);
+                expect(p, TOK_COMMA);
+                Expr *step_lhs = parse_expr(p);
+                Stmt *step_stmt = NULL;
+                if (check(p, TOK_INC) || check(p, TOK_DEC)) {
+                    int is_inc = check(p, TOK_INC);
+                    advance(p);
+                    Expr *one = mkexpr(p, EXPR_INT, step_lhs->span);
+                    one->ival = 1;
+                    step_stmt = mkstmt(p, STMT_ASSIGN, step_lhs->span);
+                    step_stmt->assign.target = step_lhs;
+                    step_stmt->assign.op     = is_inc ? ASSIGN_ADD : ASSIGN_SUB;
+                    step_stmt->assign.val    = one;
+                } else if (is_assign_op(cur(p).kind)) {
+                    TokenKind op = cur(p).kind;
+                    advance(p);
+                    Expr *rhs = parse_expr(p);
+                    step_stmt = mkstmt(p, STMT_ASSIGN, span_merge(step_lhs->span, rhs->span));
+                    step_stmt->assign.target = step_lhs;
+                    step_stmt->assign.op     = tok_to_assignop(op);
+                    step_stmt->assign.val    = rhs;
+                } else {
+                    step_stmt = mkstmt(p, STMT_EXPR, step_lhs->span);
+                    step_stmt->expr = step_lhs;
+                }
+                clause.kind = FOR_C;
+                clause.init = init_stmt;
+                clause.cond = cond_expr;
+                clause.step = step_stmt;
+                StmtList body = parse_block(p);
+                Stmt *s = mkstmt(p, STMT_FOR, span);
+                s->for_.clause = clause;
+                s->for_.body   = body;
+                s->for_.label  = lname;
+                return s;
+            }
+            /* range / for-each */
+            if (check(p, TOK_INT) || check(p, TOK_IDENT)) {
+                if (check(p, TOK_IDENT) && (check2(p, TOK_FATARROW) || check2(p, TOK_COMMA))) {
+                    const char *elem_name = cur(p).sval;
+                    advance(p);
+                    const char *idx_name = NULL;
+                    if (eat(p, TOK_COMMA)) {
+                        /* for elem, idx => arr — element first, index second */
+                        idx_name = cur(p).sval;
+                        expect(p, TOK_IDENT);
+                    }
+                    expect(p, TOK_FATARROW);
+                    Expr *rhs = parse_expr(p);
+                    if (rhs->kind == EXPR_BINOP &&
+                        (rhs->binop.op == BINOP_RANGE || rhs->binop.op == BINOP_RANGE_INC)) {
+                        clause.kind      = FOR_RANGE;
+                        clause.inclusive = (rhs->binop.op == BINOP_RANGE_INC);
+                        clause.elem      = elem_name;
+                        clause.iter      = rhs->binop.l;
+                        clause.range_end = rhs->binop.r;
+                    } else {
+                        clause.kind = idx_name ? FOR_EACH_IDX : FOR_EACH;
+                        clause.elem = elem_name;
+                        clause.idx  = idx_name;
+                        clause.iter = rhs;
+                    }
+                } else {
+                    Expr *start = parse_expr_bp(p, 21);
+                    if (check(p, TOK_DOTDOT) || check(p, TOK_DOTDOTEQ)) {
+                        clause.kind      = FOR_RANGE;
+                        clause.inclusive = check(p, TOK_DOTDOTEQ);
+                        advance(p);
+                        clause.iter      = start;
+                        clause.range_end = parse_expr(p);
+                    } else {
+                        fatal_at(cur(p).span, "unexpected token in for loop");
+                    }
+                }
+            }
+            StmtList body = parse_block(p);
+            Stmt *s = mkstmt(p, STMT_FOR, span);
+            s->for_.clause = clause;
+            s->for_.body   = body;
+            s->for_.label  = lname;
+            return s;
+        }
+        /* plain label (goto target) */
         Stmt *s = mkstmt(p, STMT_LABEL, span);
         s->label_.name = lname;
         return s;
@@ -1125,8 +1475,16 @@ static Stmt *parse_stmt(Parser *p) {
         IfBranch branch = { .cond = cond, .body = body };
         SLICE_PUSH(p->arena, &branches, IfBranch, branch);
 
-        while (check(p, TOK_ELIF)) {
-            advance(p);
+        /* accept both "elif cond {" and "else if cond {" as branch heads */
+        for (;;) {
+            if (check(p, TOK_ELIF)) {
+                advance(p); /* eat 'elif' */
+            } else if (check(p, TOK_ELSE) && peek(p).kind == TOK_IF) {
+                advance(p); /* eat 'else' */
+                advance(p); /* eat 'if'   */
+            } else {
+                break;
+            }
             p->no_struct_lit = 1;
             Expr    *ec = parse_expr(p);
             p->no_struct_lit = 0;
@@ -1175,18 +1533,21 @@ static Stmt *parse_stmt(Parser *p) {
         while (!check(p, TOK_RBRACE) && !check(p, TOK_EOF)) {
             WhenArm arm = {0};
             arm.span = cur(p).span;
-            Expr *pat = parse_expr_bp(p, 1);
+            /* use BP=9 so '|' (lbp=8) is not consumed inside a pattern */
+            Expr *pat = parse_expr_bp(p, 9);
             LIST_PUSH(p->arena, &arm.pats, Expr, pat);
             while (eat(p, TOK_PIPE)) {
-                pat = parse_expr_bp(p, 1);
+                pat = parse_expr_bp(p, 9);
                 LIST_PUSH(p->arena, &arm.pats, Expr, pat);
             }
-            if (check(p, TOK_IDENT) && check2(p, TOK_FATARROW)) {
+            if ((check(p, TOK_IDENT) || check(p, TOK_UNDER)) && check2(p, TOK_FATARROW)) {
                 arm.bind = cur(p).sval;
                 advance(p);
             }
             expect(p, TOK_FATARROW);
+            p->in_when_arm_body = 1;
             arm.body = parse_stmt(p);
+            p->in_when_arm_body = 0;
             eat(p, TOK_COMMA);
             SLICE_PUSH(p->arena, &arms, WhenArm, arm);
         }
@@ -1202,9 +1563,57 @@ static Stmt *parse_stmt(Parser *p) {
         advance(p);
         ForClause clause = {0};
 
-        /* detect C-style: for i := 0, ... */
-        if (check(p, TOK_IDENT) && check2(p, TOK_COLON)) {
-            /* Could be: for i := 0,  */
+        /* C-style: for i := 0, cond, step { } */
+        if (check(p, TOK_IDENT) && check2(p, TOK_COLONEQ)) {
+            const char *init_name = cur(p).sval;
+            Span init_span = cur(p).span;
+            advance(p); /* consume ident */
+            advance(p); /* consume := */
+            Expr *init_val = parse_expr(p);
+            /* build init as STMT_LET mutable-infer */
+            Stmt *init_stmt = mkstmt(p, STMT_LET, span_merge(init_span, init_val->span));
+            init_stmt->let.name    = init_name;
+            init_stmt->let.ty      = NULL;
+            init_stmt->let.mutable = 1;
+            init_stmt->let.infer   = 0; /* no widening: keep i32 for 0, i64 for explicit large lits */
+            init_stmt->let.init    = init_val;
+            expect(p, TOK_COMMA);
+            Expr *cond_expr = parse_expr(p);
+            expect(p, TOK_COMMA);
+            /* parse step: IDENT OP EXPR  or  IDENT++/IDENT-- */
+            Expr *step_lhs = parse_expr(p);
+            Stmt *step_stmt = NULL;
+            if (check(p, TOK_INC) || check(p, TOK_DEC)) {
+                int is_inc = check(p, TOK_INC);
+                advance(p);
+                Expr *one = mkexpr(p, EXPR_INT, step_lhs->span);
+                one->ival = 1;
+                step_stmt = mkstmt(p, STMT_ASSIGN, step_lhs->span);
+                step_stmt->assign.target = step_lhs;
+                step_stmt->assign.op     = is_inc ? ASSIGN_ADD : ASSIGN_SUB;
+                step_stmt->assign.val    = one;
+            } else if (is_assign_op(cur(p).kind)) {
+                TokenKind op = cur(p).kind;
+                advance(p);
+                Expr *rhs = parse_expr(p);
+                step_stmt = mkstmt(p, STMT_ASSIGN, span_merge(step_lhs->span, rhs->span));
+                step_stmt->assign.target = step_lhs;
+                step_stmt->assign.op     = tok_to_assignop(op);
+                step_stmt->assign.val    = rhs;
+            } else {
+                step_stmt = mkstmt(p, STMT_EXPR, step_lhs->span);
+                step_stmt->expr = step_lhs;
+            }
+            clause.kind = FOR_C;
+            clause.init = init_stmt;
+            clause.cond = cond_expr;
+            clause.step = step_stmt;
+            StmtList body = parse_block(p);
+            Stmt *s = mkstmt(p, STMT_FOR, span);
+            s->for_.clause = clause;
+            s->for_.body   = body;
+            s->for_.label  = NULL;
+            return s;
         }
 
         /* for IDENT => EXPR..EXPR  — range with named variable
@@ -1218,9 +1627,8 @@ static Stmt *parse_stmt(Parser *p) {
                 advance(p); /* consume elem name */
                 const char *idx_name = NULL;
                 if (eat(p, TOK_COMMA)) {
-                    /* for idx, elem => EXPR */
-                    idx_name  = elem_name;
-                    elem_name = cur(p).sval;
+                    /* for elem, idx => EXPR — element first, index second */
+                    idx_name = cur(p).sval;
                     expect(p, TOK_IDENT);
                 }
                 expect(p, TOK_FATARROW);
@@ -1295,6 +1703,19 @@ static Stmt *parse_stmt(Parser *p) {
 
     /* expression or assignment */
     Expr *lhs = parse_expr(p);
+
+    /* postfix ++ / -- as statement */
+    if (check(p, TOK_INC) || check(p, TOK_DEC)) {
+        int is_inc = check(p, TOK_INC);
+        advance(p);
+        Expr *one = mkexpr(p, EXPR_INT, lhs->span);
+        one->ival = 1;
+        Stmt *s = mkstmt(p, STMT_ASSIGN, lhs->span);
+        s->assign.target = lhs;
+        s->assign.op     = is_inc ? ASSIGN_ADD : ASSIGN_SUB;
+        s->assign.val    = one;
+        return s;
+    }
 
     if (is_assign_op(cur(p).kind)) {
         TokenKind op = cur(p).kind;
@@ -1407,12 +1828,14 @@ static Item *parse_item(Parser *p) {
     if (check(p, TOK_FN)) {
         advance(p);
         const char *name = expect(p, TOK_IDENT).sval;
-        /* optional generic type params: fn foo<T, U>(...) */
+        /* optional generic type params: fn foo[T, U](...) or fn foo<T, U>(...) */
         const char **type_params = NULL;
         size_t n_type_params = 0;
-        if (check(p, TOK_LT)) {
-            advance(p); /* consume '<' */
-            while (!check(p, TOK_GT) && !check(p, TOK_EOF)) {
+        if (check(p, TOK_LBRACKET) || check(p, TOK_LT)) {
+            int use_bracket = check(p, TOK_LBRACKET);
+            advance(p); /* consume '[' or '<' */
+            TokenKind close = use_bracket ? TOK_RBRACKET : TOK_GT;
+            while (!check(p, close) && !check(p, TOK_EOF)) {
                 const char *tp = expect(p, TOK_IDENT).sval;
                 const char **new_tp = arena_alloc(p->arena, (n_type_params + 1) * sizeof(const char *));
                 if (n_type_params) memcpy(new_tp, type_params, n_type_params * sizeof(const char *));
@@ -1420,16 +1843,37 @@ static Item *parse_item(Parser *p) {
                 type_params = new_tp;
                 eat(p, TOK_COMMA);
             }
-            expect(p, TOK_GT);
+            expect(p, close);
         }
+        /* Expose type params for the entire signature + body so record_gen_inst
+           can skip template-internal generic uses like Box<T>. Merge with any
+           outer (e.g. enclosing generic impl block) type params still in scope
+           rather than replacing them. */
+        const char **saved_tp  = p->cur_type_params;
+        size_t       saved_ntp = p->n_cur_type_params;
+        const char **scope_tp  = type_params;
+        size_t       n_scope_tp = n_type_params;
+        if (saved_ntp > 0) {
+            const char **merged = arena_alloc(p->arena, (n_type_params + saved_ntp) * sizeof(const char *));
+            if (n_type_params) memcpy(merged, type_params, n_type_params * sizeof(const char *));
+            memcpy(merged + n_type_params, saved_tp, saved_ntp * sizeof(const char *));
+            scope_tp   = merged;
+            n_scope_tp = n_type_params + saved_ntp;
+        }
+        p->cur_type_params   = scope_tp;
+        p->n_cur_type_params = n_scope_tp;
         expect(p, TOK_LPAREN);
         ParamList params = {0};
         int variadic = 0;
         while (!check(p, TOK_RPAREN) && !check(p, TOK_EOF)) {
             if (cur(p).kind == TOK_DOTDOT) { variadic = 1; advance(p); break; }
             const char *pn = expect(p, TOK_IDENT).sval;
-            expect(p, TOK_COLON);
-            Type *pt = parse_type(p);
+            Type *pt = NULL;
+            /* bare 'self' param: no type annotation — sema fills it in from impl context */
+            if (strcmp(pn, "self") != 0 || (!check(p, TOK_COMMA) && !check(p, TOK_RPAREN))) {
+                expect(p, TOK_COLON);
+                pt = parse_type(p);
+            }
             Param par = { .name = pn, .ty = pt };
             SLICE_PUSH(p->arena, &params, Param, par);
             eat(p, TOK_COMMA);
@@ -1438,6 +1882,8 @@ static Item *parse_item(Parser *p) {
         Type *ret = NULL;
         if (eat(p, TOK_ARROW)) ret = parse_type(p);
         StmtList body = parse_block(p);
+        p->cur_type_params   = saved_tp;
+        p->n_cur_type_params = saved_ntp;
         Item *item = ARENA_NEW(p->arena, Item);
         item->kind               = ITEM_FN;
         item->name               = name;
@@ -1459,12 +1905,14 @@ static Item *parse_item(Parser *p) {
     if (check(p, TOK_STRUCT)) {
         advance(p);
         const char *name = expect(p, TOK_IDENT).sval;
-        /* optional generic type params: struct Box<T> { ... } */
+        /* optional generic type params: struct Box<T> or struct Box[T] */
         const char **type_params = NULL;
         size_t n_type_params = 0;
-        if (check(p, TOK_LT)) {
-            advance(p); /* consume '<' */
-            while (!check(p, TOK_GT) && !check(p, TOK_EOF)) {
+        if (check(p, TOK_LT) || check(p, TOK_LBRACKET)) {
+            int use_bracket = check(p, TOK_LBRACKET);
+            advance(p);
+            TokenKind close = use_bracket ? TOK_RBRACKET : TOK_GT;
+            while (!check(p, close) && !check(p, TOK_EOF)) {
                 const char *tp = expect(p, TOK_IDENT).sval;
                 const char **new_tp = arena_alloc(p->arena, (n_type_params + 1) * sizeof(const char *));
                 if (n_type_params) memcpy(new_tp, type_params, n_type_params * sizeof(const char *));
@@ -1472,9 +1920,14 @@ static Item *parse_item(Parser *p) {
                 type_params = new_tp;
                 eat(p, TOK_COMMA);
             }
-            expect(p, TOK_GT);
+            expect(p, close);
         }
         expect(p, TOK_LBRACE);
+        /* expose type params so field types like Box<T> don't get recorded as gen_insts */
+        const char **saved_stp  = p->cur_type_params;
+        size_t       saved_sntp = p->n_cur_type_params;
+        p->cur_type_params   = type_params;
+        p->n_cur_type_params = n_type_params;
         FieldList fields = {0};
         while (!check(p, TOK_RBRACE) && !check(p, TOK_EOF)) {
             const char *fn2 = expect(p, TOK_IDENT).sval;
@@ -1484,6 +1937,8 @@ static Item *parse_item(Parser *p) {
             SLICE_PUSH(p->arena, &fields, Field, f);
             eat(p, TOK_COMMA);
         }
+        p->cur_type_params   = saved_stp;
+        p->n_cur_type_params = saved_sntp;
         expect(p, TOK_RBRACE);
         Item *item = ARENA_NEW(p->arena, Item);
         item->kind                   = ITEM_STRUCT;
@@ -1500,19 +1955,46 @@ static Item *parse_item(Parser *p) {
     if (check(p, TOK_IMPL)) {
         advance(p);
         const char *ty_name = expect(p, TOK_IDENT).sval;
+        /* optional generic type params: impl Box<T> or impl Box[T] */
+        const char **type_params = NULL;
+        size_t n_type_params = 0;
+        if (check(p, TOK_LT) || check(p, TOK_LBRACKET)) {
+            int use_bracket = check(p, TOK_LBRACKET);
+            advance(p);
+            TokenKind close = use_bracket ? TOK_RBRACKET : TOK_GT;
+            while (!check(p, close) && !check(p, TOK_EOF)) {
+                const char *tp = expect(p, TOK_IDENT).sval;
+                const char **new_tp = arena_alloc(p->arena, (n_type_params + 1) * sizeof(const char *));
+                if (n_type_params) memcpy(new_tp, type_params, n_type_params * sizeof(const char *));
+                new_tp[n_type_params++] = tp;
+                type_params = new_tp;
+                eat(p, TOK_COMMA);
+            }
+            expect(p, close);
+        }
         expect(p, TOK_LBRACE);
+        /* expose type params for all method signatures + bodies so uses like
+           Box<T> inside them don't get recorded as concrete gen_insts */
+        const char **saved_itp  = p->cur_type_params;
+        size_t       saved_intp = p->n_cur_type_params;
+        p->cur_type_params   = type_params;
+        p->n_cur_type_params = n_type_params;
         ItemList methods = {0};
         while (!check(p, TOK_RBRACE) && !check(p, TOK_EOF)) {
             Item *m = parse_item(p);
             LIST_PUSH(p->arena, &methods, Item, m);
         }
+        p->cur_type_params   = saved_itp;
+        p->n_cur_type_params = saved_intp;
         expect(p, TOK_RBRACE);
         Item *item = ARENA_NEW(p->arena, Item);
-        item->kind           = ITEM_IMPL;
-        item->name           = ty_name;
-        item->span           = span_merge(span, cur(p).span);
-        item->impl.ty_name   = ty_name;
-        item->impl.methods   = methods;
+        item->kind                  = ITEM_IMPL;
+        item->name                  = ty_name;
+        item->span                  = span_merge(span, cur(p).span);
+        item->impl.ty_name          = ty_name;
+        item->impl.methods          = methods;
+        item->impl.type_params      = type_params;
+        item->impl.n_type_params    = n_type_params;
         return item;
     }
 

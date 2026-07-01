@@ -130,11 +130,12 @@ extern fn free(p: *u8)
 
 Variadic `...` is allowed in extern declarations only.
 
-## Inline and Variadic
+## Inline
+
+Use `inline fn` to hint that a function should be inlined at call sites:
 
 ```
-@inline fn fast_path(x: i32) -> i32 { ret x * 2 }
-@noinline fn slow_path(x: i32) -> i32 { ... }
+inline fn fast_path(x: i32) -> i32 { ret x * 2 }
 ```
 
 ## Recursion

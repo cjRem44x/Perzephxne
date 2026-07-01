@@ -268,15 +268,15 @@ Token lexer_next(Lexer *l) {
     if (peek(l) == (c2)) { advance(l); TOK1(k2); } TOK1(k1)
 
     switch (c) {
-        case '+': TOK2('=', TOK_PLUSEQ,    TOK_PLUS);
-        case '-': if (peek(l)=='>') { advance(l); TOK1(TOK_ARROW); } TOK2('=', TOK_MINUSEQ, TOK_MINUS);
+        case '+': if (peek(l)=='+') { advance(l); TOK1(TOK_INC); } TOK2('=', TOK_PLUSEQ, TOK_PLUS);
+        case '-': if (peek(l)=='-') { advance(l); TOK1(TOK_DEC); } if (peek(l)=='>') { advance(l); TOK1(TOK_ARROW); } TOK2('=', TOK_MINUSEQ, TOK_MINUS);
         case '*': TOK2('=', TOK_STAREQ,    TOK_STAR);
         case '/': TOK2('=', TOK_SLASHEQ,   TOK_SLASH);
         case '%': TOK2('=', TOK_PERCENTEQ, TOK_PERCENT);
         case '~': TOK1(TOK_TILDE);
         case '^': TOK2('=', TOK_CARETEQ,   TOK_CARET);
-        case '&': TOK2('=', TOK_AMPEQ,     TOK_AMP);
-        case '|': TOK2('=', TOK_PIPEEQ,    TOK_PIPE);
+        case '&': if (peek(l)=='&') { advance(l); TOK1(TOK_AND); } TOK2('=', TOK_AMPEQ, TOK_AMP);
+        case '|': if (peek(l)=='|') { advance(l); TOK1(TOK_OR);  } TOK2('=', TOK_PIPEEQ, TOK_PIPE);
         case '<':
             if (peek(l)=='<') {
                 advance(l);
@@ -370,6 +370,8 @@ const char *tok_kind_str(TokenKind k) {
         case TOK_GTEQ:     return "'>='";
         case TOK_BANG:     return "'!'";
         case TOK_EQ:       return "'='";
+        case TOK_INC:      return "'++'";
+        case TOK_DEC:      return "'--'";
         case TOK_PLUSEQ:   return "'+='";
         case TOK_MINUSEQ:  return "'-='";
         case TOK_STAREQ:   return "'*='";

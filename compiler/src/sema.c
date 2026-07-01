@@ -59,6 +59,13 @@ typedef struct GenericTemplate {
     const char *name;
 } GenericTemplate;
 
+/* generic impl blocks: impl Box<T> { ... } — instantiated alongside the
+   matching struct each time a concrete Box<X> is encountered */
+typedef struct GenericImplTemplate {
+    struct GenericImplTemplate *next;
+    Item *item;
+} GenericImplTemplate;
+
 /* ── Sema context ─────────────────────────────────────────────────────────── */
 
 typedef struct {
@@ -70,6 +77,7 @@ typedef struct {
     EnumInfo         *enums;     /* name → variant values for enum lookup */
     UnionInfo        *unions;    /* name → tagged union variant table */
     GenericTemplate  *generics;  /* uninstantiated generic templates */
+    GenericImplTemplate *impl_generics; /* uninstantiated generic impl blocks */
     /* built-in types — interned once */
     Type   *ty_void, *ty_bool, *ty_i8, *ty_i16, *ty_i32, *ty_i64;
     Type   *ty_u8,   *ty_u16,  *ty_u32, *ty_u64, *ty_usize;
@@ -155,6 +163,12 @@ static int ty_eq(Type *a, Type *b) {
             return ty_eq(a->ptr.inner, b->ptr.inner);
         case TY_ARRAY:
             return ty_eq(a->array.inner, b->array.inner);
+        case TY_TUPLE: {
+            if (a->tuple.elems.len != b->tuple.elems.len) return 0;
+            for (size_t i = 0; i < a->tuple.elems.len; i++)
+                if (!ty_eq(a->tuple.elems.data[i], b->tuple.elems.data[i])) return 0;
+            return 1;
+        }
         case TY_NAMED:
         case TY_GENERIC:
             return !strcmp(a->named.name, b->named.name);
@@ -225,6 +239,7 @@ static const char *ty_str(Type *t) {
         case TY_SLICE:     return "[]<T>";
         case TY_ARRAY:     return "[N]<T>";
         case TY_FAILABLE:  return "!<T>";
+        case TY_TUPLE:     return "(<T,...>)";
         case TY_NAMED:
         case TY_GENERIC:   return t->named.name;
         default:           return "?";
@@ -243,12 +258,19 @@ static Type *resolve_named(Sema *s, Type *ty) {
 static int ty_coerces(Type *from, Type *to) {
     if (!from || !to) return 1; /* unknown types pass silently */
     if (ty_eq(from, to)) return 1;
-    /* integer literals (i32 default) coerce to any integer width */
-    if (from->kind == TY_I32 && ty_is_int(to)) return 1;
+    /* integer types coerce to any other integer width (truncation/extension) */
+    if (ty_is_int(from) && ty_is_int(to)) return 1;
     /* f64 default coerces to any float */
     if (from->kind == TY_F64 && ty_is_float(to)) return 1;
     /* null coerces to any pointer */
     if (from->kind == TY_PTR && !from->ptr.inner && ty_is_ptr(to)) return 1;
+    /* raw pointer (*T) coerces to any other raw pointer (*T') — C-style unsafe cast */
+    if (from->kind == TY_PTR && to->kind == TY_PTR) return 1;
+    /* str coerces to any raw pointer (*T) — C interop: callee receives .data field */
+    if (from->kind == TY_STR && to->kind == TY_PTR) return 1;
+    /* char ↔ u8/i8: both are single-byte types with identical LLVM representation */
+    if ((from->kind == TY_CHAR && (to->kind == TY_U8 || to->kind == TY_I8)) ||
+        ((from->kind == TY_U8 || from->kind == TY_I8) && to->kind == TY_CHAR)) return 1;
     /* enum ↔ integer: integer types coerce into enum named types and vice versa */
     if (ty_is_int(from) && to->kind   == TY_NAMED) return 1;
     if (from->kind == TY_NAMED && ty_is_int(to))   return 1;
@@ -262,6 +284,13 @@ static int ty_coerces(Type *from, Type *to) {
     /* [N]T1 coerces to [N]T2 if T1 coerces to T2 (e.g. [3]i32 → [3]u8) */
     if (from->kind == TY_ARRAY && to->kind == TY_ARRAY
             && ty_coerces(from->array.inner, to->array.inner)) return 1;
+    /* (T1, T2) coerces to (T1', T2') element-wise */
+    if (from->kind == TY_TUPLE && to->kind == TY_TUPLE
+            && from->tuple.elems.len == to->tuple.elems.len) {
+        for (size_t i = 0; i < from->tuple.elems.len; i++)
+            if (!ty_coerces(from->tuple.elems.data[i], to->tuple.elems.data[i])) return 0;
+        return 1;
+    }
     return 0;
 }
 
@@ -284,6 +313,10 @@ static Type *check_type(Sema *s, Type *ty) {
             for (size_t i = 0; i < ty->fn.params.len; i++)
                 ty->fn.params.data[i] = check_type(s, ty->fn.params.data[i]);
             ty->fn.ret = check_type(s, ty->fn.ret);
+            break;
+        case TY_TUPLE:
+            for (size_t i = 0; i < ty->tuple.elems.len; i++)
+                ty->tuple.elems.data[i] = check_type(s, ty->tuple.elems.data[i]);
             break;
         case TY_NAMED: {
             Sym *sym = lookup(s, ty->named.name);
@@ -332,6 +365,15 @@ static Type *builtin_ret_ty(Sema *s, const char *name) {
         return sl;
     }
     if (!strcmp(name, "str_raw"))  return s->ty_str;
+    if (!strcmp(name, "atomic_load"))                    return s->ty_i64;
+    if (!strcmp(name, "atomic_store"))                   return s->ty_void;
+    if (!strcmp(name, "atomic_add")  || !strcmp(name, "atomic_sub") ||
+        !strcmp(name, "atomic_and")  || !strcmp(name, "atomic_or")  ||
+        !strcmp(name, "atomic_xor")  || !strcmp(name, "atomic_swap"))
+                                                         return s->ty_i64;
+    if (!strcmp(name, "atomic_cas"))                     return s->ty_bool;
+    if (!strcmp(name, "asm") || !strcmp(name, "asm_volatile")) return s->ty_void;
+    if (!strcmp(name, "is_ok") || !strcmp(name, "is_err")) return s->ty_bool;
     return NULL;
 }
 
@@ -345,7 +387,12 @@ static Type *check_expr(Sema *s, Expr *e) {
     if (!e) return NULL;
 
     switch (e->kind) {
-        case EXPR_INT:    e->ty = s->ty_i32;  break;  /* default int literal */
+        case EXPR_INT:
+            /* Default to i64 when value exceeds i32 range, so that e.g.
+               `big: i64 = 1000000000000` doesn't silently truncate to i32
+               before being sign-extended into the i64 alloca. */
+            e->ty = (e->ival > (uint64_t)2147483647ULL) ? s->ty_i64 : s->ty_i32;
+            break;
         case EXPR_FLOAT:  e->ty = s->ty_f64;  break;
         case EXPR_BOOL:   e->ty = s->ty_bool; break;
         case EXPR_CHAR:   e->ty = s->ty_char; break;
@@ -393,16 +440,27 @@ static Type *check_expr(Sema *s, Expr *e) {
                 check_expr(s, e->builtin.args.data[i]);
             Type *ret = builtin_ret_ty(s, e->builtin.name);
             if (!strcmp(e->builtin.name, "new") && e->builtin.args.len > 0) {
-                /* @new(val: T) → ^T; widen bare literal args like := does */
-                Expr *narg = e->builtin.args.data[0];
-                int nlit = narg->kind == EXPR_INT || narg->kind == EXPR_FLOAT ||
-                           narg->kind == EXPR_BOOL || narg->kind == EXPR_CHAR;
-                Type *inner = narg->ty;
-                if (nlit && inner) { inner = widen_inferred(s, inner); narg->ty = inner; }
+                /* @new(val: T) → ^T; keep the literal's natural type (i32 for 42, etc.) */
+                Type *inner = e->builtin.args.data[0]->ty;
                 ret = make_ptr(s, TY_SMART_PTR, inner);
             } else if (!strcmp(e->builtin.name, "clone") && e->builtin.args.len > 0) {
                 /* @clone(ptr: ^T) → ^T */
                 ret = e->builtin.args.data[0]->ty;
+            } else if (!strcmp(e->builtin.name, "ok") && e->builtin.args.len > 0) {
+                /* @ok(val: T) → !T */
+                ret = make_ptr(s, TY_FAILABLE, e->builtin.args.data[0]->ty);
+            } else if (!strcmp(e->builtin.name, "err") && e->builtin.args.len > 0) {
+                /* @err(code) → !T; inner type inferred from current function return type */
+                Type *cur = s->cur_ret;
+                ret = (cur && cur->kind == TY_FAILABLE) ? cur : make_ptr(s, TY_FAILABLE, s->ty_i32);
+            } else if (!strcmp(e->builtin.name, "unwrap") && e->builtin.args.len > 0) {
+                /* @unwrap(r: !T) → T */
+                Type *arg = e->builtin.args.data[0]->ty;
+                ret = (arg && arg->kind == TY_FAILABLE) ? arg->ptr.inner : arg;
+            } else if (!strcmp(e->builtin.name, "addr") && e->builtin.args.len > 0) {
+                /* @addr(x) → *T  (same as &x) */
+                Type *arg = e->builtin.args.data[0]->ty;
+                ret = make_ptr(s, TY_PTR, arg);
             } else if (!ret && e->builtin.args.len > 0) {
                 /* for min/max/abs: inherit first arg type */
                 ret = e->builtin.args.data[0]->ty;
@@ -546,6 +604,17 @@ static Type *check_expr(Sema *s, Expr *e) {
                 if (!arg_ok) {
                     sema_error(s, e->span, "expected %zu arguments, got %zu",
                                callee_ty->fn.params.len, e->call.args.len);
+                } else {
+                    /* check each argument type against the declared parameter type */
+                    size_t ncheck = callee_ty->fn.params.len;
+                    for (size_t i = 0; i < ncheck; i++) {
+                        Type *param_ty = callee_ty->fn.params.data[i];
+                        Type *arg_ty   = e->call.args.data[i]->ty;
+                        if (param_ty && arg_ty && !ty_coerces(arg_ty, param_ty))
+                            sema_error(s, e->call.args.data[i]->span,
+                                       "argument %zu: expected '%s', got '%s'",
+                                       i + 1, ty_str(param_ty), ty_str(arg_ty));
+                    }
                 }
                 e->ty = callee_ty->fn.ret;
             } else {
@@ -557,13 +626,27 @@ static Type *check_expr(Sema *s, Expr *e) {
         case EXPR_INDEX: {
             Type *arr_ty = check_expr(s, e->index.arr);
             Type *idx_ty = check_expr(s, e->index.idx);
-            if (idx_ty && !ty_is_int(idx_ty))
+            /* range index (arr[lo..hi]) produces a slice */
+            int is_range_idx = e->index.idx && e->index.idx->kind == EXPR_BINOP
+                && (e->index.idx->binop.op == BINOP_RANGE
+                    || e->index.idx->binop.op == BINOP_RANGE_INC);
+            if (!is_range_idx && idx_ty && !ty_is_int(idx_ty))
                 sema_error(s, e->span, "array index must be integer, got '%s'", ty_str(idx_ty));
             if (arr_ty) {
-                if (arr_ty->kind == TY_ARRAY || arr_ty->kind == TY_SLICE)
+                if (is_range_idx) {
+                    /* arr[lo..hi] → slice of element type */
+                    Type *elem = NULL;
+                    if (arr_ty->kind == TY_ARRAY || arr_ty->kind == TY_SLICE)
+                        elem = arr_ty->array.inner;
+                    else if (arr_ty->kind == TY_STR)
+                        elem = s->ty_char;
+                    e->ty = elem ? make_ptr(s, TY_SLICE, elem) : NULL;
+                } else if (arr_ty->kind == TY_ARRAY || arr_ty->kind == TY_SLICE)
                     e->ty = arr_ty->array.inner;
                 else if (arr_ty->kind == TY_STR)
                     e->ty = s->ty_char;
+                else if (arr_ty->kind == TY_PTR && arr_ty->ptr.inner)
+                    e->ty = arr_ty->ptr.inner; /* *T[i] → T */
                 else {
                     sema_error(s, e->span, "cannot index into '%s'", ty_str(arr_ty));
                     e->ty = NULL;
@@ -575,9 +658,9 @@ static Type *check_expr(Sema *s, Expr *e) {
         case EXPR_FIELD: {
             Type *obj_ty = check_expr(s, e->field.obj);
             obj_ty = resolve_named(s, obj_ty);
-            /* auto-deref: *Struct.field transparently accesses the struct's field */
-            if (obj_ty && obj_ty->kind == TY_PTR && obj_ty->ptr.inner
-                    && obj_ty->ptr.inner->kind == TY_NAMED)
+            /* auto-deref: *Struct.field and ^Struct.method transparently access the struct */
+            if (obj_ty && (obj_ty->kind == TY_PTR || obj_ty->kind == TY_SMART_PTR)
+                    && obj_ty->ptr.inner && obj_ty->ptr.inner->kind == TY_NAMED)
                 obj_ty = obj_ty->ptr.inner;
             e->ty = NULL;
             if (obj_ty && obj_ty->kind == TY_NAMED) {
@@ -749,6 +832,33 @@ static Type *check_expr(Sema *s, Expr *e) {
                 t->named.name = e->struct_lit.ty_name;
                 e->ty = t;
             }
+            /* resolve type alias: update ty_name so codegen and validation use the real name */
+            if (e->ty && e->ty->kind == TY_NAMED)
+                e->struct_lit.ty_name = e->ty->named.name;
+            /* validate struct field names and types */
+            for (StructEntry *se = s->structs; se; se = se->next) {
+                if (strcmp(se->name, e->struct_lit.ty_name)) continue;
+                for (size_t i = 0; i < e->struct_lit.fields.len; i++) {
+                    const char *fname = e->struct_lit.fields.data[i].name;
+                    Type *val_ty = e->struct_lit.fields.data[i].val->ty;
+                    Type *field_ty = NULL;
+                    for (size_t fi = 0; fi < se->fields->len; fi++) {
+                        if (!strcmp(se->fields->data[fi].name, fname)) {
+                            field_ty = se->fields->data[fi].ty;
+                            break;
+                        }
+                    }
+                    if (!field_ty) {
+                        sema_error(s, e->span, "struct '%s' has no field '%s'",
+                                   e->struct_lit.ty_name, fname);
+                    } else if (val_ty && !ty_coerces(val_ty, field_ty)) {
+                        sema_error(s, e->struct_lit.fields.data[i].val->span,
+                                   "field '%s': expected '%s', got '%s'",
+                                   fname, ty_str(field_ty), ty_str(val_ty));
+                    }
+                }
+                break;
+            }
             /* validate tagged union construction: exactly one field, valid variant */
             for (UnionInfo *ui = s->unions; ui; ui = ui->next) {
                 if (!strcmp(ui->name, e->struct_lit.ty_name)) {
@@ -790,6 +900,21 @@ static Type *check_expr(Sema *s, Expr *e) {
             break;
         }
 
+        case EXPR_TUPLE: {
+            size_t n = e->array_lit.len;
+            Type *tty = make_ty(s, TY_TUPLE);
+            Type **tdata = arena_alloc(s->arena, n * sizeof(Type *));
+            size_t tlen = 0;
+            for (size_t i = 0; i < n; i++) {
+                Type *et = check_expr(s, e->array_lit.data[i]);
+                if (et) tdata[tlen++] = et;
+            }
+            tty->tuple.elems.data = tdata;
+            tty->tuple.elems.len  = tlen;
+            e->ty = tty;
+            break;
+        }
+
         default:
             e->ty = NULL;
             break;
@@ -806,6 +931,19 @@ static void check_stmt(Sema *s, Stmt *st) {
         case STMT_LET: {
             Type *init_ty = st->let.init ? check_expr(s, st->let.init) : NULL;
             Type *decl_ty = st->let.ty ? check_type(s, st->let.ty) : NULL;
+
+            /* tuple destructure: q, r: T = fn() returning (T, T) */
+            if (st->let.is_tuple_elem && init_ty && init_ty->kind == TY_TUPLE) {
+                int idx = st->let.tuple_idx;
+                Type *elem_ty = (idx >= 0 && (size_t)idx < init_ty->tuple.elems.len)
+                                ? init_ty->tuple.elems.data[idx] : NULL;
+                if (!decl_ty && elem_ty) {
+                    decl_ty = elem_ty;
+                    st->let.ty = elem_ty;
+                }
+                define(s, st->span, st->let.name, decl_ty ? decl_ty : elem_ty, st->let.mutable, 0);
+                break;
+            }
 
             if (decl_ty && init_ty && !ty_coerces(init_ty, decl_ty)) {
                 sema_error(s, st->span,
@@ -831,12 +969,17 @@ static void check_stmt(Sema *s, Stmt *st) {
             if (!st->let.ty && ty)
                 st->let.ty = ty;
 
-            /* handle failable: val, err: !T = func() */
-            if (ty && ty->kind == TY_FAILABLE) {
-                /* This let is the err variable: define as i32 error code */
+            /* failable: distinguish err-side destructure from standalone !T variable */
+            if (ty && ty->kind == TY_FAILABLE && st->let.is_fail_err) {
+                /* err-side of val,err: !T = fn() — define as i32 error code */
                 Type *err_ty = ARENA_NEW(s->arena, Type);
                 err_ty->kind = TY_I32;
                 define(s, st->span, st->let.name, err_ty, st->let.mutable, 0);
+            } else if (ty && ty->kind == TY_FAILABLE && st->let.infer && !st->let.is_fail_err) {
+                /* val-side of inferred failable destructure: val := fn() — unwrap to inner type */
+                ty = ty->ptr.inner;
+                st->let.ty = ty;
+                define(s, st->span, st->let.name, ty, st->let.mutable, 0);
             } else {
                 define(s, st->span, st->let.name, ty, st->let.mutable, 0);
             }
@@ -847,12 +990,19 @@ static void check_stmt(Sema *s, Stmt *st) {
             Type *lhs = check_expr(s, st->assign.target);
             Type *rhs = check_expr(s, st->assign.val);
 
-            /* check mutability for simple ident targets */
-            if (st->assign.target->kind == EXPR_IDENT) {
-                Sym *sym = lookup(s, st->assign.target->ident.name);
-                if (sym && !sym->is_mut)
-                    sema_error(s, st->span, "cannot assign to immutable binding '%s'",
-                               st->assign.target->ident.name);
+            /* trace lvalue root to check mutability */
+            {
+                Expr *root = st->assign.target;
+                while (root->kind == EXPR_FIELD) root = root->field.obj;
+                while (root->kind == EXPR_INDEX) root = root->index.arr;
+                while (root->kind == EXPR_DEREF || root->kind == EXPR_SMARTDEREF)
+                    root = root->deref.operand;
+                if (root->kind == EXPR_IDENT) {
+                    Sym *sym = lookup(s, root->ident.name);
+                    if (sym && !sym->is_mut)
+                        sema_error(s, st->span, "cannot assign to immutable binding '%s'",
+                                   root->ident.name);
+                }
             }
 
             if (lhs && rhs && !ty_coerces(rhs, lhs))
@@ -1015,12 +1165,14 @@ static void check_stmt(Sema *s, Stmt *st) {
             break;
 
         case STMT_BLOCK: {
-            /* failable destructure block: two lets where second has !T — no new scope */
+            /* failable/tuple destructure block: two lets — no new scope */
             int is_fail = (st->block.len == 2
                 && st->block.data[0]->kind == STMT_LET
                 && st->block.data[1]->kind == STMT_LET
-                && st->block.data[1]->let.ty
-                && st->block.data[1]->let.ty->kind == TY_FAILABLE);
+                && (st->block.data[1]->let.is_fail_err
+                    || st->block.data[1]->let.is_tuple_elem
+                    || (st->block.data[1]->let.ty
+                        && st->block.data[1]->let.ty->kind == TY_FAILABLE)));
             if (!is_fail) push_scope(s);
             for (size_t i = 0; i < st->block.len; i++)
                 check_stmt(s, st->block.data[i]);
@@ -1287,6 +1439,168 @@ static Type *subst_type(Type *ty, const char **params, Type **concretes,
     return copy;
 }
 
+/* ── Deep-copy helpers for generic instantiation ──────────────────────────── *
+ * subst_expr/subst_stmts mutate nodes in place, so we must clone the template
+ * body before substituting, otherwise successive instantiations corrupt each
+ * other.                                                                       */
+
+static Expr     *clone_expr (Expr    *e,  Arena *a);
+static Stmt     *clone_stmt (Stmt    *s,  Arena *a);
+static StmtList  clone_stmts(StmtList sl, Arena *a);
+
+static ExprList clone_exprlist(ExprList el, Arena *a) {
+    if (!el.len) return el;
+    ExprList r;
+    r.len  = el.len;
+    r.data = ARENA_ALLOC(a, Expr *, el.len);
+    for (size_t i = 0; i < el.len; i++) r.data[i] = clone_expr(el.data[i], a);
+    return r;
+}
+
+static WhenArmList clone_when_arms(WhenArmList wal, Arena *a) {
+    if (!wal.len) return wal;
+    WhenArmList r;
+    r.len  = wal.len;
+    r.data = ARENA_ALLOC(a, WhenArm, wal.len);
+    for (size_t i = 0; i < wal.len; i++) {
+        r.data[i]      = wal.data[i];
+        r.data[i].pats = clone_exprlist(wal.data[i].pats, a);
+        r.data[i].body = clone_stmt(wal.data[i].body, a);
+    }
+    return r;
+}
+
+static Expr *clone_expr(Expr *e, Arena *a) {
+    if (!e) return NULL;
+    Expr *c = ARENA_NEW(a, Expr);
+    *c = *e;
+    switch (e->kind) {
+        case EXPR_BUILTIN:
+            c->builtin.args = clone_exprlist(e->builtin.args, a);
+            break;
+        case EXPR_CAST:
+            c->cast.val = clone_expr(e->cast.val, a);
+            break;
+        case EXPR_BINOP:
+            c->binop.l = clone_expr(e->binop.l, a);
+            c->binop.r = clone_expr(e->binop.r, a);
+            break;
+        case EXPR_UNOP:
+            c->unop.operand = clone_expr(e->unop.operand, a);
+            break;
+        case EXPR_CALL:
+            c->call.callee = clone_expr(e->call.callee, a);
+            c->call.args   = clone_exprlist(e->call.args, a);
+            break;
+        case EXPR_INDEX:
+            c->index.arr = clone_expr(e->index.arr, a);
+            c->index.idx = clone_expr(e->index.idx, a);
+            break;
+        case EXPR_FIELD:
+            c->field.obj = clone_expr(e->field.obj, a);
+            break;
+        case EXPR_DEREF: case EXPR_SMARTDEREF:
+            c->deref.operand = clone_expr(e->deref.operand, a);
+            break;
+        case EXPR_WHEN:
+            c->when.cond = clone_expr(e->when.cond, a);
+            c->when.arms = clone_when_arms(e->when.arms, a);
+            break;
+        case EXPR_IF:
+            c->if_expr.cond  = clone_expr(e->if_expr.cond, a);
+            c->if_expr.then_ = clone_stmt(e->if_expr.then_, a);
+            c->if_expr.else_ = clone_stmt(e->if_expr.else_, a);
+            break;
+        case EXPR_STRUCT_LIT: {
+            FieldInitList fl = e->struct_lit.fields;
+            if (fl.len) {
+                FieldInit *nf = ARENA_ALLOC(a, FieldInit, fl.len);
+                for (size_t i = 0; i < fl.len; i++) {
+                    nf[i]     = fl.data[i];
+                    nf[i].val = clone_expr(fl.data[i].val, a);
+                }
+                c->struct_lit.fields.data = nf;
+            }
+            break;
+        }
+        case EXPR_ARRAY_LIT:
+            c->array_lit = clone_exprlist(e->array_lit, a);
+            break;
+        default: break;
+    }
+    return c;
+}
+
+static Stmt *clone_stmt(Stmt *s, Arena *a) {
+    if (!s) return NULL;
+    Stmt *c = ARENA_NEW(a, Stmt);
+    *c = *s;
+    switch (s->kind) {
+        case STMT_LET:
+            c->let.init = clone_expr(s->let.init, a);
+            break;
+        case STMT_ASSIGN:
+            c->assign.target = clone_expr(s->assign.target, a);
+            c->assign.val    = clone_expr(s->assign.val, a);
+            break;
+        case STMT_EXPR:
+            c->expr = clone_expr(s->expr, a);
+            break;
+        case STMT_IF: {
+            IfBranchList bl = s->if_.branches;
+            if (bl.len) {
+                IfBranch *nb = ARENA_ALLOC(a, IfBranch, bl.len);
+                for (size_t i = 0; i < bl.len; i++) {
+                    nb[i].cond = clone_expr(bl.data[i].cond, a);
+                    nb[i].body = clone_stmts(bl.data[i].body, a);
+                }
+                c->if_.branches.data = nb;
+            }
+            c->if_.else_body = clone_stmts(s->if_.else_body, a);
+            break;
+        }
+        case STMT_WHILE:
+            c->while_.cond = clone_expr(s->while_.cond, a);
+            c->while_.body = clone_stmts(s->while_.body, a);
+            break;
+        case STMT_FOR: {
+            c->for_.clause.iter      = clone_expr(s->for_.clause.iter, a);
+            c->for_.clause.range_end = clone_expr(s->for_.clause.range_end, a);
+            c->for_.clause.cond      = clone_expr(s->for_.clause.cond, a);
+            c->for_.clause.init      = clone_stmt(s->for_.clause.init, a);
+            c->for_.clause.step      = clone_stmt(s->for_.clause.step, a);
+            c->for_.body             = clone_stmts(s->for_.body, a);
+            break;
+        }
+        case STMT_WHEN:
+            c->when.val  = clone_expr(s->when.val, a);
+            c->when.arms = clone_when_arms(s->when.arms, a);
+            break;
+        case STMT_DEFER:
+            c->defer = clone_stmts(s->defer, a);
+            break;
+        case STMT_RET:
+            c->ret.val = clone_expr(s->ret.val, a);
+            break;
+        case STMT_BLOCK:
+            c->block = clone_stmts(s->block, a);
+            break;
+        default: break;
+    }
+    return c;
+}
+
+static StmtList clone_stmts(StmtList sl, Arena *a) {
+    if (!sl.len) return sl;
+    StmtList r;
+    r.len  = sl.len;
+    r.data = ARENA_ALLOC(a, Stmt *, sl.len);
+    for (size_t i = 0; i < sl.len; i++) r.data[i] = clone_stmt(sl.data[i], a);
+    return r;
+}
+
+static void subst_stmts(StmtList sl, const char **params, Type **concretes, size_t n, Arena *a);
+
 static void subst_expr(Expr *e, const char **params, Type **concretes, size_t n, Arena *a) {
     if (!e) return;
     switch (e->kind) {
@@ -1295,9 +1609,21 @@ static void subst_expr(Expr *e, const char **params, Type **concretes, size_t n,
             for (size_t i = 0; i < e->struct_lit.fields.len; i++)
                 subst_expr(e->struct_lit.fields.data[i].val, params, concretes, n, a);
             break;
-        case EXPR_IDENT:
-            e->ident.name = subst_mangled(e->ident.name, params, concretes, n, a);
+        case EXPR_IDENT: {
+            /* exact type-param match: bare "T" used as type expression in @alo/@zeroed etc. */
+            int matched = 0;
+            for (size_t i = 0; i < n; i++) {
+                if (!strcmp(e->ident.name, params[i])) {
+                    e->ident.name = gen_type_str(concretes[i], a);
+                    e->ty = concretes[i];
+                    matched = 1;
+                    break;
+                }
+            }
+            if (!matched)
+                e->ident.name = subst_mangled(e->ident.name, params, concretes, n, a);
             break;
+        }
         case EXPR_BINOP:
             subst_expr(e->binop.l, params, concretes, n, a);
             subst_expr(e->binop.r, params, concretes, n, a);
@@ -1326,8 +1652,33 @@ static void subst_expr(Expr *e, const char **params, Type **concretes, size_t n,
             break;
         case EXPR_IF:
             subst_expr(e->if_expr.cond, params, concretes, n, a);
+            if (e->if_expr.then_) {
+                StmtList tmp = { &e->if_expr.then_, 1 };
+                subst_stmts(tmp, params, concretes, n, a);
+            }
+            if (e->if_expr.else_) {
+                StmtList tmp = { &e->if_expr.else_, 1 };
+                subst_stmts(tmp, params, concretes, n, a);
+            }
+            break;
+        case EXPR_WHEN:
+            subst_expr(e->when.cond, params, concretes, n, a);
+            for (size_t wi = 0; wi < e->when.arms.len; wi++) {
+                WhenArm *arm = &e->when.arms.data[wi];
+                for (size_t pi = 0; pi < arm->pats.len; pi++)
+                    subst_expr(arm->pats.data[pi], params, concretes, n, a);
+                if (arm->body) {
+                    StmtList tmp = { &arm->body, 1 };
+                    subst_stmts(tmp, params, concretes, n, a);
+                }
+            }
+            break;
+        case EXPR_ARRAY_LIT:
+            for (size_t ai = 0; ai < e->array_lit.len; ai++)
+                subst_expr(e->array_lit.data[ai], params, concretes, n, a);
             break;
         case EXPR_CAST:
+            e->cast.ty_name = subst_mangled(e->cast.ty_name, params, concretes, n, a);
             subst_expr(e->cast.val, params, concretes, n, a);
             break;
         default: break;
@@ -1366,7 +1717,30 @@ static void subst_stmts(StmtList sl, const char **params, Type **concretes,
                 subst_stmts(st->while_.body, params, concretes, n, a);
                 break;
             case STMT_FOR:
+                subst_expr(st->for_.clause.iter,      params, concretes, n, a);
+                subst_expr(st->for_.clause.range_end, params, concretes, n, a);
+                subst_expr(st->for_.clause.cond,      params, concretes, n, a);
+                if (st->for_.clause.init) {
+                    StmtList tmp = { &st->for_.clause.init, 1 };
+                    subst_stmts(tmp, params, concretes, n, a);
+                }
+                if (st->for_.clause.step) {
+                    StmtList tmp = { &st->for_.clause.step, 1 };
+                    subst_stmts(tmp, params, concretes, n, a);
+                }
                 subst_stmts(st->for_.body, params, concretes, n, a);
+                break;
+            case STMT_WHEN:
+                subst_expr(st->when.val, params, concretes, n, a);
+                for (size_t wi = 0; wi < st->when.arms.len; wi++) {
+                    WhenArm *arm = &st->when.arms.data[wi];
+                    for (size_t pi = 0; pi < arm->pats.len; pi++)
+                        subst_expr(arm->pats.data[pi], params, concretes, n, a);
+                    if (arm->body) {
+                        StmtList tmp = { &arm->body, 1 };
+                        subst_stmts(tmp, params, concretes, n, a);
+                    }
+                }
                 break;
             case STMT_BLOCK:
                 subst_stmts(st->block, params, concretes, n, a);
@@ -1377,6 +1751,30 @@ static void subst_stmts(StmtList sl, const char **params, Type **concretes,
             default: break;
         }
     }
+}
+
+/* Instantiate a single generic fn item (top-level fn, or impl method) under
+   the given type-param → concrete-type substitution. new_name is used as
+   the instantiated item's name as-is (callers mangle as appropriate). */
+static Item *instantiate_fn_with(Item *tmpl_fn, const char *new_name,
+                                  const char **params,
+                                  Type **concretes, size_t n_concretes, Arena *a) {
+    Item *inst = ARENA_NEW(a, Item);
+    *inst = *tmpl_fn;
+    inst->name             = new_name;
+    inst->fn.type_params   = NULL;
+    inst->fn.n_type_params = 0;
+    Param *np = ARENA_ALLOC(a, Param, tmpl_fn->fn.params.len);
+    for (size_t i = 0; i < tmpl_fn->fn.params.len; i++) {
+        np[i]    = tmpl_fn->fn.params.data[i];
+        np[i].ty = subst_type(tmpl_fn->fn.params.data[i].ty,
+                               params, concretes, n_concretes, a);
+    }
+    inst->fn.params.data = np;
+    inst->fn.ret  = subst_type(tmpl_fn->fn.ret, params, concretes, n_concretes, a);
+    inst->fn.body = clone_stmts(tmpl_fn->fn.body, a);
+    subst_stmts(inst->fn.body, params, concretes, n_concretes, a);
+    return inst;
 }
 
 static Item *instantiate(Item *tmpl, const char *mangled_name,
@@ -1392,6 +1790,9 @@ static Item *instantiate(Item *tmpl, const char *mangled_name,
     }
     if (n_params != n_concretes) return tmpl;
 
+    if (tmpl->kind == ITEM_FN)
+        return instantiate_fn_with(tmpl, mangled_name, params, concretes, n_concretes, a);
+
     Item *inst = ARENA_NEW(a, Item);
     *inst = *tmpl;
     inst->name = mangled_name;
@@ -1406,19 +1807,32 @@ static Item *instantiate(Item *tmpl, const char *mangled_name,
                                    params, concretes, n_concretes, a);
         }
         inst->struct_.fields.data = nf;
-    } else if (tmpl->kind == ITEM_FN) {
-        inst->fn.type_params   = NULL;
-        inst->fn.n_type_params = 0;
-        Param *np = ARENA_ALLOC(a, Param, tmpl->fn.params.len);
-        for (size_t i = 0; i < tmpl->fn.params.len; i++) {
-            np[i]    = tmpl->fn.params.data[i];
-            np[i].ty = subst_type(tmpl->fn.params.data[i].ty,
-                                   params, concretes, n_concretes, a);
-        }
-        inst->fn.params.data = np;
-        inst->fn.ret = subst_type(tmpl->fn.ret, params, concretes, n_concretes, a);
-        subst_stmts(inst->fn.body, params, concretes, n_concretes, a);
     }
+    return inst;
+}
+
+/* Instantiate a generic impl block (impl Box<T> { ... }) for a concrete
+   struct instantiation, substituting type params through every method's
+   params/ret/body. Returns NULL if arity doesn't match. */
+static Item *instantiate_impl(Item *tmpl, const char *mangled_ty_name,
+                               Type **concretes, size_t n_concretes, Arena *a) {
+    if (tmpl->impl.n_type_params != n_concretes) return NULL;
+
+    Item *inst = ARENA_NEW(a, Item);
+    *inst = *tmpl;
+    inst->name                = mangled_ty_name;
+    inst->impl.ty_name        = mangled_ty_name;
+    inst->impl.type_params    = NULL;
+    inst->impl.n_type_params  = 0;
+
+    Item **nm = ARENA_ALLOC(a, Item *, tmpl->impl.methods.len);
+    for (size_t i = 0; i < tmpl->impl.methods.len; i++) {
+        Item *m = tmpl->impl.methods.data[i];
+        if (m->kind != ITEM_FN) { nm[i] = m; continue; }
+        nm[i] = instantiate_fn_with(m, m->name, tmpl->impl.type_params,
+                                    concretes, n_concretes, a);
+    }
+    inst->impl.methods.data = nm;
     return inst;
 }
 
@@ -1437,7 +1851,8 @@ static void register_item(Sema *s, Item *item) {
                 break;
             }
             Type *ty = make_ty(s, TY_FN);
-            ty->fn.ret = item->fn.ret;
+            ty->fn.ret      = item->fn.ret;
+            ty->fn.variadic = item->fn.variadic;
             /* build params list so call-site arity checking works */
             if (item->fn.params.len > 0) {
                 ty->fn.params.data = ARENA_ALLOC(s->arena, Type *, item->fn.params.len);
@@ -1494,7 +1909,18 @@ static void register_item(Sema *s, Item *item) {
             break;
         }
         case ITEM_UNION: {
-            if (!item->union_.tagged) break; /* untagged unions: no type registration yet */
+            if (!item->union_.tagged) {
+                /* plain (untagged) union: register type name and field list */
+                Type *ty = make_ty(s, TY_NAMED);
+                ty->named.name = item->name;
+                define(s, item->span, item->name, ty, 0, 1);
+                StructEntry *se = ARENA_NEW(s->arena, StructEntry);
+                se->name   = item->name;
+                se->fields = &item->union_.fields;
+                se->next   = s->structs;
+                s->structs = se;
+                break;
+            }
             Type *ty = make_ty(s, TY_NAMED);
             ty->named.name = item->name;
             define(s, item->span, item->name, ty, 0, 1);
@@ -1533,6 +1959,15 @@ static void register_item(Sema *s, Item *item) {
             break;
         }
         case ITEM_IMPL: {
+            if (item->impl.n_type_params > 0) {
+                /* generic impl block: defer until matching concrete struct
+                   instantiations are seen */
+                GenericImplTemplate *git = ARENA_NEW(s->arena, GenericImplTemplate);
+                git->item = item;
+                git->next = s->impl_generics;
+                s->impl_generics = git;
+                break;
+            }
             for (size_t i = 0; i < item->impl.methods.len; i++) {
                 Item *m = item->impl.methods.data[i];
                 if (m->kind != ITEM_FN) continue;
@@ -1546,8 +1981,16 @@ static void register_item(Sema *s, Item *item) {
                 if (m->fn.params.len > 0) {
                     ty->fn.params.data = ARENA_ALLOC(s->arena, Type *, m->fn.params.len);
                     ty->fn.params.len  = m->fn.params.len;
-                    for (size_t j = 0; j < m->fn.params.len; j++)
-                        ty->fn.params.data[j] = m->fn.params.data[j].ty;
+                    for (size_t j = 0; j < m->fn.params.len; j++) {
+                        Type *param_ty = m->fn.params.data[j].ty;
+                        /* bare 'self' parameter: synthesize TY_NAMED from impl type */
+                        if (!param_ty && !strcmp(m->fn.params.data[j].name, "self")) {
+                            param_ty = make_ty(s, TY_NAMED);
+                            param_ty->named.name = item->impl.ty_name;
+                            m->fn.params.data[j].ty = param_ty;
+                        }
+                        ty->fn.params.data[j] = param_ty;
+                    }
                 }
                 define(s, m->span, m->name, ty, 0, 0);
             }
@@ -1583,6 +2026,67 @@ static void init_builtins(Sema *s) {
     s->ty_f64   = make_ty(s, TY_F64);
 }
 
+/* Append a new Item to mod->items, growing the arena-allocated array. */
+static void append_inst(Sema *s, Module *mod, Item *inst) {
+    size_t nl = mod->items.len + 1;
+    Item **nd = ARENA_ALLOC(s->arena, Item *, nl);
+    memcpy(nd, mod->items.data, mod->items.len * sizeof(Item *));
+    nd[mod->items.len] = inst;
+    mod->items.data = nd;
+    mod->items.len  = nl;
+}
+
+/* After instantiating a template with (tparams → concretes), scan the current
+   set of deferred gen_insts for any whose args reference one of tparams.
+   For each match, substitute to get concrete args, build the concrete mangled
+   name, and append a new non-deferred GenInst to mod->gen_insts so the
+   worklist loop in pass 1.5 will pick it up. */
+static void derive_transitive_insts(Sema *s, Module *mod,
+                                     const char **tparams, size_t n_tparams,
+                                     Type **concretes, size_t n_concretes) {
+    if (!tparams || n_tparams == 0 || n_tparams != n_concretes) return;
+    /* snapshot length: newly appended entries in this call are not re-scanned */
+    size_t snap = mod->gen_insts.len;
+    for (size_t di = 0; di < snap; di++) {
+        GenInst dgi = mod->gen_insts.data[di]; /* value copy — array may move */
+        if (!dgi.deferred) continue;
+        /* check if any arg references one of tparams */
+        int relevant = 0;
+        for (size_t ai = 0; ai < dgi.n_args && !relevant; ai++) {
+            if (!dgi.args[ai] || dgi.args[ai]->kind != TY_NAMED) continue;
+            for (size_t pi = 0; pi < n_tparams; pi++)
+                if (!strcmp(dgi.args[ai]->named.name, tparams[pi])) { relevant = 1; break; }
+        }
+        if (!relevant) continue;
+        /* build concrete args via subst_type */
+        Type **cargs = ARENA_ALLOC(s->arena, Type *, dgi.n_args);
+        for (size_t ai = 0; ai < dgi.n_args; ai++)
+            cargs[ai] = subst_type(dgi.args[ai], tparams, concretes, n_concretes, s->arena);
+        /* rebuild mangled name: base__arg0[__arg1...] */
+        char mang[512];
+        int pos = snprintf(mang, sizeof(mang), "%s", dgi.base);
+        for (size_t ai = 0; ai < dgi.n_args; ai++) {
+            const char *as = gen_type_str(cargs[ai], s->arena);
+            pos += snprintf(mang + pos, sizeof(mang) - (size_t)pos, "__%s", as);
+        }
+        /* skip if already registered or already queued */
+        if (lookup(s, mang)) continue;
+        int queued = 0;
+        for (size_t qi = 0; qi < mod->gen_insts.len; qi++)
+            if (!strcmp(mod->gen_insts.data[qi].mangled, mang)) { queued = 1; break; }
+        if (queued) continue;
+        /* append concrete gen_inst to the worklist */
+        char *mn = arena_strdup(s->arena, mang);
+        GenInst ngi = { mn, dgi.base, cargs, dgi.n_args, 0 };
+        size_t nl = mod->gen_insts.len + 1;
+        GenInst *nd = ARENA_ALLOC(s->arena, GenInst, nl);
+        memcpy(nd, mod->gen_insts.data, mod->gen_insts.len * sizeof(GenInst));
+        nd[mod->gen_insts.len] = ngi;
+        mod->gen_insts.data = nd;
+        mod->gen_insts.len  = nl;
+    }
+}
+
 /* ── Entry point ──────────────────────────────────────────────────────────── */
 
 int sema_check(Module *mod) {
@@ -1598,23 +2102,45 @@ int sema_check(Module *mod) {
     for (size_t i = 0; i < mod->items.len; i++)
         register_item(&s, mod->items.data[i]);
 
-    /* pass 1.5: instantiate generics recorded during parsing */
+    /* pass 1.5: instantiate generics (worklist — mod->gen_insts may grow each iteration) */
     for (size_t i = 0; i < mod->gen_insts.len; i++) {
-        GenInst *gi = &mod->gen_insts.data[i];
-        if (lookup(&s, gi->mangled)) continue; /* already instantiated or concrete */
-        GenericTemplate *gt = NULL;
-        for (GenericTemplate *g = s.generics; g; g = g->next)
-            if (!strcmp(g->name, gi->base)) { gt = g; break; }
-        if (!gt) continue; /* not a known generic — pass 2 will report the error */
-        Item *inst = instantiate(gt->item, gi->mangled, gi->args, gi->n_args, s.arena);
-        /* append to module so pass 2 checks it */
-        size_t new_len = mod->items.len + 1;
-        Item **new_data = ARENA_ALLOC(s.arena, Item *, new_len);
-        memcpy(new_data, mod->items.data, mod->items.len * sizeof(Item *));
-        new_data[mod->items.len] = inst;
-        mod->items.data = new_data;
-        mod->items.len  = new_len;
-        register_item(&s, inst);
+        /* Use a value copy: the data pointer may move when derive_transitive_insts
+           appends new entries to mod->gen_insts. */
+        GenInst gi = mod->gen_insts.data[i];
+        /* skip deferred entries (args contain type-param placeholders); they are
+           resolved into concrete entries by derive_transitive_insts below */
+        if (gi.deferred) continue;
+
+        if (!lookup(&s, gi.mangled)) {
+            GenericTemplate *gt = NULL;
+            for (GenericTemplate *g = s.generics; g; g = g->next)
+                if (!strcmp(g->name, gi.base)) { gt = g; break; }
+            if (gt) {
+                Item *inst = instantiate(gt->item, gi.mangled, gi.args, gi.n_args, s.arena);
+                append_inst(&s, mod, inst);
+                register_item(&s, inst);
+                /* derive concrete gen_insts for nested generic uses inside this template */
+                const char **tp  = NULL; size_t ntp = 0;
+                if (gt->item->kind == ITEM_FN) {
+                    tp = gt->item->fn.type_params; ntp = gt->item->fn.n_type_params;
+                } else if (gt->item->kind == ITEM_STRUCT) {
+                    tp = gt->item->struct_.type_params; ntp = gt->item->struct_.n_type_params;
+                }
+                derive_transitive_insts(&s, mod, tp, ntp, gi.args, gi.n_args);
+            }
+            /* else: not a known generic — pass 2 will report the error */
+        }
+        /* also instantiate any matching generic impl block for this concrete type */
+        for (GenericImplTemplate *git = s.impl_generics; git; git = git->next) {
+            if (strcmp(git->item->impl.ty_name, gi.base)) continue;
+            Item *impl_inst = instantiate_impl(git->item, gi.mangled, gi.args, gi.n_args, s.arena);
+            if (!impl_inst) continue;
+            append_inst(&s, mod, impl_inst);
+            register_item(&s, impl_inst);
+            derive_transitive_insts(&s, mod,
+                                    git->item->impl.type_params, git->item->impl.n_type_params,
+                                    gi.args, gi.n_args);
+        }
     }
 
     /* pass 1.7: pre-register all globals so fn bodies can reference them regardless
@@ -1642,7 +2168,10 @@ int sema_check(Module *mod) {
                 check_struct(&s, item);
                 break;
             case ITEM_ENUM:       check_enum(&s, item);       break;
-            case ITEM_IMPL:       check_impl(&s, item);       break;
+            case ITEM_IMPL:
+                if (item->impl.n_type_params > 0) break; /* skip generic template */
+                check_impl(&s, item);
+                break;
             case ITEM_GLOBAL:     check_global(&s, item);     break;
             case ITEM_EXTERN_FN:  check_extern_fn(&s, item);  break;
             case ITEM_TYPE_ALIAS: check_type_alias(&s, item); break;

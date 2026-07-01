@@ -1,0 +1,115 @@
+# std/sync — Mutex and RwLock via pthreads
+#
+# Compile with -lpthread (or pass -pthread to clang).
+#
+# Usage:
+#   import(sync = "std/sync")
+#
+#   mu: sync.Mutex = sync.mutex_new()
+#   sync.lock(&mu)
+#   defer sync.unlock(&mu)
+#   # ... critical section ...
+
+# ── Raw pthread declarations ──────────────────────────────────────────────────
+
+extern fn pthread_mutex_init(mu: *u8, attr: *u8) -> i32
+extern fn pthread_mutex_lock(mu: *u8) -> i32
+extern fn pthread_mutex_trylock(mu: *u8) -> i32
+extern fn pthread_mutex_unlock(mu: *u8) -> i32
+extern fn pthread_mutex_destroy(mu: *u8) -> i32
+
+extern fn pthread_rwlock_init(rw: *u8, attr: *u8) -> i32
+extern fn pthread_rwlock_rdlock(rw: *u8) -> i32
+extern fn pthread_rwlock_tryrdlock(rw: *u8) -> i32
+extern fn pthread_rwlock_wrlock(rw: *u8) -> i32
+extern fn pthread_rwlock_trywrlock(rw: *u8) -> i32
+extern fn pthread_rwlock_unlock(rw: *u8) -> i32
+extern fn pthread_rwlock_destroy(rw: *u8) -> i32
+
+# ── Mutex ─────────────────────────────────────────────────────────────────────
+# pthread_mutex_t on Linux x86-64 is 40 bytes.
+
+struct Mutex {
+    _pad0: i64
+    _pad1: i64
+    _pad2: i64
+    _pad3: i64
+    _pad4: i64
+}
+
+# mutex_new: initialize and return a default (non-recursive) mutex
+fn mutex_new() -> Mutex {
+    m: Mutex = undef
+    pthread_mutex_init(&m._pad0, null)
+    ret m
+}
+
+# lock: acquire the mutex (blocks until available)
+fn lock(m: *Mutex) {
+    pthread_mutex_lock(&m._pad0)
+}
+
+# trylock: acquire without blocking — returns true if lock was taken
+fn trylock(m: *Mutex) -> bool {
+    ret pthread_mutex_trylock(&m._pad0) == 0
+}
+
+# unlock: release the mutex
+fn unlock(m: *Mutex) {
+    pthread_mutex_unlock(&m._pad0)
+}
+
+# mutex_destroy: release resources associated with a mutex
+fn mutex_destroy(m: *Mutex) {
+    pthread_mutex_destroy(&m._pad0)
+}
+
+# ── RwLock ────────────────────────────────────────────────────────────────────
+# pthread_rwlock_t on Linux x86-64 is 56 bytes.
+
+struct RwLock {
+    _pad0: i64
+    _pad1: i64
+    _pad2: i64
+    _pad3: i64
+    _pad4: i64
+    _pad5: i64
+    _pad6: i64
+}
+
+# rwlock_new: initialize and return a read-write lock
+fn rwlock_new() -> RwLock {
+    rw: RwLock = undef
+    pthread_rwlock_init(&rw._pad0, null)
+    ret rw
+}
+
+# rlock: acquire a shared (reader) lock
+fn rlock(rw: *RwLock) {
+    pthread_rwlock_rdlock(&rw._pad0)
+}
+
+# tryrlock: try to acquire a reader lock without blocking
+fn tryrlock(rw: *RwLock) -> bool {
+    ret pthread_rwlock_tryrdlock(&rw._pad0) == 0
+}
+
+# wlock: acquire an exclusive (writer) lock
+fn wlock(rw: *RwLock) {
+    pthread_rwlock_wrlock(&rw._pad0)
+}
+
+# trywlock: try to acquire a writer lock without blocking
+fn trywlock(rw: *RwLock) -> bool {
+    ret pthread_rwlock_trywrlock(&rw._pad0) == 0
+}
+
+# rwunlock: release either a reader or writer lock
+fn rwunlock(rw: *RwLock) {
+    pthread_rwlock_unlock(&rw._pad0)
+}
+
+# rwlock_destroy: release resources associated with a rwlock
+fn rwlock_destroy(rw: *RwLock) {
+    pthread_rwlock_destroy(&rw._pad0)
+}

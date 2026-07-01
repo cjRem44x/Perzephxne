@@ -635,10 +635,57 @@ static void cmd_sac(int argc, char **argv) {
 
     if (nfiles == 0) { fprintf(stderr, "przp sac: no input files\n"); free(files); exit(1); }
 
-    /* For now: single-file only.  Multi-file linking is future work. */
-    int rc = compile_file(files[0], out_name, release);
+    if (nfiles == 1) {
+        int rc = compile_file(files[0], out_name, release);
+        free(files);
+        exit(rc);
+    }
+
+    /* Multi-file: parse all files, merge into one module, then compile. */
+    Arena arena;
+    arena_init(&arena);
+
+    char *srcs[256];
+    srcs[0] = read_file(files[0]);
+    error_init(files[0], srcs[0]);
+    Module *mod = parse(srcs[0], 0, &arena);
+    const char *loading[1] = { files[0] };
+    load_imports(mod, files[0], &arena, loading, 1);
+
+    for (int fi = 1; fi < nfiles && fi < 256; fi++) {
+        srcs[fi] = read_file(files[fi]);
+        error_init(files[fi], srcs[fi]);
+        Module *extra = parse(srcs[fi], 0, &arena);
+        const char *extra_loading[1] = { files[fi] };
+        load_imports(extra, files[fi], &arena, extra_loading, 1);
+        merge_items(mod, extra);
+    }
+    error_init(files[0], srcs[0]);
+
+    if (!sema_check(mod)) {
+        arena_free(&arena);
+        for (int fi = 0; fi < nfiles && fi < 256; fi++) free(srcs[fi]);
+        free(files);
+        exit(1);
+    }
+
+    char ll_path[1024];
+    snprintf(ll_path, sizeof(ll_path), "/tmp/przp_%d.ll", (int)getpid());
+    FILE *ll_f = fopen(ll_path, "w");
+    if (!ll_f) { fprintf(stderr, "przp: cannot write '%s'\n", ll_path); exit(1); }
+    int ok = codegen(mod, ll_f, release);
+    fclose(ll_f);
+    arena_free(&arena);
+    for (int fi = 0; fi < nfiles && fi < 256; fi++) free(srcs[fi]);
     free(files);
-    exit(rc);
+
+    if (!ok) { remove(ll_path); exit(1); }
+    char cmd2[2048];
+    const char *opt2 = release ? "-O2" : "-O0 -g";
+    snprintf(cmd2, sizeof(cmd2), "clang %s %s -o %s -lm", opt2, ll_path, out_name);
+    int ret2 = system(cmd2);
+    if (!getenv("PRZP_KEEP_IR")) remove(ll_path);
+    exit((ret2 == 0) ? 0 : 1);
 }
 
 static void cmd_init(int argc, char **argv) {

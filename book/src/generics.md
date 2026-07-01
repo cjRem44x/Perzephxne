@@ -17,9 +17,11 @@ y: f64 = max(1.5, 0.7)      # inferred from args
 Multiple type parameters:
 
 ```
-fn zip[A, B](a: A, b: B) -> {A, B} {
-    ret {a, b}
+fn pair[A, B](a: A, b: B) -> (A, B) {
+    ret (a, b)
 }
+
+first, second: i32 = pair[i32, i32](10, 20)
 ```
 
 ## Generic Structs

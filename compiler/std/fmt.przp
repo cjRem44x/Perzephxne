@@ -1,0 +1,139 @@
+# std/fmt — string formatting utilities
+#
+# For interpolation-style formatting use the @fmt builtin:
+#   s: str = @fmt("x={} y={}", x, y)
+#
+# This module provides type-to-string conversion and padding helpers.
+
+extern fn malloc(n: usize) -> *u8
+extern fn memcpy(dst: *u8, src: *u8, n: usize) -> *u8
+extern fn snprintf(buf: *u8, n: usize, fmt: *u8, ..) -> i32
+extern fn strlen(s: *u8) -> usize
+
+# from_int: decimal string from i64
+fn from_int(n: i64) -> str {
+    ret @str(n)
+}
+
+# from_uint: decimal string from u64
+fn from_uint(n: u64) -> str {
+    ret @str(n)
+}
+
+# from_float: decimal string from f64
+fn from_float(f: f64) -> str {
+    ret @str(f)
+}
+
+# from_bool: "true" or "false"
+fn from_bool(b: bool) -> str {
+    ret @str(b)
+}
+
+# hex: lowercase hex string from u64 (no "0x" prefix)
+fn hex(n: u64) -> str {
+    buf: *u8 = malloc(17)
+    fmt_str: [4]u8 = undef
+    p0: *u8 = &fmt_str[0]  p0.* = 37u8   # %
+    p1: *u8 = &fmt_str[1]  p1.* = 108u8  # l
+    p2: *u8 = &fmt_str[2]  p2.* = 120u8  # x  → %lx
+    p3: *u8 = &fmt_str[3]  p3.* = 0u8
+    len: i32 = snprintf(buf, 17, &fmt_str[0], n)
+    if len < 0 { len = 0 }
+    ret @str_raw(buf, @usize(len))
+}
+
+# hex_upper: uppercase hex string from u64
+fn hex_upper(n: u64) -> str {
+    buf: *u8 = malloc(17)
+    fmt_str: [4]u8 = undef
+    p0: *u8 = &fmt_str[0]  p0.* = 37u8   # %
+    p1: *u8 = &fmt_str[1]  p1.* = 108u8  # l
+    p2: *u8 = &fmt_str[2]  p2.* = 88u8   # X  → %lX
+    p3: *u8 = &fmt_str[3]  p3.* = 0u8
+    len: i32 = snprintf(buf, 17, &fmt_str[0], n)
+    if len < 0 { len = 0 }
+    ret @str_raw(buf, @usize(len))
+}
+
+# fixed: format f64 with a fixed number of decimal places (0..15)
+fn fixed(f: f64, decimals: i32) -> str {
+    buf: *u8 = malloc(64)
+    if decimals <= 0 {
+        fmt_str: [4]u8 = undef
+        p0: *u8 = &fmt_str[0]  p0.* = 37u8   # %
+        p1: *u8 = &fmt_str[1]  p1.* = 46u8   # .
+        p2: *u8 = &fmt_str[2]  p2.* = 48u8   # 0  → %.0f
+        p3: *u8 = &fmt_str[3]  p3.* = 102u8  # f
+        p4: *u8 = &fmt_str[4]  p4.* = 0u8
+        len: i32 = snprintf(buf, 64, &fmt_str[0], f)
+        if len < 0 { len = 0 }
+        ret @str_raw(buf, @usize(len))
+    }
+    d: i32 = decimals
+    if d > 15 { d = 15 }
+    # build "%.<d>f" in a small stack buffer
+    fmt_buf: [8]u8 = undef
+    fp0: *u8 = &fmt_buf[0]  fp0.* = 37u8   # %
+    fp1: *u8 = &fmt_buf[1]  fp1.* = 46u8   # .
+    digits: [4]u8 = undef
+    dlen: usize = 0
+    tmp: i32 = d
+    while tmp > 0 {
+        dp: *u8 = &digits[dlen]
+        dp.* = @u8(48 + tmp % 10)
+        tmp = tmp / 10
+        dlen = dlen + 1
+    }
+    i: usize = 0
+    while i < dlen {
+        fp: *u8 = &fmt_buf[2 + i]
+        fp.* = digits[dlen - 1 - i]
+        i = i + 1
+    }
+    fp_end: *u8 = &fmt_buf[2 + dlen]  fp_end.* = 102u8  # f
+    fp_null: *u8 = &fmt_buf[3 + dlen]  fp_null.* = 0u8
+    len: i32 = snprintf(buf, 64, &fmt_buf[0], f)
+    if len < 0 { len = 0 }
+    ret @str_raw(buf, @usize(len))
+}
+
+# pad_left: prepend ch until total length >= width
+fn pad_left(s: str, width: usize, ch: u8) -> str {
+    if s.len >= width { ret s }
+    pad: usize = width - s.len
+    buf: *u8 = malloc(width + 1)
+    i: usize = 0
+    while i < pad {
+        p: *u8 = buf + i
+        p.* = ch
+        i = i + 1
+    }
+    memcpy(buf + pad, s.data, s.len)
+    term: *u8 = buf + width
+    term.* = 0u8
+    ret @str_raw(buf, width)
+}
+
+# pad_right: append ch until total length >= width
+fn pad_right(s: str, width: usize, ch: u8) -> str {
+    if s.len >= width { ret s }
+    pad: usize = width - s.len
+    buf: *u8 = malloc(width + 1)
+    memcpy(buf, s.data, s.len)
+    i: usize = 0
+    while i < pad {
+        p: *u8 = buf + s.len + i
+        p.* = ch
+        i = i + 1
+    }
+    term: *u8 = buf + width
+    term.* = 0u8
+    ret @str_raw(buf, width)
+}
+
+# zero_pad: pad integer string on the left with '0' to width
+fn zero_pad(n: i64, width: usize) -> str {
+    s: str = @str(n)
+    ret pad_left(s, width, 48u8)
+}

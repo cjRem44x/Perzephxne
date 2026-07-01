@@ -63,13 +63,21 @@ if p != null {
 
 ## Allocation
 
-Use `@new(T)` to heap-allocate a single value:
+Use `@alo(T)` to heap-allocate a single value (raw pointer, manual free):
 
 ```
-p: *i32 = @new(i32)
+p: *i32 = @alo(i32)
 p.* = 42
 # ...
 @free(p)
+```
+
+Use `@new(T)` for reference-counted smart pointer allocation:
+
+```
+p: ^i32 = @new(i32)
+p.* = 42
+@release(p)    # RC drop; frees when count reaches 0
 ```
 
 For raw byte buffers use `@alo` (allocate) and `@free`:
@@ -137,6 +145,6 @@ struct Node {
 **Opaque handle (C FFI):**
 
 ```
-extern struct SDL_Window   # declared but not defined
+struct SDL_Window { _pad: u8 }   # forward declaration
 type WindowHandle = *SDL_Window
 ```

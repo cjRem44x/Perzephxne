@@ -8,9 +8,13 @@ extern fn strncmp(a: *u8, b: *u8, n: usize) -> i32
 extern fn strstr(haystack: *u8, needle: *u8) -> *u8
 extern fn memcpy(dst: *u8, src: *u8, n: usize) -> *u8
 extern fn malloc(n: usize) -> *u8
+extern fn realloc(p: *u8, n: usize) -> *u8
 extern fn toupper(c: i32) -> i32
 extern fn tolower(c: i32) -> i32
 extern fn isspace(c: i32) -> i32
+extern fn isdigit(c: i32) -> i32
+extern fn isalpha(c: i32) -> i32
+extern fn isalnum(c: i32) -> i32
 
 # len: return the length of a string
 fn len(s: str) -> usize {
@@ -142,4 +146,106 @@ fn repeat(s: str, n: usize) -> str {
     end: *u8 = buf + total
     end.* = 0u8
     ret @str_raw(buf, total)
+}
+
+# index_of_char: return byte offset of first occurrence of ch, or s.len if absent
+fn index_of_char(s: str, ch: u8) -> usize {
+    i: usize = 0
+    while i < s.len {
+        if (s.data + i).* == ch { ret i }
+        i = i + 1
+    }
+    ret s.len
+}
+
+# replace: replace the first occurrence of old with new_ in s
+fn replace(s: str, old: str, new_: str) -> str {
+    pos: usize = find(s, old)
+    if pos == s.len { ret s }
+    before: str = slice(s, 0, pos)
+    after:  str = slice(s, pos + old.len, s.len)
+    tmp: str = concat(before, new_)
+    ret concat(tmp, after)
+}
+
+# replace_all: replace every non-overlapping occurrence of old with new_ in s
+fn replace_all(s: str, old: str, new_: str) -> str {
+    if old.len == 0 { ret s }
+    result: str = @str_raw(malloc(1), 0)
+    result_ptr: *u8 = result.data
+    result_ptr.* = 0u8
+    pos: usize = 0
+    while pos <= s.len {
+        next: usize = find(slice(s, pos, s.len), old)
+        if next == s.len - pos {
+            # no more occurrences — append remainder
+            rest: str = slice(s, pos, s.len)
+            result = concat(result, rest)
+            break
+        }
+        seg: str = slice(s, pos, pos + next)
+        result = concat(result, seg)
+        result = concat(result, new_)
+        pos = pos + next + old.len
+    }
+    ret result
+}
+
+# split_count: count the number of tokens when splitting s by delim
+fn split_count(s: str, delim: str) -> usize {
+    if s.len == 0 { ret 0 }
+    if delim.len == 0 { ret s.len }
+    count: usize = 1
+    pos: usize = 0
+    while pos <= s.len {
+        next: usize = find(slice(s, pos, s.len), delim)
+        if next == s.len - pos { break }
+        count = count + 1
+        pos = pos + next + delim.len
+    }
+    ret count
+}
+
+# split_next: extract one token from s starting at *pos, advance *pos past the delimiter.
+# Returns the token. When pos reaches s.len, returns an empty str.
+fn split_next(s: str, delim: str, pos: *usize) -> str {
+    if pos.* >= s.len { ret @str_raw(s.data, 0) }
+    if delim.len == 0 {
+        tok: str = slice(s, pos.*, pos.* + 1)
+        pos.* = pos.* + 1
+        ret tok
+    }
+    rest: str = slice(s, pos.*, s.len)
+    next: usize = find(rest, delim)
+    tok: str = slice(s, pos.*, pos.* + next)
+    if next == rest.len {
+        pos.* = s.len
+    } else {
+        pos.* = pos.* + next + delim.len
+    }
+    ret tok
+}
+
+# is_digit: true if every character is an ASCII digit
+fn is_digit_str(s: str) -> bool {
+    if s.len == 0 { ret false }
+    i: usize = 0
+    while i < s.len {
+        c: i32 = @i32((s.data + i).*)
+        if isdigit(c) == 0 { ret false }
+        i = i + 1
+    }
+    ret true
+}
+
+# is_alpha: true if every character is an ASCII letter
+fn is_alpha_str(s: str) -> bool {
+    if s.len == 0 { ret false }
+    i: usize = 0
+    while i < s.len {
+        c: i32 = @i32((s.data + i).*)
+        if isalpha(c) == 0 { ret false }
+        i = i + 1
+    }
+    ret true
 }

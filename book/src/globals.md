@@ -54,15 +54,6 @@ fn handle_request() {
 
 Global variables are **not** automatically thread-safe. Concurrent access to mutable globals requires external synchronization.
 
-## Extern Globals
-
-To reference a global defined in C or another object file:
-
-```
-extern count: i32
-extern name:  *u8
-```
-
 ## `@args`
 
 The program's command-line arguments are available via a builtin — no global declaration needed:
