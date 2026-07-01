@@ -1,0 +1,14 @@
+fn divide(a: i32, b: i32) -> !i32 {
+    if b == 0 { ret @err(7) }
+    ret @ok(a / b)
+}
+
+fn main() -> i32 {
+    ok_val, ok_err: !i32 = divide(20, 4)
+    bad: !i32 = divide(1, 0)
+    if ok_err == 0 && @is_err(bad) {
+        unwrapped: i32 = @unwrap(divide(9, 3))
+        @pf("{ok_val} {unwrapped}\n")
+    }
+    ret 0
+}

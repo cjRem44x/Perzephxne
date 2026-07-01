@@ -1,0 +1,17 @@
+struct Counter {
+    value: i32,
+}
+
+impl Counter {
+    fn inc(self: *Counter) {
+        self.value += 1
+    }
+}
+
+fn main() -> i32 {
+    c: Counter = Counter{.value = 4}
+    c.inc()
+    c.inc()
+    @pf("{c.value}\n")
+    ret 0
+}

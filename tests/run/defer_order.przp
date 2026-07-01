@@ -1,0 +1,11 @@
+fn leave_early() {
+    defer @pf("a")
+    defer @pf("b")
+    ret
+}
+
+fn main() -> i32 {
+    leave_early()
+    @pf("\n")
+    ret 0
+}

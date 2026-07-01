@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-3f5b096b.js";
+            window.path_to_searchindex_js = "searchindex-716408eb.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-7f1b7573.js"></script>
@@ -1080,6 +1080,27 @@ x: FloatBits = FloatBits{.f=1.0}
 @pf("{x.u:#x}\n")   # 3f800000
 </code></pre>
 <p>Reading the field that wasn’t most recently written is defined bit-level behavior in Perzephxne.</p>
+<h2 id="tagged-unions"><a class="header" href="#tagged-unions">Tagged Unions</a></h2>
+<p>Tagged unions store a discriminant plus enough payload space for the largest variant. Construct them with exactly one variant field, and match them with <code>when</code>.</p>
+<pre><code>unn Shape =&gt; enum {
+    circle: i32,
+    point,
+}
+
+fn describe(s: Shape) {
+    when s {
+        .circle r =&gt; @pf("circle {r}\n")
+        .point    =&gt; @pf("point\n")
+    }
+}
+
+a: Shape = Shape{.circle = 9}
+b: Shape = Shape{.point}
+
+describe(a)
+describe(b)
+</code></pre>
+<p>Variant patterns use <code>.name</code>. If the variant carries a payload, add a binding name after the pattern.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="pointers--memory"><a class="header" href="#pointers--memory">Pointers &amp; Memory</a></h1>
 <p>Perzephxne has no garbage collector. Memory is managed manually or with smart pointers from the standard library.</p>

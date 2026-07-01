@@ -1,0 +1,19 @@
+unn Shape => enum {
+    circle: i32,
+    point,
+}
+
+fn describe(s: Shape) {
+    when s {
+        .circle r => @pf("circle {r}\n")
+        .point => @pf("point\n")
+    }
+}
+
+fn main() -> i32 {
+    a: Shape = Shape{.circle = 9}
+    b: Shape = Shape{.point}
+    describe(a)
+    describe(b)
+    ret 0
+}

@@ -73,3 +73,29 @@ x: FloatBits = FloatBits{.f=1.0}
 ```
 
 Reading the field that wasn't most recently written is defined bit-level behavior in Perzephxne.
+
+## Tagged Unions
+
+Tagged unions store a discriminant plus enough payload space for the largest variant. Construct them with exactly one variant field, and match them with `when`.
+
+```
+unn Shape => enum {
+    circle: i32,
+    point,
+}
+
+fn describe(s: Shape) {
+    when s {
+        .circle r => @pf("circle {r}\n")
+        .point    => @pf("point\n")
+    }
+}
+
+a: Shape = Shape{.circle = 9}
+b: Shape = Shape{.point}
+
+describe(a)
+describe(b)
+```
+
+Variant patterns use `.name`. If the variant carries a payload, add a binding name after the pattern.

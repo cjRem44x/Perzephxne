@@ -1,0 +1,6 @@
+import(h = "helpers/import_math")
+
+fn main() -> i32 {
+    @pf("{h.triple(14)}\n")
+    ret 0
+}

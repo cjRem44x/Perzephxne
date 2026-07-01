@@ -129,6 +129,42 @@ run_project_fail_case() {
     fi
 }
 
+run_multifile_case() {
+    local src_dir="$1"
+    local name
+    name="$(basename "$src_dir")"
+    local bin="$TMP/bin/$name.multi"
+    local actual="$TMP/out/$name.multi.stdout"
+    local compile_err="$TMP/err/$name.multi.compile.stderr"
+    local run_err="$TMP/err/$name.multi.run.stderr"
+    local expected="$src_dir/stdout"
+    local files=()
+
+    printf 'multi %s\n' "$name"
+    while IFS= read -r file; do
+        files+=("$file")
+    done < <(find "$src_dir" -maxdepth 1 -name '*.przp' | sort)
+
+    if ! PRZP_STDLIB="$STDLIB" "$PRZP" sac "${files[@]}" -o="$bin" >"$TMP/out/$name.multi.compile.stdout" 2>"$compile_err"; then
+        printf 'FAIL  %s: multi-file compile failed\n' "$name" >&2
+        sed -n '1,120p' "$compile_err" >&2
+        failures=$((failures + 1))
+        return
+    fi
+
+    if ! "$bin" >"$actual" 2>"$run_err"; then
+        printf 'FAIL  %s: multi-file run failed\n' "$name" >&2
+        sed -n '1,120p' "$run_err" >&2
+        failures=$((failures + 1))
+        return
+    fi
+
+    if ! diff -u "$expected" "$actual"; then
+        printf 'FAIL  %s: multi-file stdout mismatch\n' "$name" >&2
+        failures=$((failures + 1))
+    fi
+}
+
 run_init_case() {
     local work="$TMP/init/current"
     local stdout="$TMP/out/init.stdout"
@@ -168,6 +204,11 @@ done
 for dir in "$ROOT"/tests/project-fail/*; do
     [ -d "$dir" ] || continue
     run_project_fail_case "$dir"
+done
+
+for dir in "$ROOT"/tests/multifile/*; do
+    [ -d "$dir" ] || continue
+    run_multifile_case "$dir"
 done
 
 run_init_case

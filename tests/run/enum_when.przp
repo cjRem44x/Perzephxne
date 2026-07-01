@@ -1,0 +1,21 @@
+enum Direction {
+    North,
+    South,
+    East,
+    West,
+}
+
+fn code(d: Direction) -> i32 {
+    ret when d {
+        Direction.North => 1,
+        Direction.South => 2,
+        Direction.East => 3,
+        Direction.West => 4,
+    }
+}
+
+fn main() -> i32 {
+    d: Direction = Direction.East
+    @pf("{code(d)}\n")
+    ret 0
+}
