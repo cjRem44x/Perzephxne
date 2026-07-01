@@ -2419,12 +2419,13 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
             for (size_t i = 0; i < nargs; i++) {
                 arg_tys[i] = NULL;
                 arg_vals[i] = cg_expr(cg, e->call.args.data[i], &arg_tys[i]);
-                /* EXPR_IDENT and EXPR_STRUCT_LIT return alloca ptrs for struct/union types;
-                   load the actual struct/union value before passing by value */
+                /* Expressions that yield a struct/union return a ptr to the aggregate;
+                   load the actual value before passing by value.
+                   Exception: EXPR_CALL already returns the struct value directly. */
                 if (arg_tys[i] && arg_tys[i]->kind == TY_NAMED
                         && !find_enum(cg, arg_tys[i]->named.name)) {
                     ExprKind ak = e->call.args.data[i]->kind;
-                    if (ak == EXPR_IDENT || ak == EXPR_STRUCT_LIT) {
+                    if (ak != EXPR_CALL) {
                         int sv = new_tmp(cg);
                         emit(cg, "  %%t%d = load %s, ptr %s\n",
                              sv, effective_llvm_type(cg, arg_tys[i]), arg_vals[i].buf);
