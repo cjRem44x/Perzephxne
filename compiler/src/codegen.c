@@ -3252,6 +3252,8 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                 }
                 int fidx = si ? struct_field_index(si, fi->name) : (int)i;
                 if (fidx < 0) fidx = (int)i;
+                /* plain unions: { [N x i8] } — all fields share element 0 */
+                int gep_fidx = is_plain_union(cg, e->struct_lit.ty_name) ? 0 : fidx;
                 /* use field type for store; coerce value if integer widths differ */
                 Type *field_ty = (si && fi->name) ? struct_field_type(si, fi->name) : val_ty;
                 const char *store_llt = field_ty ? effective_llvm_type(cg, field_ty)
@@ -3273,7 +3275,7 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                 }
                 int fp = new_tmp(cg);
                 emit(cg, "  %%t%d = getelementptr %%%s, ptr %%t%d, i32 0, i32 %d\n",
-                     fp, e->struct_lit.ty_name, t, fidx);
+                     fp, e->struct_lit.ty_name, t, gep_fidx);
                 emit(cg, "  store %s %s, ptr %%t%d\n", store_llt, fv.buf, fp);
             }
             return val_tmp(t);
