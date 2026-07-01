@@ -85,8 +85,10 @@ if score >= 90 {
     @pf("A\n")
 } elif score >= 80 {
     @pf("B\n")
-} else {
+} else if score >= 70 {
     @pf("C\n")
+} else {
+    @pf("F\n")
 }
 
 # range for
@@ -114,6 +116,10 @@ for j => 0..10 {
     if j == 7 { break }
     @pf("{j} ")
 }
+
+# logical not: both '!' and 'not' are accepted
+if !false { @pf("ok\n") }
+if not false { @pf("ok\n") }
 ```
 
 ### Structs
@@ -150,10 +156,10 @@ b: Box[i32] = Box[i32]{.value = 42}
 Plain (untagged) unions share memory across all fields:
 
 ```
-unn Data { i: i32, f: f64 }
+unn Data { i: i32, f: f32, b: bool }
 
 d: Data = Data{.i = 42}
-d.f = 3.14    # reinterprets the same memory
+d.f = 1.5    # reinterprets the same memory
 ```
 
 Tagged unions carry a discriminant for safe pattern matching:
@@ -200,6 +206,72 @@ s: str  = @str(99)            # int → "99"
 b: str  = @str(true)          # bool → "true" or "false"
 f: f32  = @f32(3.14)
 bits: u32 = @bitcast(u32, f)  # raw bit reinterpret
+```
+
+### Memory
+
+```
+# Stack
+x: i32  = 12
+p: *i32 = &x           # pointer to stack variable
+p.* = 99               # write through pointer
+val: i32 = p.*         # read through pointer
+
+# Heap
+heap: *i32 = @alo(i32)        # allocate one i32
+heap.* = 42
+@free(heap)
+
+arr: *i32 = @alo(i32, 10)     # allocate array of 10 i32
+arr = @realo(arr, i32, 20)    # grow to 20 elements
+@free(arr)
+
+# Smart (reference-counted) pointer
+p: ^Node = @new(Node{.val = 42})
+q: ^Node = @clone(p)   # increment RC, shared ownership
+@release(p)            # decrement RC; frees when RC hits 0
+@release(q)
+```
+
+### Bitwise and Numeric Builtins
+
+```
+x: i32 = 0xFF
+x &= 0x0F              # compound bitwise AND
+x |= 0x30              # OR, ^= XOR, <<= SHL, >>= SHR
+
+@clz(1u32)             # count leading zeros → 31
+@ctz(8u32)             # count trailing zeros → 3
+@popcount(255u32)      # population count → 8
+@bswap(0x01020304u32)  # byte-swap → 0x04030201
+
+r: !i32 = @checked_add(a, b)  # overflow-checked arithmetic
+```
+
+### Generics with Heap Allocation
+
+```
+struct Vec[T] {
+    data: *T,
+    len: usize,
+    cap: usize,
+}
+
+impl Vec[T] {
+    fn init(self: *Vec[T], cap: usize) {
+        self.data = @alo(T, cap)   # T resolves to concrete type
+        self.len = 0
+        self.cap = cap
+    }
+    fn push(self: *Vec[T], val: T) {
+        self.data[self.len] = val
+        self.len = self.len + 1
+    }
+}
+
+v: Vec[i32] = Vec[i32]{.data = null, .len = 0, .cap = 0}
+v.init(8)
+v.push(42)
 ```
 
 ### String Formatting
