@@ -1,0 +1,5 @@
+[package]
+name = "import_cycle"
+
+[build]
+entry = "src/main.przp"

@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-d52f6c2d.js";
+            window.path_to_searchindex_js = "searchindex-9c56ce74.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-7f1b7573.js"></script>
@@ -1354,6 +1354,7 @@ import(io = "std/io", math = "std/math")
 </code></pre>
 <p>Each entry is <code>alias = "path"</code>. The alias is the namespace prefix used to access the module’s symbols. Multiple modules can be imported in a single statement with a comma-separated list.</p>
 <p>Paths starting with <code>"std/"</code> resolve against the standard library. Everything else resolves relative to the importing file’s directory.</p>
+<p>Import cycles are rejected. The compiler reports the cycle at the <code>import(...)</code> declaration that closes the loop and includes the resolved path involved in the cycle.</p>
 <h2 id="using-symbols"><a class="header" href="#using-symbols">Using Symbols</a></h2>
 <p>After importing, use the alias as a namespace prefix:</p>
 <pre><code>import(io = "std/io")

@@ -13,6 +13,8 @@ Each entry is `alias = "path"`. The alias is the namespace prefix used to access
 
 Paths starting with `"std/"` resolve against the standard library. Everything else resolves relative to the importing file's directory.
 
+Import cycles are rejected. The compiler reports the cycle at the `import(...)` declaration that closes the loop and includes the resolved path involved in the cycle.
+
 ## Using Symbols
 
 After importing, use the alias as a namespace prefix:

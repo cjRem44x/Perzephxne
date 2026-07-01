@@ -1,0 +1,5 @@
+import(app = "main")
+
+fn value() -> i32 {
+    ret 0
+}

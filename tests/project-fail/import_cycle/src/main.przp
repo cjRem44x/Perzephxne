@@ -1,0 +1,5 @@
+import(util = "util")
+
+fn main() -> i32 {
+    ret util.value()
+}
