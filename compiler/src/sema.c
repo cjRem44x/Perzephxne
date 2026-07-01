@@ -619,6 +619,8 @@ static Type *check_expr(Sema *s, Expr *e) {
                     e->ty = arr_ty->array.inner;
                 else if (arr_ty->kind == TY_STR)
                     e->ty = s->ty_char;
+                else if (arr_ty->kind == TY_PTR && arr_ty->ptr.inner)
+                    e->ty = arr_ty->ptr.inner; /* *T[i] → T */
                 else {
                     sema_error(s, e->span, "cannot index into '%s'", ty_str(arr_ty));
                     e->ty = NULL;
@@ -1839,7 +1841,18 @@ static void register_item(Sema *s, Item *item) {
             break;
         }
         case ITEM_UNION: {
-            if (!item->union_.tagged) break; /* untagged unions: no type registration yet */
+            if (!item->union_.tagged) {
+                /* plain (untagged) union: register type name and field list */
+                Type *ty = make_ty(s, TY_NAMED);
+                ty->named.name = item->name;
+                define(s, item->span, item->name, ty, 0, 1);
+                StructEntry *se = ARENA_NEW(s->arena, StructEntry);
+                se->name   = item->name;
+                se->fields = &item->union_.fields;
+                se->next   = s->structs;
+                s->structs = se;
+                break;
+            }
             Type *ty = make_ty(s, TY_NAMED);
             ty->named.name = item->name;
             define(s, item->span, item->name, ty, 0, 1);

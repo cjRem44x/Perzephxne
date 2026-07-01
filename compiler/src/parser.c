@@ -179,9 +179,9 @@ static int looks_like_generic_bracket_args(Parser *p) {
             case TOK_RBRACKET:
                 depth--;
                 if (depth == 0) {
-                    /* Must be followed by '(' to confirm generic call */
+                    /* Followed by '(' (call) or '{' (struct literal) */
                     Token next = (bi < 3) ? buf[bi] : lexer_next(&probe);
-                    return next.kind == TOK_LPAREN;
+                    return next.kind == TOK_LPAREN || next.kind == TOK_LBRACE;
                 }
                 break;
             case TOK_IDENT: case TOK_COMMA: case TOK_STAR: case TOK_CARET:
@@ -353,27 +353,30 @@ static Type *parse_type(Parser *p) {
         } else {
             ty->named.name = t.sval;
         }
-        /* generic type args: Name<T, U> → Name__T__U */
-        if (cur(p).kind == TOK_LT) {
-            advance(p); /* consume '<' */
+        /* generic type args: Name<T, U> or Name[T, U] → Name__T__U */
+        if (cur(p).kind == TOK_LT || cur(p).kind == TOK_LBRACKET) {
+            int use_bracket = cur(p).kind == TOK_LBRACKET;
+            advance(p);
+            TokenKind close_tok = use_bracket ? TOK_RBRACKET : TOK_GT;
             char mangled[512];
             snprintf(mangled, sizeof(mangled), "%s", ty->named.name);
             const char *base = ty->named.name;
             Type **args = NULL;
             size_t n_args = 0;
-            while (!check(p, TOK_GT) && !check(p, TOK_EOF)) {
-                /* '>>' closes this arg list AND the outer one — split it */
-                if (p->cur.kind == TOK_SHR && p->pending_gt == 0) {
-                    p->pending_gt = 1;
-                    /* convert '>>' to first '>' by mutating cur token kind */
-                    p->cur.kind = TOK_GT;
-                    break;
-                }
-                /* '>=' closes this arg list and leaves '=' for the caller */
-                if (p->cur.kind == TOK_GTEQ) {
-                    p->pending_gteq = 1;
-                    p->cur.kind = TOK_GT;
-                    break;
+            while (!check(p, close_tok) && !check(p, TOK_EOF)) {
+                if (!use_bracket) {
+                    /* '>>' closes this arg list AND the outer one — split it */
+                    if (p->cur.kind == TOK_SHR && p->pending_gt == 0) {
+                        p->pending_gt = 1;
+                        p->cur.kind = TOK_GT;
+                        break;
+                    }
+                    /* '>=' closes this arg list and leaves '=' for the caller */
+                    if (p->cur.kind == TOK_GTEQ) {
+                        p->pending_gteq = 1;
+                        p->cur.kind = TOK_GT;
+                        break;
+                    }
                 }
                 Type *arg = parse_type(p);
                 const char *arg_str = type_to_str(arg, p->arena);
@@ -385,7 +388,7 @@ static Type *parse_type(Parser *p) {
                 args = new_args;
                 eat(p, TOK_COMMA);
             }
-            expect(p, TOK_GT);
+            expect(p, close_tok);
             ty->named.name = arena_strdup(p->arena, mangled);
             record_gen_inst(p, ty->named.name, base, args, n_args);
         }
@@ -1234,8 +1237,8 @@ static Stmt *parse_stmt(Parser *p) {
              TokenKind p3  = p->peek3.kind;
              /* definitely a type annotation if followed by mutable/new-immutable = / :: */
              int is_decl = (p3 == TOK_EQ || p3 == TOK_COLONCOLON);
-             /* generic type: Name<T, U> — peek3 is '<' */
-             if (!is_decl && p3 == TOK_LT) is_decl = 1;
+             /* generic type: Name<T, U> or Name[T, U] — peek3 is '<' or '[' */
+             if (!is_decl && (p3 == TOK_LT || p3 == TOK_LBRACKET)) is_decl = 1;
              /* immutable (p3==:) with any ident type — treat as var decl */
              if (!is_decl && p3 == TOK_COLON && n) is_decl = 1;
              /* module-qualified type: v: mod.Type ... — peek3 is '.' */
@@ -1826,12 +1829,14 @@ static Item *parse_item(Parser *p) {
     if (check(p, TOK_STRUCT)) {
         advance(p);
         const char *name = expect(p, TOK_IDENT).sval;
-        /* optional generic type params: struct Box<T> { ... } */
+        /* optional generic type params: struct Box<T> or struct Box[T] */
         const char **type_params = NULL;
         size_t n_type_params = 0;
-        if (check(p, TOK_LT)) {
-            advance(p); /* consume '<' */
-            while (!check(p, TOK_GT) && !check(p, TOK_EOF)) {
+        if (check(p, TOK_LT) || check(p, TOK_LBRACKET)) {
+            int use_bracket = check(p, TOK_LBRACKET);
+            advance(p);
+            TokenKind close = use_bracket ? TOK_RBRACKET : TOK_GT;
+            while (!check(p, close) && !check(p, TOK_EOF)) {
                 const char *tp = expect(p, TOK_IDENT).sval;
                 const char **new_tp = arena_alloc(p->arena, (n_type_params + 1) * sizeof(const char *));
                 if (n_type_params) memcpy(new_tp, type_params, n_type_params * sizeof(const char *));
@@ -1839,7 +1844,7 @@ static Item *parse_item(Parser *p) {
                 type_params = new_tp;
                 eat(p, TOK_COMMA);
             }
-            expect(p, TOK_GT);
+            expect(p, close);
         }
         expect(p, TOK_LBRACE);
         /* expose type params so field types like Box<T> don't get recorded as gen_insts */
@@ -1874,12 +1879,14 @@ static Item *parse_item(Parser *p) {
     if (check(p, TOK_IMPL)) {
         advance(p);
         const char *ty_name = expect(p, TOK_IDENT).sval;
-        /* optional generic type params: impl Box<T> { ... } */
+        /* optional generic type params: impl Box<T> or impl Box[T] */
         const char **type_params = NULL;
         size_t n_type_params = 0;
-        if (check(p, TOK_LT)) {
-            advance(p); /* consume '<' */
-            while (!check(p, TOK_GT) && !check(p, TOK_EOF)) {
+        if (check(p, TOK_LT) || check(p, TOK_LBRACKET)) {
+            int use_bracket = check(p, TOK_LBRACKET);
+            advance(p);
+            TokenKind close = use_bracket ? TOK_RBRACKET : TOK_GT;
+            while (!check(p, close) && !check(p, TOK_EOF)) {
                 const char *tp = expect(p, TOK_IDENT).sval;
                 const char **new_tp = arena_alloc(p->arena, (n_type_params + 1) * sizeof(const char *));
                 if (n_type_params) memcpy(new_tp, type_params, n_type_params * sizeof(const char *));
@@ -1887,7 +1894,7 @@ static Item *parse_item(Parser *p) {
                 type_params = new_tp;
                 eat(p, TOK_COMMA);
             }
-            expect(p, TOK_GT);
+            expect(p, close);
         }
         expect(p, TOK_LBRACE);
         /* expose type params for all method signatures + bodies so uses like

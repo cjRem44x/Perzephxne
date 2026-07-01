@@ -78,9 +78,10 @@ typedef struct {
     FILE        *out;
     Arena       *arena;
     StrConst    *str_consts;
-    StructInfo  *structs;    /* name → field list for struct layout */
-    EnumInfo    *enums;      /* name → variant values for enum access */
-    UnionInfoCG *unions;     /* name → tagged union variant table */
+    StructInfo  *structs;       /* name → field list for struct layout */
+    StructInfo  *plain_unions;  /* names of untagged unions (subset of structs) */
+    EnumInfo    *enums;         /* name → variant values for enum access */
+    UnionInfoCG *unions;        /* name → tagged union variant table */
     int          str_id;
     int          tmp_id;      /* next %t<n> temporary */
     int          label_id;    /* next label suffix     */
@@ -324,6 +325,12 @@ static UnionInfoCG *find_union(CG *cg, const char *name) {
     return NULL;
 }
 
+static int is_plain_union(CG *cg, const char *name) {
+    for (StructInfo *pu = cg->plain_unions; pu; pu = pu->next)
+        if (!strcmp(pu->name, name)) return 1;
+    return 0;
+}
+
 /* Approximate byte size of a type for union payload sizing */
 static int cg_type_byte_size(CG *cg, Type *ty) {
     if (!ty) return 0;
@@ -489,7 +496,7 @@ static Val promote_vararg(CG *cg, Val v, Type *ty, const char **llt_out) {
         if (llt_out) *llt_out = "i32";
         return val_tmp(t);
     }
-    if (llt_out) *llt_out = ty ? llvm_type(ty) : "i32";
+    if (llt_out) *llt_out = ty ? effective_llvm_type(cg, ty) : "i32";
     return v;
 }
 
@@ -2553,8 +2560,10 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
             Type *fty = si->fields.data[fidx].ty;
             if (out_ty) *out_ty = fty;
             int fp = new_tmp(cg);
+            /* plain unions: all fields overlay at offset 0 */
+            int gep_idx = is_plain_union(cg, obj_ty->named.name) ? 0 : fidx;
             emit(cg, "  %%t%d = getelementptr %%%s, ptr %s, i32 0, i32 %d\n",
-                 fp, obj_ty->named.name, obj.buf, fidx);
+                 fp, obj_ty->named.name, obj.buf, gep_idx);
             /* struct/array fields: return the field ptr so chained access works */
             int field_is_agg = fty
                 && (fty->kind == TY_ARRAY
@@ -2651,7 +2660,22 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                 return val_tmp(res);
             }
 
-            Val idx = cg_expr(cg, e->index.idx, NULL);
+            Type *idx_ty = NULL;
+            Val idx = cg_expr(cg, e->index.idx, &idx_ty);
+
+            /* GEP index must be i64; extend narrower integer types */
+            if (idx_ty && (idx_ty->kind == TY_I8  || idx_ty->kind == TY_I16
+                        || idx_ty->kind == TY_I32 || idx_ty->kind == TY_U8
+                        || idx_ty->kind == TY_U16 || idx_ty->kind == TY_U32
+                        || idx_ty->kind == TY_CHAR || idx_ty->kind == TY_BOOL)) {
+                int ext = new_tmp(cg);
+                const char *src_llt = llvm_type(idx_ty);
+                const char *ext_op = (idx_ty->kind == TY_U8 || idx_ty->kind == TY_U16
+                                   || idx_ty->kind == TY_U32 || idx_ty->kind == TY_CHAR
+                                   || idx_ty->kind == TY_BOOL) ? "zext" : "sext";
+                emit(cg, "  %%t%d = %s %s %s to i64\n", ext, ext_op, src_llt, idx.buf);
+                idx = val_tmp(ext);
+            }
 
             const char *elem_llt = "i8";
             Type *elem_ty = NULL;
@@ -2677,6 +2701,11 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                 elem_ty  = at->array.inner;
                 elem_llt = llvm_type(elem_ty);
                 /* arr is a raw alloca ptr — use directly */
+            } else if (at && at->kind == TY_PTR && at->ptr.inner) {
+                /* *T[i] — pointer arithmetic indexing */
+                elem_ty  = at->ptr.inner;
+                elem_llt = llvm_type(elem_ty);
+                /* arr is already a ptr value */
             }
 
             int ptr = new_tmp(cg);
@@ -3363,8 +3392,10 @@ static void cg_stmt(CG *cg, Stmt *s) {
                         const char *llt = fty ? effective_llvm_type(cg, fty)
                                               : (vty ? effective_llvm_type(cg, vty) : "i32");
                         int fp = new_tmp(cg);
+                        /* plain unions: all fields overlay at offset 0 */
+                        int gep_fidx = is_plain_union(cg, obj_ty->named.name) ? 0 : fidx;
                         emit(cg, "  %%t%d = getelementptr %%%s, ptr %s, i32 0, i32 %d\n",
-                             fp, obj_ty->named.name, obj.buf, fidx);
+                             fp, obj_ty->named.name, obj.buf, gep_fidx);
                         if (s->assign.op == ASSIGN_EQ) {
                             emit(cg, "  store %s %s, ptr %%t%d\n", llt, rhs.buf, fp);
                         } else {
@@ -4509,6 +4540,33 @@ int codegen(Module *mod, FILE *out, int release) {
             emit(&cg, "%s", llvm_type(item->struct_.fields.data[j].ty));
         }
         emit(&cg, " }\n");
+    }
+
+    /* plain (untagged) union type declarations
+       Layout: { [N x i8] } where N = max field byte size */
+    for (size_t i = 0; i < mod->items.len; i++) {
+        Item *item = mod->items.data[i];
+        if (item->kind != ITEM_UNION || item->union_.tagged) continue;
+        int max_size = 1;
+        for (size_t j = 0; j < item->union_.fields.len; j++) {
+            Type *fty = item->union_.fields.data[j].ty;
+            if (fty) {
+                int sz = cg_type_byte_size(&cg, fty);
+                if (sz > max_size) max_size = sz;
+            }
+        }
+        StructInfo *si = ARENA_NEW(cg.arena, StructInfo);
+        si->name   = item->name;
+        si->fields = item->union_.fields;
+        si->next   = cg.structs;
+        cg.structs = si;
+        /* track separately for GEP disambiguation */
+        StructInfo *pu = ARENA_NEW(cg.arena, StructInfo);
+        pu->name   = item->name;
+        pu->fields = item->union_.fields;
+        pu->next   = cg.plain_unions;
+        cg.plain_unions = pu;
+        emit(&cg, "%%%s = type { [%d x i8] }\n", item->name, max_size);
     }
     emit(&cg, "\n");
 
