@@ -1171,15 +1171,31 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
 
             /* @realo */
             if (!strcmp(name, "realo")) {
+                /* @realo(ptr, T, N) — realloc with sizeof(T)*N bytes */
                 Val ptr = cg_expr(cg, e->builtin.args.data[0], NULL);
-                Type *ety = NULL;
-                if (e->builtin.args.len >= 2)
-                    cg_expr(cg, e->builtin.args.data[1], &ety);
+                /* type arg: use ->ty set by sema (same convention as @alo) */
+                Type *ety = (e->builtin.args.len >= 2) ? e->builtin.args.data[1]->ty : NULL;
                 int nsz = new_tmp(cg);
                 if (ety) {
                     const char *inner = llvm_type(ety);
-                    emit(cg, "  %%t%d = ptrtoint (ptr getelementptr (%s, ptr null, i32 1) to i64)\n",
-                         nsz, inner);
+                    /* count arg */
+                    if (e->builtin.args.len >= 3) {
+                        Type *cnt_ty = NULL;
+                        Val cnt = cg_expr(cg, e->builtin.args.data[2], &cnt_ty);
+                        /* extend count to i64 */
+                        if (cnt_ty && cnt_ty->kind != TY_I64 && cnt_ty->kind != TY_U64 &&
+                            cnt_ty->kind != TY_USIZE) {
+                            int ext = new_tmp(cg);
+                            emit(cg, "  %%t%d = sext %s %s to i64\n", ext,
+                                 llvm_type(cnt_ty), cnt.buf);
+                            cnt = val_tmp(ext);
+                        }
+                        emit(cg, "  %%t%d = mul i64 %s, ptrtoint (ptr getelementptr (%s, ptr null, i32 1) to i64)\n",
+                             nsz, cnt.buf, inner);
+                    } else {
+                        emit(cg, "  %%t%d = ptrtoint (ptr getelementptr (%s, ptr null, i32 1) to i64)\n",
+                             nsz, inner);
+                    }
                 } else {
                     emit(cg, "  %%t%d = add i64 0, 8\n", nsz);
                 }
@@ -1595,6 +1611,51 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                             char *sbuf = arena_alloc(cg->arena, strlen(inner) + 2);
                             sbuf[0] = '^'; strcpy(sbuf + 1, inner);
                             tname = sbuf;
+                            break;
+                        }
+                        case TY_ARRAY: {
+                            /* "[N]T" */
+                            int64_t n = 0;
+                            if (ta->array.size && ta->array.size->kind == EXPR_INT)
+                                n = (int64_t)ta->array.size->ival;
+                            const char *inner = ta->array.inner ? "?" : "?";
+                            if (ta->array.inner) {
+                                switch (ta->array.inner->kind) {
+                                    case TY_I8: inner="i8"; break; case TY_I16: inner="i16"; break;
+                                    case TY_I32: inner="i32"; break; case TY_I64: inner="i64"; break;
+                                    case TY_U8: inner="u8"; break; case TY_U16: inner="u16"; break;
+                                    case TY_U32: inner="u32"; break; case TY_U64: inner="u64"; break;
+                                    case TY_F32: inner="f32"; break; case TY_F64: inner="f64"; break;
+                                    case TY_BOOL: inner="bool"; break; case TY_CHAR: inner="char"; break;
+                                    case TY_STR: inner="str"; break; case TY_USIZE: inner="usize"; break;
+                                    case TY_NAMED: inner=ta->array.inner->named.name; break;
+                                    default: inner="?"; break;
+                                }
+                            }
+                            char *abuf = arena_alloc(cg->arena, 32 + strlen(inner));
+                            snprintf(abuf, 32 + strlen(inner), "[%lld]%s", (long long)n, inner);
+                            tname = abuf;
+                            break;
+                        }
+                        case TY_SLICE: {
+                            /* "[]T" */
+                            const char *inner2 = ta->ptr.inner ? "?" : "?";
+                            if (ta->ptr.inner) {
+                                switch (ta->ptr.inner->kind) {
+                                    case TY_I8: inner2="i8"; break; case TY_I16: inner2="i16"; break;
+                                    case TY_I32: inner2="i32"; break; case TY_I64: inner2="i64"; break;
+                                    case TY_U8: inner2="u8"; break; case TY_U16: inner2="u16"; break;
+                                    case TY_U32: inner2="u32"; break; case TY_U64: inner2="u64"; break;
+                                    case TY_F32: inner2="f32"; break; case TY_F64: inner2="f64"; break;
+                                    case TY_BOOL: inner2="bool"; break; case TY_CHAR: inner2="char"; break;
+                                    case TY_STR: inner2="str"; break; case TY_USIZE: inner2="usize"; break;
+                                    case TY_NAMED: inner2=ta->ptr.inner->named.name; break;
+                                    default: inner2="?"; break;
+                                }
+                            }
+                            char *sbuf2 = arena_alloc(cg->arena, 4 + strlen(inner2));
+                            snprintf(sbuf2, 4 + strlen(inner2), "[]%s", inner2);
+                            tname = sbuf2;
                             break;
                         }
                         default: tname="unknown"; break;
