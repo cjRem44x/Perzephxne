@@ -10,6 +10,8 @@
 #include <errno.h>
 #include <unistd.h>
 #include <sys/wait.h>
+#include <sys/stat.h>
+#include <ctype.h>
 
 /* explicit POSIX declaration for readlink (required under -std=c11 -Wpedantic) */
 extern ssize_t readlink(const char *path, char *buf, size_t bufsiz);
@@ -36,6 +38,7 @@ static char *read_file(const char *path) {
 static char g_stdlib_root[1024] = "";
 
 static void stdlib_root_init(const char *argv0) {
+    (void)argv0;
     const char *env = getenv("PRZP_STDLIB");
     if (env) {
         snprintf(g_stdlib_root, sizeof(g_stdlib_root), "%s", env);
@@ -70,6 +73,13 @@ static void src_dir_of(const char *path, char *out, size_t outsz) {
     } else {
         snprintf(out, outsz, ".");
     }
+}
+
+static void path_join(char *out, size_t outsz, const char *a, const char *b) {
+    if (!strcmp(a, "."))
+        snprintf(out, outsz, "%s", b);
+    else
+        snprintf(out, outsz, "%s/%s", a, b);
 }
 
 /* Rewrite TY_NAMED references that match any of orig_names → alias__name */
@@ -689,49 +699,127 @@ static void cmd_sac(int argc, char **argv) {
 }
 
 static void cmd_init(int argc, char **argv) {
-    const char *name = (argc > 0) ? argv[0] : "myproject";
+    const char *dir = (argc > 0) ? argv[0] : ".";
+    char name[256];
+    if (argc > 0) {
+        snprintf(name, sizeof(name), "%s", argv[0]);
+    } else {
+        char cwd[1024];
+        if (getcwd(cwd, sizeof(cwd))) basename_no_ext(cwd, name, sizeof(name));
+        else snprintf(name, sizeof(name), "myproject");
+    }
 
-    /* create directory layout */
-    char cmd[512];
-    snprintf(cmd, sizeof(cmd), "mkdir -p %s/src", name);
-    system(cmd);
+    if (argc > 0 && mkdir(dir, 0755) != 0 && errno != EEXIST) {
+        fprintf(stderr, "przp init: cannot create '%s': %s\n", dir, strerror(errno));
+        exit(1);
+    }
+
+    char src_dir[512];
+    path_join(src_dir, sizeof(src_dir), dir, "src");
+    if (mkdir(src_dir, 0755) != 0 && errno != EEXIST) {
+        fprintf(stderr, "przp init: cannot create '%s': %s\n", src_dir, strerror(errno));
+        exit(1);
+    }
 
     /* przp.toml */
     char toml_path[256];
-    snprintf(toml_path, sizeof(toml_path), "%s/przp.toml", name);
+    path_join(toml_path, sizeof(toml_path), dir, "przp.toml");
     FILE *f = fopen(toml_path, "w");
     if (f) {
         fprintf(f, "[package]\nname = \"%s\"\nversion = \"0.1.0\"\n\n[build]\nentry = \"src/main.przp\"\n", name);
         fclose(f);
+    } else {
+        fprintf(stderr, "przp init: cannot write '%s': %s\n", toml_path, strerror(errno));
+        exit(1);
     }
 
     /* src/main.przp */
     char main_path[256];
-    snprintf(main_path, sizeof(main_path), "%s/src/main.przp", name);
+    path_join(main_path, sizeof(main_path), src_dir, "main.przp");
     f = fopen(main_path, "w");
     if (f) {
         fprintf(f, "fn main() -> i32 {\n    @pf(\"Hello from %s!\\n\")\n    ret 0\n}\n", name);
         fclose(f);
+    } else {
+        fprintf(stderr, "przp init: cannot write '%s': %s\n", main_path, strerror(errno));
+        exit(1);
     }
 
     printf("Created project '%s'\n", name);
     exit(0);
 }
 
-static const char *find_entry(void) {
-    /* look for przp.toml, parse entry = "..." */
+typedef struct {
+    char package_name[256];
+    char version[64];
+    char entry[256];
+} Manifest;
+
+static char *trim_ws(char *s) {
+    while (isspace((unsigned char)*s)) s++;
+    char *end = s + strlen(s);
+    while (end > s && isspace((unsigned char)end[-1])) *--end = '\0';
+    return s;
+}
+
+static int parse_quoted_value(const char *s, char *out, size_t outsz) {
+    const char *q = strchr(s, '"');
+    if (!q) return 0;
+    q++;
+    const char *end = strchr(q, '"');
+    if (!end) return 0;
+    size_t n = (size_t)(end - q);
+    if (n >= outsz) n = outsz - 1;
+    memcpy(out, q, n);
+    out[n] = '\0';
+    return 1;
+}
+
+static int read_manifest(Manifest *m) {
+    memset(m, 0, sizeof(*m));
+    snprintf(m->entry, sizeof(m->entry), "src/main.przp");
+
     FILE *f = fopen("przp.toml", "r");
-    if (!f) return NULL;
-    static char entry[256];
+    if (!f) return 0;
+
+    enum { SEC_NONE, SEC_PACKAGE, SEC_BUILD, SEC_DEPS } section = SEC_NONE;
     char line[512];
     while (fgets(line, sizeof(line), f)) {
-        if (sscanf(line, " entry = \"%255[^\"]\"", entry) == 1) {
-            fclose(f);
-            return entry;
+        char *hash = strchr(line, '#');
+        if (hash) *hash = '\0';
+        char *s = trim_ws(line);
+        if (!*s) continue;
+
+        if (!strcmp(s, "[package]")) { section = SEC_PACKAGE; continue; }
+        if (!strcmp(s, "[build]"))   { section = SEC_BUILD; continue; }
+        if (!strcmp(s, "[deps]"))    { section = SEC_DEPS; continue; }
+        if (*s == '[') { section = SEC_NONE; continue; }
+
+        char *eq = strchr(s, '=');
+        if (!eq) continue;
+        *eq = '\0';
+        char *key = trim_ws(s);
+        char *val = trim_ws(eq + 1);
+
+        if (section == SEC_PACKAGE && !strcmp(key, "name")) {
+            parse_quoted_value(val, m->package_name, sizeof(m->package_name));
+        } else if (section == SEC_PACKAGE && !strcmp(key, "version")) {
+            parse_quoted_value(val, m->version, sizeof(m->version));
+        } else if (section == SEC_BUILD && !strcmp(key, "entry")) {
+            parse_quoted_value(val, m->entry, sizeof(m->entry));
         }
     }
     fclose(f);
-    return "src/main.przp";
+
+    if (!m->package_name[0]) {
+        fprintf(stderr, "przp: przp.toml missing [package].name\n");
+        return -1;
+    }
+    if (!m->entry[0]) {
+        fprintf(stderr, "przp: przp.toml has empty [build].entry\n");
+        return -1;
+    }
+    return 1;
 }
 
 static void cmd_build(int argc, char **argv) {
@@ -742,18 +830,19 @@ static void cmd_build(int argc, char **argv) {
         if (!strncmp(argv[i], "-o=", 3))  out_name = argv[i] + 3;
     }
 
-    const char *entry = find_entry();
-    if (!entry) { fprintf(stderr, "przp build: no przp.toml or entry point found\n"); exit(1); }
+    Manifest manifest;
+    int mf = read_manifest(&manifest);
+    if (mf == 0) { fprintf(stderr, "przp build: no przp.toml found\n"); exit(1); }
+    if (mf < 0) exit(1);
 
     char out_buf[256] = "out";
     if (out_name) {
         snprintf(out_buf, sizeof(out_buf), "%s", out_name);
     } else {
-        /* derive output name from entry filename */
-        basename_no_ext(entry, out_buf, sizeof(out_buf));
+        snprintf(out_buf, sizeof(out_buf), "%s", manifest.package_name);
     }
 
-    int rc = compile_file(entry, out_buf, release);
+    int rc = compile_file(manifest.entry, out_buf, release);
     exit(rc);
 }
 
@@ -762,13 +851,15 @@ static void cmd_run(int argc, char **argv) {
     for (int i = 0; i < argc; i++)
         if (!strcmp(argv[i], "--release")) release = 1;
 
-    const char *entry = find_entry();
-    if (!entry) { fprintf(stderr, "przp run: no przp.toml or entry point found\n"); exit(1); }
+    Manifest manifest;
+    int mf = read_manifest(&manifest);
+    if (mf == 0) { fprintf(stderr, "przp run: no przp.toml found\n"); exit(1); }
+    if (mf < 0) exit(1);
 
     char out_buf[256];
-    basename_no_ext(entry, out_buf, sizeof(out_buf));
+    snprintf(out_buf, sizeof(out_buf), "%s", manifest.package_name);
 
-    if (compile_file(entry, out_buf, release) != 0) exit(1);
+    if (compile_file(manifest.entry, out_buf, release) != 0) exit(1);
 
     char run_cmd[512];
     snprintf(run_cmd, sizeof(run_cmd), "./%s", out_buf);

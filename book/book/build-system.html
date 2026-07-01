@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-e83dbd91.js";
+            window.path_to_searchindex_js = "searchindex-3f5b096b.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-7f1b7573.js"></script>
@@ -188,10 +188,12 @@
 <tbody>
 <tr><td><code>przp init [name]</code></td><td>Initialize a new project</td></tr>
 <tr><td><code>przp build</code></td><td>Compile (debug by default)</td></tr>
+<tr><td><code>przp build -o=Name</code></td><td>Compile and write a custom output binary</td></tr>
 <tr><td><code>przp build --release</code></td><td>Optimized release build</td></tr>
 <tr><td><code>przp run</code></td><td>Build and run</td></tr>
 <tr><td><code>przp run --release</code></td><td>Build and run with optimizations</td></tr>
-<tr><td><code>przp sac &lt;files&gt; -o=Name</code></td><td>Stand-Alone Compiler — compile files without a project</td></tr>
+<tr><td><code>przp sac &lt;files&gt; -o=Name</code></td><td>Stand-Alone Compiler — compile one or more files without a project</td></tr>
+<tr><td><code>przp sac &lt;files&gt; --release -o=Name</code></td><td>Stand-alone optimized build</td></tr>
 </tbody>
 </table>
 </div>
@@ -204,22 +206,52 @@ if @release { @pf("release build\n") }
 </code></pre>
 <h2 id="project-structure"><a class="header" href="#project-structure">Project Structure</a></h2>
 <pre><code>MyProject/
-  src/
-    main.przp      # entry point
   przp.toml        # project manifest
+  src/
+    main.przp      # default entry point
 </code></pre>
 <h2 id="przptoml"><a class="header" href="#przptoml"><code>przp.toml</code></a></h2>
+<p>The manifest is intentionally small while the language ships only its core compiler and standard library.</p>
 <pre><code class="language-toml">[package]
 name    = "MyProject"
 version = "0.1.0"
 
 [build]
 entry = "src/main.przp"
+
+[deps]
+# reserved for future package dependencies
 </code></pre>
+<p>Supported fields:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Field</th><th style="text-align: right">Required</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>[package].name</code></td><td style="text-align: right">yes</td><td>Package name. Used as the default <code>przp build</code>/<code>przp run</code> binary name.</td></tr>
+<tr><td><code>[package].version</code></td><td style="text-align: right">no</td><td>Package version metadata.</td></tr>
+<tr><td><code>[build].entry</code></td><td style="text-align: right">no</td><td>Entry source file. Defaults to <code>src/main.przp</code>.</td></tr>
+</tbody>
+</table>
+</div>
+<p><code>[deps]</code> is accepted as a reserved section, but the current toolchain does not download or resolve packages. Standard library modules are shipped with the compiler and imported with paths such as <code>"std/io"</code>.</p>
+<h2 id="outputs"><a class="header" href="#outputs">Outputs</a></h2>
+<p>Project builds write the binary to the current project directory:</p>
+<pre><code>przp build          # ./MyProject, using [package].name
+przp build -o=app   # ./app
+przp run            # builds ./MyProject, then runs it
+</code></pre>
+<p>Stand-alone compilation defaults to <code>./out</code> unless <code>-o=Name</code> is provided.</p>
 <h2 id="quick-start"><a class="header" href="#quick-start">Quick Start</a></h2>
 <pre><code class="language-sh">przp init myproject
 cd myproject
 przp run
+</code></pre>
+<p>To initialize the current directory instead:</p>
+<pre><code class="language-sh">mkdir myproject
+cd myproject
+przp init
 </code></pre>
 
                     </main>

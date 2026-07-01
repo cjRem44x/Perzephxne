@@ -201,13 +201,6 @@ static Type *mktype(Parser *p, TypeKind k, Span span) {
     return t;
 }
 
-static TypeKind prim_keyword(TokenKind k) {
-    switch (k) {
-        case TOK_IDENT: return -1;
-        default:        return -1;
-    }
-}
-
 /* match "i32", "u8", etc. from identifier text */
 static TypeKind prim_from_name(const char *s) {
     if (!strcmp(s,"i8"))    return TY_I8;
@@ -1232,6 +1225,19 @@ static Stmt *parse_inferred_let(Parser *p) {
     return s;
 }
 
+static int ident_colon_starts_label(Parser *p) {
+    if (!check(p, TOK_IDENT) || !check2(p, TOK_COLON)) return 0;
+    if (!is_type_start(p->peek2.kind)) return 1;
+    if (p->peek2.kind != TOK_IDENT) return 0;
+
+    TokenKind p3 = p->peek3.kind;
+    if (p3 == TOK_EQ || p3 == TOK_COLONCOLON) return 0;
+    if (p3 == TOK_LT) return 0;
+    if (p3 == TOK_COLON) return 0;
+    if (p3 == TOK_DOT) return 0;
+    return 1;
+}
+
 static Stmt *parse_stmt(Parser *p) {
     Span span = cur(p).span;
 
@@ -1250,21 +1256,7 @@ static Stmt *parse_stmt(Parser *p) {
          - peek3 == ':' AND peek2
            is a known primitive    → var-decl (immutable, primitive type)
          - otherwise               → label */
-    if (check(p, TOK_IDENT) && check2(p, TOK_COLON) &&
-        (!is_type_start(p->peek2.kind) ||
-         (p->peek2.kind == TOK_IDENT && ({
-             const char *n = p->peek2.sval;
-             TokenKind p3  = p->peek3.kind;
-             /* definitely a type annotation if followed by mutable/new-immutable = / :: */
-             int is_decl = (p3 == TOK_EQ || p3 == TOK_COLONCOLON);
-             /* generic type: Name<T, U> */
-             if (!is_decl && p3 == TOK_LT) is_decl = 1;
-             /* immutable (p3==:) with any ident type — treat as var decl */
-             if (!is_decl && p3 == TOK_COLON && n) is_decl = 1;
-             /* module-qualified type: v: mod.Type ... — peek3 is '.' */
-             if (!is_decl && p3 == TOK_DOT) is_decl = 1;
-             !is_decl; /* true → treat as label */
-         })))) {
+    if (ident_colon_starts_label(p)) {
         const char *lname = cur(p).sval;
         advance(p); advance(p); /* consume ident and ':' */
         /* if label precedes a loop, attach it to the loop instead of emitting STMT_LABEL */
@@ -1693,7 +1685,6 @@ static AttrList parse_attrs(Parser *p) {
     AttrList attrs = {0};
     while (check(p, TOK_BUILTIN)) {
         const char *name = cur(p).sval;
-        Span span = cur(p).span;
         advance(p);
         if (!strcmp(name, "packed")) {
             Attr a = { .kind = ATTR_PACKED, .arg = NULL };

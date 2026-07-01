@@ -333,6 +333,12 @@ MyProject/
 [package]
 name    = "MyProject"
 version = "0.1.0"
+
+[build]
+entry = "src/main.przp"  # optional; this is the default
+
+[deps]
+# reserved for future packages; std ships with the compiler
 ```
 
 ## Build System
@@ -344,6 +350,9 @@ version = "0.1.0"
 | `przp build --release` | optimized release build |
 | `przp run` | build and run |
 | `przp sac <files> -o=Name` | compile one or more files without a project |
+
+Project builds use `[package].name` as the default binary name. The standard
+library ships with the compiler; there is no external dependency resolver yet.
 
 ## Tests
 
@@ -368,7 +377,7 @@ fixtures, and checks expected compiler failures.
 | `std/fmt` | string formatting and padding utilities |
 | `std/collections` | dynamic array (Vec) |
 | `std/atomic` | atomic load/store/add/sub/cas/inc/dec on i64 |
-| `std/sync` | mutex and condition-variable primitives |
+| `std/sync` | mutex and read-write lock wrappers |
 | `std/crypto` | djb2, fnv1a, sha256 hashing; xor_encrypt |
 
 ---

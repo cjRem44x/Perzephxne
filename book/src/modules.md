@@ -59,7 +59,12 @@ All top-level declarations are visible within a project by default.
 | Module | Contents |
 |---|---|
 | `std/io` | print, file I/O, stdin |
-| `std/str` | string operations |
-| `std/math` | sqrt, trig, constants |
-| `std/os` | env, args, paths |
-| `std/collections` | dynamic arrays, maps |
+| `std/str` | string operations, split/trim/contains/replace |
+| `std/math` | sqrt, trig, pow, log, floor/ceil, constants |
+| `std/os` | env, cwd, directory helpers, process execution |
+| `std/file` | file read/write, append, exists, delete, size |
+| `std/fmt` | string formatting and padding utilities |
+| `std/collections` | dynamic array support |
+| `std/atomic` | atomic load/store/add/sub/cas/inc/dec on i64 |
+| `std/sync` | mutex and read-write lock wrappers |
+| `std/crypto` | djb2, fnv1a, sha256 hashing; xor_encrypt |

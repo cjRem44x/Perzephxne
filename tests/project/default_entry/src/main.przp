@@ -1,0 +1,4 @@
+fn main() -> i32 {
+    @pf("default entry\n")
+    ret 0
+}

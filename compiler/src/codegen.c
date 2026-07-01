@@ -139,12 +139,6 @@ static void emit_label(CG *cg, int id) {
     cg->cur_label  = id;
 }
 
-/* write the current label name for phi predecessors */
-static void emit_cur_label(CG *cg) {
-    if (cg->cur_label < 0) emit(cg, "%%entry");
-    else emit(cg, "%%l%d", cg->cur_label);
-}
-
 static void push_scope(CG *cg) {
     Scope *s = ARENA_NEW(cg->arena, Scope);
     s->parent      = cg->scope;

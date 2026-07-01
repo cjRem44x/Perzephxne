@@ -1348,6 +1348,7 @@ static void check_type_alias(Sema *s, Item *item) {
 
 /* Produce a mangling-safe string for a type (duplicated from parser.c for sema use) */
 static const char *gen_type_str(Type *ty, Arena *a) {
+    (void)a;
     if (!ty) return "void";
     switch (ty->kind) {
         case TY_I8:    return "i8";

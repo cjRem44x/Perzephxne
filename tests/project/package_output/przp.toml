@@ -1,0 +1,6 @@
+[package]
+name = "pkg_out"
+version = "0.1.0"
+
+[build]
+entry = "src/app.przp"

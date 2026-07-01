@@ -100,6 +100,61 @@ run_project_case() {
     fi
 }
 
+run_project_fail_case() {
+    local src_dir="$1"
+    local name
+    name="$(basename "$src_dir")"
+    local work="$TMP/project_fail/$name"
+    local stderr="$TMP/err/$name.project-fail.stderr"
+    local expected="$src_dir/stderr"
+
+    printf 'pfail %s\n' "$name"
+    mkdir -p "$TMP/project_fail"
+    cp -R "$src_dir" "$work"
+    rm -f "$work/stderr"
+
+    if (cd "$work" && PRZP_STDLIB="$STDLIB" "$PRZP" build >"$TMP/out/$name.project-fail.stdout" 2>"$stderr"); then
+        printf 'FAIL  %s: expected project build failure\n' "$name" >&2
+        failures=$((failures + 1))
+        return
+    fi
+
+    if ! grep -F -f "$expected" "$stderr" >/dev/null; then
+        printf 'FAIL  %s: stderr did not contain expected text\n' "$name" >&2
+        printf 'expected one of:\n' >&2
+        sed -n '1,80p' "$expected" >&2
+        printf 'actual:\n' >&2
+        sed -n '1,120p' "$stderr" >&2
+        failures=$((failures + 1))
+    fi
+}
+
+run_init_case() {
+    local work="$TMP/init/current"
+    local stdout="$TMP/out/init.stdout"
+    local stderr="$TMP/err/init.stderr"
+
+    printf 'init  current\n'
+    mkdir -p "$work"
+    if ! (cd "$work" && PRZP_STDLIB="$STDLIB" "$PRZP" init >"$stdout" 2>"$stderr"); then
+        printf 'FAIL  init current: init failed\n' >&2
+        sed -n '1,120p' "$stderr" >&2
+        failures=$((failures + 1))
+        return
+    fi
+    if ! (cd "$work" && PRZP_STDLIB="$STDLIB" "$PRZP" run >>"$stdout" 2>>"$stderr"); then
+        printf 'FAIL  init current: run failed\n' >&2
+        sed -n '1,120p' "$stderr" >&2
+        failures=$((failures + 1))
+        return
+    fi
+    if ! grep -F "Hello from current!" "$stdout" >/dev/null; then
+        printf 'FAIL  init current: missing run output\n' >&2
+        sed -n '1,120p' "$stdout" >&2
+        failures=$((failures + 1))
+    fi
+}
+
 for src in "$ROOT"/tests/run/*.przp; do
     [ -e "$src" ] || continue
     run_success_case "$src"
@@ -109,6 +164,13 @@ for dir in "$ROOT"/tests/project/*; do
     [ -d "$dir" ] || continue
     run_project_case "$dir"
 done
+
+for dir in "$ROOT"/tests/project-fail/*; do
+    [ -d "$dir" ] || continue
+    run_project_fail_case "$dir"
+done
+
+run_init_case
 
 for src in "$ROOT"/tests/fail/*.przp; do
     [ -e "$src" ] || continue

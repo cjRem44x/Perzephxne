@@ -8,10 +8,12 @@
 |---|---|
 | `przp init [name]` | Initialize a new project |
 | `przp build` | Compile (debug by default) |
+| `przp build -o=Name` | Compile and write a custom output binary |
 | `przp build --release` | Optimized release build |
 | `przp run` | Build and run |
 | `przp run --release` | Build and run with optimizations |
-| `przp sac <files> -o=Name` | Stand-Alone Compiler — compile files without a project |
+| `przp sac <files> -o=Name` | Stand-Alone Compiler — compile one or more files without a project |
+| `przp sac <files> --release -o=Name` | Stand-alone optimized build |
 
 ## Build Modes
 
@@ -30,12 +32,14 @@ if @release { @pf("release build\n") }
 
 ```
 MyProject/
-  src/
-    main.przp      # entry point
   przp.toml        # project manifest
+  src/
+    main.przp      # default entry point
 ```
 
 ## `przp.toml`
+
+The manifest is intentionally small while the language ships only its core compiler and standard library.
 
 ```toml
 [package]
@@ -44,7 +48,32 @@ version = "0.1.0"
 
 [build]
 entry = "src/main.przp"
+
+[deps]
+# reserved for future package dependencies
 ```
+
+Supported fields:
+
+| Field | Required | Description |
+|---|---:|---|
+| `[package].name` | yes | Package name. Used as the default `przp build`/`przp run` binary name. |
+| `[package].version` | no | Package version metadata. |
+| `[build].entry` | no | Entry source file. Defaults to `src/main.przp`. |
+
+`[deps]` is accepted as a reserved section, but the current toolchain does not download or resolve packages. Standard library modules are shipped with the compiler and imported with paths such as `"std/io"`.
+
+## Outputs
+
+Project builds write the binary to the current project directory:
+
+```
+przp build          # ./MyProject, using [package].name
+przp build -o=app   # ./app
+przp run            # builds ./MyProject, then runs it
+```
+
+Stand-alone compilation defaults to `./out` unless `-o=Name` is provided.
 
 ## Quick Start
 
@@ -52,4 +81,12 @@ entry = "src/main.przp"
 przp init myproject
 cd myproject
 przp run
+```
+
+To initialize the current directory instead:
+
+```sh
+mkdir myproject
+cd myproject
+przp init
 ```
