@@ -151,6 +151,38 @@ The element types must match. Numeric literals adopt the declared element type, 
 
 A slice does not own its memory — it is valid only as long as the underlying array is alive.
 
+## Tuples
+
+A tuple groups a fixed number of values of possibly different types. The type is written `(T1, T2, ...)` and values are built with parenthesized, comma-separated expressions:
+
+```
+t: (i32, str) = (42, "hello")
+```
+
+Elements are accessed by position with `.0`, `.1`, …:
+
+```
+@pf("{t.0} {t.1}\n")     # 42 hello
+
+t.0 = 10                 # element assignment (mutable binding)
+t.0 += 5                 # compound ops work too
+```
+
+Tuples are first-class: they can be stored in variables, passed to and returned from functions, nested, and used as struct fields:
+
+```
+fn swap(t: (i32, i32)) -> (i32, i32) {
+    ret (t.1, t.0)
+}
+
+n: ((i32, i32), str) = ((1, 2), "x")
+inner: i32 = n.0.1       # chained access into nested tuples
+
+struct Labeled { pos: (f64, f64), name: str }
+```
+
+A tuple-returning call can also be destructured directly into two variables — see [Multiple Return Values](./functions.md#multiple-return-values).
+
 ## `any`
 
 `any` holds a value of any type alongside a runtime type tag. Use `when` to inspect:

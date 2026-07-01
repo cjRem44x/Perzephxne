@@ -3,6 +3,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <inttypes.h>
 
 /* ── Parser state ─────────────────────────────────────────────────────────── */
 
@@ -983,6 +984,18 @@ static Expr *parse_postfix(Parser *p, Expr *e) {
                 if (p->in_when_arm_body || e->kind != EXPR_IDENT) break;
             }
             advance(p);
+            /* tuple element access: t.0, t.1 */
+            if (check(p, TOK_INT)) {
+                Token idx = cur(p);
+                advance(p);
+                char *fname_buf = arena_alloc(p->arena, 24);
+                snprintf(fname_buf, 24, "%" PRIu64, idx.ival);
+                Expr *fe = mkexpr(p, EXPR_FIELD, span_merge(span, idx.span));
+                fe->field.obj   = e;
+                fe->field.field = fname_buf;
+                e = fe;
+                continue;
+            }
             Token fname = expect(p, TOK_IDENT);
             /* qualified struct literal: alias.TypeName { .x = ... } */
             if (!p->no_struct_lit && e->kind == EXPR_IDENT
@@ -1080,6 +1093,7 @@ static int is_type_start(TokenKind k) {
     switch (k) {
         case TOK_IDENT: case TOK_STAR: case TOK_CARET:
         case TOK_LBRACKET: case TOK_BANG: case TOK_FN:
+        case TOK_LPAREN: /* (T1, T2) tuple type */
             return 1;
         default: return 0;
     }

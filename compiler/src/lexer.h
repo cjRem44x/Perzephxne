@@ -8,6 +8,7 @@ typedef struct {
     Pos         pos;
     uint32_t    file_id;
     Arena      *arena;
+    int         prev_was_dot; /* last token was '.' — disables float scan for t.0.1 */
 } Lexer;
 
 void  lexer_init(Lexer *l, const char *src, uint32_t file_id, Arena *arena);

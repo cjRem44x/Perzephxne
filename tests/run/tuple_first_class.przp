@@ -1,0 +1,53 @@
+fn divmod(a: i32, b: i32) -> (i32, i32) {
+    ret (a / b, a % b)
+}
+
+fn swap(t: (i32, i32)) -> (i32, i32) {
+    ret (t.1, t.0)
+}
+
+struct Labeled { pos: (f64, f64), name: str }
+
+fn main() -> i32 {
+    # tuple variable from call, element access
+    t: (i32, i32) = divmod(17, 5)
+    @pf("{t.0} {t.1}\n")
+
+    # tuple literal variable, mixed types
+    m: (i32, str) = (42, "hello")
+    @pf("{m.0} {m.1}\n")
+
+    # tuple as parameter
+    u: (i32, i32) = swap(t)
+    @pf("{u.0} {u.1}\n")
+
+    # inferred tuple type
+    v := divmod(9, 4)
+    @pf("{v.0} {v.1}\n")
+
+    # element assignment and compound ops
+    w: (i32, f64) = (1, 2.5)
+    w.0 = 10
+    w.0 += 5
+    w.1 *= 2.0
+    @pf("{w.0} {w.1}\n")
+
+    # whole reassignment
+    w = (3, 0.5)
+    @pf("{w.0} {w.1}\n")
+
+    # nested tuples with chained access
+    n: ((i32, i32), str) = ((1, 2), "x")
+    @pf("{n.0.0} {n.0.1} {n.1}\n")
+
+    # tuple as struct field
+    p: Labeled = Labeled{.pos=(1.5, 2.5), .name="origin"}
+    q: (f64, f64) = p.pos
+    @pf("{q.0} {q.1} {p.name}\n")
+
+    # destructure still works alongside
+    a, b: i32 = divmod(17, 5)
+    @pf("{a} {b}\n")
+
+    ret 0
+}

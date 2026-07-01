@@ -668,6 +668,18 @@ static Type *check_expr(Sema *s, Expr *e) {
                     && obj_ty->ptr.inner && obj_ty->ptr.inner->kind == TY_NAMED)
                 obj_ty = obj_ty->ptr.inner;
             e->ty = NULL;
+            /* tuple element access: t.0, t.1 */
+            if (obj_ty && obj_ty->kind == TY_TUPLE
+                    && e->field.field[0] >= '0' && e->field.field[0] <= '9') {
+                size_t idx = (size_t)strtoul(e->field.field, NULL, 10);
+                if (idx >= obj_ty->tuple.elems.len) {
+                    sema_error(s, e->span, "tuple has %zu elements, no element %zu",
+                               obj_ty->tuple.elems.len, idx);
+                    return e->ty;
+                }
+                e->ty = obj_ty->tuple.elems.data[idx];
+                return e->ty;
+            }
             if (obj_ty && obj_ty->kind == TY_NAMED) {
                 /* enum variant access: EnumName.Variant */
                 for (EnumInfo *ei = s->enums; ei; ei = ei->next) {

@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-162d22df.js";
+            window.path_to_searchindex_js = "searchindex-47d6d468.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-b900b046.js"></script>
@@ -207,6 +207,12 @@ fn scale(x: f32, factor: f32) {
 
 q, r: i32 = divmod(17, 5)
 @pf("{q} remainder {r}\n")
+</code></pre>
+<p>The result can also be kept whole as a <a href="./variables-types.html#tuples">tuple</a> and accessed by position:</p>
+<pre><code>t: (i32, i32) = divmod(17, 5)
+@pf("{t.0} remainder {t.1}\n")
+
+u := divmod(9, 4)     # inferred tuple type works too
 </code></pre>
 <h2 id="named-return-values"><a class="header" href="#named-return-values">Named Return Values</a></h2>
 <pre><code>fn stats(s: []f64) -&gt; (mean: f64, max: f64) {

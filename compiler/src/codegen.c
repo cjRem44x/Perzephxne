@@ -2905,6 +2905,20 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                 obj = val_tmp(dp);
                 obj_ty = obj_ty->ptr.inner;
             }
+            /* tuple element access: t.0, t.1 — obj is a { T1, T2 } value */
+            if (obj_ty && obj_ty->kind == TY_TUPLE
+                    && e->field.field[0] >= '0' && e->field.field[0] <= '9') {
+                size_t tidx = (size_t)strtoul(e->field.field, NULL, 10);
+                if (tidx >= obj_ty->tuple.elems.len)
+                    fatal_at(e->span, "tuple has %zu elements, no element %zu",
+                             obj_ty->tuple.elems.len, tidx);
+                Type *ety = obj_ty->tuple.elems.data[tidx];
+                if (out_ty) *out_ty = ety;
+                int ev = new_tmp(cg);
+                emit(cg, "  %%t%d = extractvalue %s %s, %zu\n",
+                     ev, llvm_type(obj_ty), obj.buf, tidx);
+                return val_tmp(ev);
+            }
             if (!obj_ty || obj_ty->kind != TY_NAMED)
                 fatal_at(e->span, "field access on non-struct value");
             StructInfo *si = find_struct(cg, obj_ty->named.name);
@@ -3846,7 +3860,45 @@ static void cg_stmt(CG *cg, Stmt *s) {
                     obj = val_tmp(dp);
                     obj_ty = obj_ty->ptr.inner;
                 }
-                if (obj_ty && obj_ty->kind == TY_NAMED) {
+                /* tuple element assignment: t.0 = val — GEP into the tuple's alloca */
+                if (obj_ty && obj_ty->kind == TY_TUPLE
+                        && s->assign.target->field.field[0] >= '0'
+                        && s->assign.target->field.field[0] <= '9'
+                        && s->assign.target->field.obj->kind == EXPR_IDENT) {
+                    Symbol *tsym = lookup(cg, s->assign.target->field.obj->ident.name);
+                    size_t tidx = (size_t)strtoul(s->assign.target->field.field, NULL, 10);
+                    if (tsym && tidx < obj_ty->tuple.elems.len) {
+                        Type *ety = obj_ty->tuple.elems.data[tidx];
+                        const char *ellt = ety ? effective_llvm_type(cg, ety) : "i32";
+                        Type *vty = NULL;
+                        Val rhs = cg_expr(cg, s->assign.val, &vty);
+                        int fp = new_tmp(cg);
+                        emit(cg, "  %%t%d = getelementptr %s, ptr %s, i32 0, i32 %zu\n",
+                             fp, llvm_type(obj_ty), tsym->llvm_name, tidx);
+                        if (s->assign.op == ASSIGN_EQ) {
+                            emit(cg, "  store %s %s, ptr %%t%d\n", ellt, rhs.buf, fp);
+                        } else {
+                            int cur = new_tmp(cg);
+                            emit(cg, "  %%t%d = load %s, ptr %%t%d\n", cur, ellt, fp);
+                            int res = new_tmp(cg);
+                            int is_flt_t = ety && type_is_float(ety);
+                            switch (s->assign.op) {
+                                case ASSIGN_ADD: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res, is_flt_t?"fadd":"add",  ellt, cur, rhs.buf); break;
+                                case ASSIGN_SUB: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res, is_flt_t?"fsub":"sub",  ellt, cur, rhs.buf); break;
+                                case ASSIGN_MUL: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res, is_flt_t?"fmul":"mul",  ellt, cur, rhs.buf); break;
+                                case ASSIGN_DIV: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res, is_flt_t?"fdiv":"sdiv", ellt, cur, rhs.buf); break;
+                                case ASSIGN_MOD: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res, is_flt_t?"frem":"srem", ellt, cur, rhs.buf); break;
+                                case ASSIGN_AMP: emit(cg, "  %%t%d = and  %s %%t%d, %s\n", res, ellt, cur, rhs.buf); break;
+                                case ASSIGN_PIPE:emit(cg, "  %%t%d = or   %s %%t%d, %s\n", res, ellt, cur, rhs.buf); break;
+                                case ASSIGN_XOR: emit(cg, "  %%t%d = xor  %s %%t%d, %s\n", res, ellt, cur, rhs.buf); break;
+                                case ASSIGN_SHL: emit(cg, "  %%t%d = shl  %s %%t%d, %s\n", res, ellt, cur, rhs.buf); break;
+                                case ASSIGN_SHR: emit(cg, "  %%t%d = ashr %s %%t%d, %s\n", res, ellt, cur, rhs.buf); break;
+                                default:         emit(cg, "  %%t%d = add  %s %%t%d, 0\n",  res, ellt, cur); break;
+                            }
+                            emit(cg, "  store %s %%t%d, ptr %%t%d\n", ellt, res, fp);
+                        }
+                    }
+                } else if (obj_ty && obj_ty->kind == TY_NAMED) {
                     StructInfo *si = find_struct(cg, obj_ty->named.name);
                     const char *fname = s->assign.target->field.field;
                     int fidx = si ? struct_field_index(si, fname) : -1;

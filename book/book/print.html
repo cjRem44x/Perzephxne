@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-162d22df.js";
+            window.path_to_searchindex_js = "searchindex-47d6d468.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-b900b046.js"></script>
@@ -494,6 +494,27 @@ nums: []f64 = [1.5, 2.5]  # slice straight from a literal
 </code></pre>
 <p>The element types must match. Numeric literals adopt the declared element type, so <code>w: []i64 = [1, 2, 3]</code> works without suffixes.</p>
 <p>A slice does not own its memory — it is valid only as long as the underlying array is alive.</p>
+<h2 id="tuples"><a class="header" href="#tuples">Tuples</a></h2>
+<p>A tuple groups a fixed number of values of possibly different types. The type is written <code>(T1, T2, ...)</code> and values are built with parenthesized, comma-separated expressions:</p>
+<pre><code>t: (i32, str) = (42, "hello")
+</code></pre>
+<p>Elements are accessed by position with <code>.0</code>, <code>.1</code>, …:</p>
+<pre><code>@pf("{t.0} {t.1}\n")     # 42 hello
+
+t.0 = 10                 # element assignment (mutable binding)
+t.0 += 5                 # compound ops work too
+</code></pre>
+<p>Tuples are first-class: they can be stored in variables, passed to and returned from functions, nested, and used as struct fields:</p>
+<pre><code>fn swap(t: (i32, i32)) -&gt; (i32, i32) {
+    ret (t.1, t.0)
+}
+
+n: ((i32, i32), str) = ((1, 2), "x")
+inner: i32 = n.0.1       # chained access into nested tuples
+
+struct Labeled { pos: (f64, f64), name: str }
+</code></pre>
+<p>A tuple-returning call can also be destructured directly into two variables — see <a href="#multiple-return-values">Multiple Return Values</a>.</p>
 <h2 id="any"><a class="header" href="#any"><code>any</code></a></h2>
 <p><code>any</code> holds a value of any type alongside a runtime type tag. Use <code>when</code> to inspect:</p>
 <pre><code>x: any = 42
@@ -668,6 +689,12 @@ fn scale(x: f32, factor: f32) {
 
 q, r: i32 = divmod(17, 5)
 @pf("{q} remainder {r}\n")
+</code></pre>
+<p>The result can also be kept whole as a <a href="#tuples">tuple</a> and accessed by position:</p>
+<pre><code>t: (i32, i32) = divmod(17, 5)
+@pf("{t.0} remainder {t.1}\n")
+
+u := divmod(9, 4)     # inferred tuple type works too
 </code></pre>
 <h2 id="named-return-values"><a class="header" href="#named-return-values">Named Return Values</a></h2>
 <pre><code>fn stats(s: []f64) -&gt; (mean: f64, max: f64) {
