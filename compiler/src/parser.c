@@ -1409,8 +1409,16 @@ static Stmt *parse_stmt(Parser *p) {
         IfBranch branch = { .cond = cond, .body = body };
         SLICE_PUSH(p->arena, &branches, IfBranch, branch);
 
-        while (check(p, TOK_ELIF)) {
-            advance(p);
+        /* accept both "elif cond {" and "else if cond {" as branch heads */
+        for (;;) {
+            if (check(p, TOK_ELIF)) {
+                advance(p); /* eat 'elif' */
+            } else if (check(p, TOK_ELSE) && peek(p).kind == TOK_IF) {
+                advance(p); /* eat 'else' */
+                advance(p); /* eat 'if'   */
+            } else {
+                break;
+            }
             p->no_struct_lit = 1;
             Expr    *ec = parse_expr(p);
             p->no_struct_lit = 0;

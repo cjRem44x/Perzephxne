@@ -79,12 +79,41 @@ fn main() {
 ### Control Flow
 
 ```
+# if / elif / else (both "elif" and "else if" are accepted)
+score: i32 = 85
+if score >= 90 {
+    @pf("A\n")
+} elif score >= 80 {
+    @pf("B\n")
+} else {
+    @pf("C\n")
+}
+
+# range for
 for i => 0..10 {
     if i % 2 == 0 { @pf("{i} is even\n") }
 }
 
+# for-each over array or slice
 items: [3]str = ["a", "b", "c"]
 for item => items { @pf("{item}\n") }
+
+# for-each over str iterates bytes as char
+for ch => "hello" { @pf("{ch}") }
+
+# while loop
+i: i32 = 0
+while i < 5 {
+    @pf("{i} ")
+    i = i + 1
+}
+
+# break / continue
+for j => 0..10 {
+    if j == 3 { continue }
+    if j == 7 { break }
+    @pf("{j} ")
+}
 ```
 
 ### Structs
