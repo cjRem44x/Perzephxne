@@ -369,7 +369,12 @@ static Type *check_expr(Sema *s, Expr *e) {
     if (!e) return NULL;
 
     switch (e->kind) {
-        case EXPR_INT:    e->ty = s->ty_i32;  break;  /* default int literal */
+        case EXPR_INT:
+            /* Default to i64 when value exceeds i32 range, so that e.g.
+               `big: i64 = 1000000000000` doesn't silently truncate to i32
+               before being sign-extended into the i64 alloca. */
+            e->ty = (e->ival > (uint64_t)2147483647ULL) ? s->ty_i64 : s->ty_i32;
+            break;
         case EXPR_FLOAT:  e->ty = s->ty_f64;  break;
         case EXPR_BOOL:   e->ty = s->ty_bool; break;
         case EXPR_CHAR:   e->ty = s->ty_char; break;

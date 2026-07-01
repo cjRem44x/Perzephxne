@@ -3504,6 +3504,26 @@ static void cg_stmt(CG *cg, Stmt *s) {
                 Type *vty = NULL;
                 Val rhs = cg_expr(cg, s->assign.val, &vty);
 
+                /* coerce rhs to elem type when widths differ (e.g. i64 loop var → i32 elem) */
+                if (vty) {
+                    const char *rhs_llt = effective_llvm_type(cg, vty);
+                    if (strcmp(rhs_llt, elem_llt) != 0) {
+                        int sv3=0, dv3=0;
+                        if (!strcmp(rhs_llt,"i8"))  sv3=8; else if (!strcmp(rhs_llt,"i16")) sv3=16;
+                        else if (!strcmp(rhs_llt,"i32")) sv3=32; else if (!strcmp(rhs_llt,"i64")) sv3=64;
+                        if (!strcmp(elem_llt,"i8"))  dv3=8; else if (!strcmp(elem_llt,"i16")) dv3=16;
+                        else if (!strcmp(elem_llt,"i32")) dv3=32; else if (!strcmp(elem_llt,"i64")) dv3=64;
+                        if (sv3 && dv3 && sv3 != dv3) {
+                            int ct3 = new_tmp(cg);
+                            const char *op3 = (dv3 < sv3) ? "trunc"
+                                            : (type_is_signed(vty) ? "sext" : "zext");
+                            emit(cg, "  %%t%d = %s %s %s to %s\n",
+                                 ct3, op3, rhs_llt, rhs.buf, elem_llt);
+                            rhs = val_tmp(ct3);
+                        }
+                    }
+                }
+
                 if (s->assign.op == ASSIGN_EQ) {
                     emit(cg, "  store %s %s, ptr %%t%d\n", elem_llt, rhs.buf, ep);
                 } else {
