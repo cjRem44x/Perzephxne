@@ -616,7 +616,9 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                     }
 
                     /* Pre-extract ptr AND len fields for str args (str is { ptr, i64 }).
-                       Both are needed for %.*s which takes (int precision, char *ptr). */
+                       Both are needed for %.*s which takes (int precision, char *ptr).
+                       For tagged unions extract the i32 tag (field 0) and rewrite itys[i]
+                       to TY_I32 so the format-string builder and promote_vararg see %d. */
                     Val *str_len_vals = malloc(sizeof(Val) * na);
                     for (size_t i = 1; i < na; i++) {
                         if (itys[i] && itys[i]->kind == TY_STR) {
@@ -631,6 +633,19 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                             int lv32 = new_tmp(cg);
                             emit(cg, "  %%t%d = trunc i64 %%t%d to i32\n", lv32, lv);
                             str_len_vals[i] = val_tmp(lv32);
+                        } else if (itys[i] && itys[i]->kind == TY_NAMED
+                                   && find_union(cg, itys[i]->named.name)) {
+                            /* tagged union: GEP + load i32 discriminant tag (field 0) */
+                            int tp = new_tmp(cg);
+                            emit(cg, "  %%t%d = getelementptr %%%s, ptr %s, i32 0, i32 0\n",
+                                 tp, itys[i]->named.name, ivals[i].buf);
+                            int tv = new_tmp(cg);
+                            emit(cg, "  %%t%d = load i32, ptr %%t%d\n", tv, tp);
+                            printable[i] = val_tmp(tv);
+                            str_len_vals[i] = val_str("0");
+                            Type *i32ty = ARENA_NEW(cg->arena, Type);
+                            i32ty->kind = TY_I32;
+                            itys[i] = i32ty;
                         } else {
                             printable[i] = ivals[i];
                             str_len_vals[i] = val_str("0");
@@ -746,7 +761,8 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                     fmt_ptr = val_tmp(sp0);
                 }
                 /* pre-emit coercions (extractvalue / fpext) before the call;
-                   str args: extract ptr (field 0) AND len (field 1, trunc to i32) for %.*s */
+                   str args: extract ptr (field 0) AND len (field 1, trunc to i32) for %.*s;
+                   tagged union args: extract i32 tag and use %d */
                 Val *pf_str_lens = malloc(sizeof(Val) * na);
                 for (size_t i = 1; i < na; i++) {
                     if (pf_tys[i] && pf_tys[i]->kind == TY_STR) {
@@ -759,6 +775,16 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                         int lv32 = new_tmp(cg);
                         emit(cg, "  %%t%d = trunc i64 %%t%d to i32\n", lv32, lv);
                         pf_str_lens[i] = val_tmp(lv32);
+                    } else if (pf_tys[i] && pf_tys[i]->kind == TY_NAMED
+                               && find_union(cg, pf_tys[i]->named.name)) {
+                        int tp = new_tmp(cg);
+                        emit(cg, "  %%t%d = getelementptr %%%s, ptr %s, i32 0, i32 0\n",
+                             tp, pf_tys[i]->named.name, pf_vals[i].buf);
+                        int tv = new_tmp(cg);
+                        emit(cg, "  %%t%d = load i32, ptr %%t%d\n", tv, tp);
+                        pf_final[i] = val_tmp(tv);
+                        pf_llts[i]  = "i32";
+                        pf_str_lens[i] = val_str("0");
                     } else {
                         const char *llt;
                         pf_final[i] = promote_vararg(cg, pf_vals[i], pf_tys[i], &llt);
@@ -925,6 +951,18 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                         emit(cg, "  %%t%d = trunc i64 %%t%d to i32\n", lv32, lv);
                         fv[i]      = val_tmp(sv);
                         fv_lens[i] = val_tmp(lv32);
+                    } else if (fty[i] && fty[i]->kind == TY_NAMED
+                               && find_union(cg, fty[i]->named.name)) {
+                        int tp = new_tmp(cg);
+                        emit(cg, "  %%t%d = getelementptr %%%s, ptr %s, i32 0, i32 0\n",
+                             tp, fty[i]->named.name, fv[i].buf);
+                        int tv = new_tmp(cg);
+                        emit(cg, "  %%t%d = load i32, ptr %%t%d\n", tv, tp);
+                        fv[i]  = val_tmp(tv);
+                        fv_lens[i] = val_str("0");
+                        Type *i32ty = ARENA_NEW(cg->arena, Type);
+                        i32ty->kind = TY_I32;
+                        fty[i] = i32ty;
                     } else {
                         fv_lens[i] = val_str("0");
                     }
