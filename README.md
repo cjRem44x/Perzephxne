@@ -125,6 +125,13 @@ for j => 0..10 {
 # logical not: both '!' and 'not' are accepted
 if !false { @pf("ok\n") }
 if not false { @pf("ok\n") }
+
+# defer: run statement when the enclosing function returns
+fn open_and_read() {
+    p: *i32 = @alo(i32)
+    defer @free(p)   # runs on every return path
+    p.* = 42
+}
 ```
 
 ### Structs
@@ -324,9 +331,15 @@ version = "0.1.0"
 | Module | Description |
 |---|---|
 | `std/io` | print, file I/O, stdin |
-| `std/str` | string operations |
-| `std/math` | sqrt, trig, constants |
-| `std/os` | env, paths, processes |
+| `std/str` | string operations, split/trim/contains/replace |
+| `std/math` | sqrt, trig, pow, log, floor/ceil, constants (PI, E, …) |
+| `std/os` | env, paths, exit, process execution |
+| `std/file` | file read/write, append, exists, delete, size |
+| `std/fmt` | string formatting and padding utilities |
+| `std/collections` | dynamic array (Vec) |
+| `std/atomic` | atomic load/store/add/sub/cas/inc/dec on i64 |
+| `std/sync` | mutex and condition-variable primitives |
+| `std/crypto` | djb2, fnv1a, sha256 hashing; xor_encrypt |
 
 ---
 
