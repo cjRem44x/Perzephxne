@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-b878b536.js";
+            window.path_to_searchindex_js = "searchindex-e996ee23.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-b900b046.js"></script>
@@ -279,8 +279,10 @@ ok: bool = parse("42", &amp;n)
 }
 </code></pre>
 <p><strong>Opaque handle (C FFI):</strong></p>
-<pre><code>struct SDL_Window { _pad: u8 }   # forward declaration
+<pre><code>extern struct SDL_Window   # declared but not defined — use via pointers only
 type WindowHandle = *SDL_Window
+
+extern fn SDL_CreateWindow(title: *u8, x: i32, y: i32, w: i32, h: i32, flags: u32) -&gt; *SDL_Window
 </code></pre>
 
                     </main>

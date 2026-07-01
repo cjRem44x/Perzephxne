@@ -1,0 +1,7 @@
+12.566360 12.000000 0.000000
+not a point
+dims 3.000000 4.000000
+quit
+move 10,20
+write hello
+color 255 128 0

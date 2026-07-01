@@ -11,6 +11,7 @@ void lexer_init(Lexer *l, const char *src, uint32_t file_id, Arena *arena) {
     l->pos     = (Pos){ .line = 1, .col = 1 };
     l->file_id = file_id;
     l->arena   = arena;
+    l->prev_was_dot = 0;
 }
 
 static char peek(Lexer *l)          { return *l->cur; }
@@ -135,8 +136,9 @@ static Token lex_number(Lexer *l, Pos start) {
         advance(l);
     }
 
-    /* float? */
-    if (base == 10 && peek(l) == '.' && peek2(l) != '.' && peek2(l) != '=') {
+    /* float? (suppressed right after a '.' token so t.0.1 stays field access) */
+    if (base == 10 && !l->prev_was_dot
+            && peek(l) == '.' && peek2(l) != '.' && peek2(l) != '=') {
         is_float = 1;
         advance(l);
         while (isdigit((unsigned char)peek(l)) || peek(l) == '_') advance(l);
@@ -207,7 +209,7 @@ static TokenKind keyword_or_ident(const char *s) {
     return TOK_IDENT;
 }
 
-Token lexer_next(Lexer *l) {
+static Token lexer_next_inner(Lexer *l) {
     skip_whitespace(l);
     Pos start = l->pos;
 
@@ -312,6 +314,14 @@ Token lexer_next(Lexer *l) {
 
 #undef TOK1
 #undef TOK2
+}
+
+Token lexer_next(Lexer *l) {
+    Token t = lexer_next_inner(l);
+    /* remember a plain '.' so lex_number won't treat the digit after it as a
+       float — makes nested tuple access `t.0.1` lex as t . 0 . 1 */
+    l->prev_was_dot = (t.kind == TOK_DOT);
+    return t;
 }
 
 const char *tok_kind_str(TokenKind k) {

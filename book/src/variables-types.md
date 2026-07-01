@@ -133,6 +133,56 @@ fn sum(s: []i32) -> i32 {
 }
 ```
 
+### Array-to-Slice Decay
+
+A fixed array decays to a slice automatically — in `let` initializers, assignments, function arguments, and returns. The slice views the whole array:
+
+```
+arr: [3]i32 = [10, 20, 30]
+s: []i32 = arr            # same as arr[0..3]
+
+total: i32 = sum(arr)     # array passed where []i32 expected
+total2: i32 = sum([1, 2, 3, 4])   # literal works too
+
+nums: []f64 = [1.5, 2.5]  # slice straight from a literal
+```
+
+The element types must match. Numeric literals adopt the declared element type, so `w: []i64 = [1, 2, 3]` works without suffixes.
+
+A slice does not own its memory — it is valid only as long as the underlying array is alive.
+
+## Tuples
+
+A tuple groups a fixed number of values of possibly different types. The type is written `(T1, T2, ...)` and values are built with parenthesized, comma-separated expressions:
+
+```
+t: (i32, str) = (42, "hello")
+```
+
+Elements are accessed by position with `.0`, `.1`, …:
+
+```
+@pf("{t.0} {t.1}\n")     # 42 hello
+
+t.0 = 10                 # element assignment (mutable binding)
+t.0 += 5                 # compound ops work too
+```
+
+Tuples are first-class: they can be stored in variables, passed to and returned from functions, nested, and used as struct fields:
+
+```
+fn swap(t: (i32, i32)) -> (i32, i32) {
+    ret (t.1, t.0)
+}
+
+n: ((i32, i32), str) = ((1, 2), "x")
+inner: i32 = n.0.1       # chained access into nested tuples
+
+struct Labeled { pos: (f64, f64), name: str }
+```
+
+A tuple-returning call can also be destructured directly into two variables — see [Multiple Return Values](./functions.md#multiple-return-values).
+
 ## `any`
 
 `any` holds a value of any type alongside a runtime type tag. Use `when` to inspect:

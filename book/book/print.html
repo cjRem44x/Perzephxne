@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-b878b536.js";
+            window.path_to_searchindex_js = "searchindex-e996ee23.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-b900b046.js"></script>
@@ -482,6 +482,39 @@ len: usize = @len(sl)      # 2
     ret total
 }
 </code></pre>
+<h3 id="array-to-slice-decay"><a class="header" href="#array-to-slice-decay">Array-to-Slice Decay</a></h3>
+<p>A fixed array decays to a slice automatically — in <code>let</code> initializers, assignments, function arguments, and returns. The slice views the whole array:</p>
+<pre><code>arr: [3]i32 = [10, 20, 30]
+s: []i32 = arr            # same as arr[0..3]
+
+total: i32 = sum(arr)     # array passed where []i32 expected
+total2: i32 = sum([1, 2, 3, 4])   # literal works too
+
+nums: []f64 = [1.5, 2.5]  # slice straight from a literal
+</code></pre>
+<p>The element types must match. Numeric literals adopt the declared element type, so <code>w: []i64 = [1, 2, 3]</code> works without suffixes.</p>
+<p>A slice does not own its memory — it is valid only as long as the underlying array is alive.</p>
+<h2 id="tuples"><a class="header" href="#tuples">Tuples</a></h2>
+<p>A tuple groups a fixed number of values of possibly different types. The type is written <code>(T1, T2, ...)</code> and values are built with parenthesized, comma-separated expressions:</p>
+<pre><code>t: (i32, str) = (42, "hello")
+</code></pre>
+<p>Elements are accessed by position with <code>.0</code>, <code>.1</code>, …:</p>
+<pre><code>@pf("{t.0} {t.1}\n")     # 42 hello
+
+t.0 = 10                 # element assignment (mutable binding)
+t.0 += 5                 # compound ops work too
+</code></pre>
+<p>Tuples are first-class: they can be stored in variables, passed to and returned from functions, nested, and used as struct fields:</p>
+<pre><code>fn swap(t: (i32, i32)) -&gt; (i32, i32) {
+    ret (t.1, t.0)
+}
+
+n: ((i32, i32), str) = ((1, 2), "x")
+inner: i32 = n.0.1       # chained access into nested tuples
+
+struct Labeled { pos: (f64, f64), name: str }
+</code></pre>
+<p>A tuple-returning call can also be destructured directly into two variables — see <a href="#multiple-return-values">Multiple Return Values</a>.</p>
 <h2 id="any"><a class="header" href="#any"><code>any</code></a></h2>
 <p><code>any</code> holds a value of any type alongside a runtime type tag. Use <code>when</code> to inspect:</p>
 <pre><code>x: any = 42
@@ -657,6 +690,12 @@ fn scale(x: f32, factor: f32) {
 q, r: i32 = divmod(17, 5)
 @pf("{q} remainder {r}\n")
 </code></pre>
+<p>The result can also be kept whole as a <a href="#tuples">tuple</a> and accessed by position:</p>
+<pre><code>t: (i32, i32) = divmod(17, 5)
+@pf("{t.0} remainder {t.1}\n")
+
+u := divmod(9, 4)     # inferred tuple type works too
+</code></pre>
 <h2 id="named-return-values"><a class="header" href="#named-return-values">Named Return Values</a></h2>
 <pre><code>fn stats(s: []f64) -&gt; (mean: f64, max: f64) {
     sum: f64 = 0.0
@@ -714,6 +753,11 @@ extern fn malloc(size: usize) -&gt; *u8
 extern fn free(p: *u8)
 </code></pre>
 <p>Variadic <code>...</code> is allowed in extern declarations only.</p>
+<p>C globals and opaque types can be declared the same way:</p>
+<pre><code>extern environ: **u8       # global defined in libc
+extern struct FILE_opaque  # opaque type — use via pointers only
+extern fn fopen(path: *u8, mode: *u8) -&gt; *FILE_opaque
+</code></pre>
 <h2 id="inline"><a class="header" href="#inline">Inline</a></h2>
 <p>Use <code>inline fn</code> to hint that a function should be inlined at call sites:</p>
 <pre><code>inline fn fast_path(x: i32) -&gt; i32 { ret x * 2 }
@@ -1023,6 +1067,8 @@ struct CacheLine {
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="enums--unions"><a class="header" href="#enums--unions">Enums &amp; Unions</a></h1>
 <h2 id="enums"><a class="header" href="#enums">Enums</a></h2>
+<p>Enums come in two forms: plain enums (named integer constants) and payload enums (sum types, where variants carry values).</p>
+<h3 id="plain-enums"><a class="header" href="#plain-enums">Plain Enums</a></h3>
 <pre><code>enum Direction {
     North,
     South,
@@ -1039,6 +1085,33 @@ when d {
     Direction.West  =&gt; @pf("going west\n"),
 }
 </code></pre>
+<h3 id="payload-enums-sum-types"><a class="header" href="#payload-enums-sum-types">Payload Enums (Sum Types)</a></h3>
+<p>Variants can carry values. Write the payload types in parentheses after the variant name:</p>
+<pre><code>enum Shape {
+    Circle(f64),
+    Rect(f64, f64),
+    Point,
+}
+</code></pre>
+<p>Construct a variant by calling it; unit variants are named directly:</p>
+<pre><code>a: Shape = Shape.Circle(2.0)
+b: Shape = Shape.Rect(3.0, 4.0)
+c: Shape = Shape.Point
+</code></pre>
+<p>Match with <code>when</code> and bind the payload values by position:</p>
+<pre><code>area: f64 = when s {
+    Shape.Circle(r)  =&gt; 3.14159 * r * r,
+    Shape.Rect(w, h) =&gt; w * h,
+    Shape.Point      =&gt; 0.0,
+}
+</code></pre>
+<p>A single binder on a multi-value variant receives the whole payload as a <a href="#tuples">tuple</a>:</p>
+<pre><code>when b {
+    Shape.Rect(t) =&gt; @pf("{t.0} x {t.1}\n"),
+    _             =&gt; {},
+}
+</code></pre>
+<p>A multi-value payload is stored as a tuple internally; the representation is a discriminant plus payload storage sized to the largest variant (the same layout as a <a href="#tagged-unions">tagged union</a>). A payload enum cannot also have a backing integer type.</p>
 <h2 id="integer-backed-enum"><a class="header" href="#integer-backed-enum">Integer-Backed Enum</a></h2>
 <p>Add <code>=&gt; TYPE</code> after the name to specify a backing integer. Variants can have explicit values:</p>
 <pre><code>enum Color =&gt; u8 {
@@ -1102,6 +1175,7 @@ describe(a)
 describe(b)
 </code></pre>
 <p>Variant patterns use <code>.name</code>. If the variant carries a payload, add a binding name after the pattern.</p>
+<p>The <a href="#payload-enums-sum-types">payload enum</a> syntax is sugar for exactly this representation — <code>enum Shape { Circle(f64), Point }</code> and <code>unn Shape =&gt; enum { Circle: f64, Point }</code> produce the same type, and the two pattern forms (<code>Shape.Circle(r)</code> and <code>.Circle r</code>) are interchangeable.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="pointers--memory"><a class="header" href="#pointers--memory">Pointers &amp; Memory</a></h1>
 <p>Perzephxne has no garbage collector. Memory is managed manually or with smart pointers from the standard library.</p>
@@ -1205,8 +1279,10 @@ ok: bool = parse("42", &amp;n)
 }
 </code></pre>
 <p><strong>Opaque handle (C FFI):</strong></p>
-<pre><code>struct SDL_Window { _pad: u8 }   # forward declaration
+<pre><code>extern struct SDL_Window   # declared but not defined — use via pointers only
 type WindowHandle = *SDL_Window
+
+extern fn SDL_CreateWindow(title: *u8, x: i32, y: i32, w: i32, h: i32, flags: u32) -&gt; *SDL_Window
 </code></pre>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="smart-pointers"><a class="header" href="#smart-pointers">Smart Pointers</a></h1>
@@ -1554,6 +1630,13 @@ fn handle_request() {
 </code></pre>
 <h2 id="thread-safety"><a class="header" href="#thread-safety">Thread Safety</a></h2>
 <p>Global variables are <strong>not</strong> automatically thread-safe. Concurrent access to mutable globals requires external synchronization.</p>
+<h2 id="extern-globals"><a class="header" href="#extern-globals">Extern Globals</a></h2>
+<p>To reference a global defined in C or another object file:</p>
+<pre><code>extern environ: **u8    # char **environ from libc
+
+first: *u8 = environ.*
+</code></pre>
+<p>The symbol is declared but not defined — the linker resolves it. Extern globals are always mutable.</p>
 <h2 id="args"><a class="header" href="#args"><code>@args</code></a></h2>
 <p>The program’s command-line arguments are available via a builtin — no global declaration needed:</p>
 <pre><code>fn main() {

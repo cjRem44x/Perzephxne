@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-b878b536.js";
+            window.path_to_searchindex_js = "searchindex-e996ee23.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-b900b046.js"></script>
@@ -208,6 +208,12 @@ fn scale(x: f32, factor: f32) {
 q, r: i32 = divmod(17, 5)
 @pf("{q} remainder {r}\n")
 </code></pre>
+<p>The result can also be kept whole as a <a href="./variables-types.html#tuples">tuple</a> and accessed by position:</p>
+<pre><code>t: (i32, i32) = divmod(17, 5)
+@pf("{t.0} remainder {t.1}\n")
+
+u := divmod(9, 4)     # inferred tuple type works too
+</code></pre>
 <h2 id="named-return-values"><a class="header" href="#named-return-values">Named Return Values</a></h2>
 <pre><code>fn stats(s: []f64) -&gt; (mean: f64, max: f64) {
     sum: f64 = 0.0
@@ -265,6 +271,11 @@ extern fn malloc(size: usize) -&gt; *u8
 extern fn free(p: *u8)
 </code></pre>
 <p>Variadic <code>...</code> is allowed in extern declarations only.</p>
+<p>C globals and opaque types can be declared the same way:</p>
+<pre><code>extern environ: **u8       # global defined in libc
+extern struct FILE_opaque  # opaque type — use via pointers only
+extern fn fopen(path: *u8, mode: *u8) -&gt; *FILE_opaque
+</code></pre>
 <h2 id="inline"><a class="header" href="#inline">Inline</a></h2>
 <p>Use <code>inline fn</code> to hint that a function should be inlined at call sites:</p>
 <pre><code>inline fn fast_path(x: i32) -&gt; i32 { ret x * 2 }

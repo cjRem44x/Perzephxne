@@ -2,6 +2,10 @@
 
 ## Enums
 
+Enums come in two forms: plain enums (named integer constants) and payload enums (sum types, where variants carry values).
+
+### Plain Enums
+
 ```
 enum Direction {
     North,
@@ -19,6 +23,47 @@ when d {
     Direction.West  => @pf("going west\n"),
 }
 ```
+
+### Payload Enums (Sum Types)
+
+Variants can carry values. Write the payload types in parentheses after the variant name:
+
+```
+enum Shape {
+    Circle(f64),
+    Rect(f64, f64),
+    Point,
+}
+```
+
+Construct a variant by calling it; unit variants are named directly:
+
+```
+a: Shape = Shape.Circle(2.0)
+b: Shape = Shape.Rect(3.0, 4.0)
+c: Shape = Shape.Point
+```
+
+Match with `when` and bind the payload values by position:
+
+```
+area: f64 = when s {
+    Shape.Circle(r)  => 3.14159 * r * r,
+    Shape.Rect(w, h) => w * h,
+    Shape.Point      => 0.0,
+}
+```
+
+A single binder on a multi-value variant receives the whole payload as a [tuple](./variables-types.md#tuples):
+
+```
+when b {
+    Shape.Rect(t) => @pf("{t.0} x {t.1}\n"),
+    _             => {},
+}
+```
+
+A multi-value payload is stored as a tuple internally; the representation is a discriminant plus payload storage sized to the largest variant (the same layout as a [tagged union](#tagged-unions)). A payload enum cannot also have a backing integer type.
 
 ## Integer-Backed Enum
 
@@ -99,3 +144,5 @@ describe(b)
 ```
 
 Variant patterns use `.name`. If the variant carries a payload, add a binding name after the pattern.
+
+The [payload enum](#payload-enums-sum-types) syntax is sugar for exactly this representation — `enum Shape { Circle(f64), Point }` and `unn Shape => enum { Circle: f64, Point }` produce the same type, and the two pattern forms (`Shape.Circle(r)` and `.Circle r`) are interchangeable.

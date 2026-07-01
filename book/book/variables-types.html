@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-b878b536.js";
+            window.path_to_searchindex_js = "searchindex-e996ee23.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-b900b046.js"></script>
@@ -272,6 +272,39 @@ len: usize = @len(sl)      # 2
     ret total
 }
 </code></pre>
+<h3 id="array-to-slice-decay"><a class="header" href="#array-to-slice-decay">Array-to-Slice Decay</a></h3>
+<p>A fixed array decays to a slice automatically — in <code>let</code> initializers, assignments, function arguments, and returns. The slice views the whole array:</p>
+<pre><code>arr: [3]i32 = [10, 20, 30]
+s: []i32 = arr            # same as arr[0..3]
+
+total: i32 = sum(arr)     # array passed where []i32 expected
+total2: i32 = sum([1, 2, 3, 4])   # literal works too
+
+nums: []f64 = [1.5, 2.5]  # slice straight from a literal
+</code></pre>
+<p>The element types must match. Numeric literals adopt the declared element type, so <code>w: []i64 = [1, 2, 3]</code> works without suffixes.</p>
+<p>A slice does not own its memory — it is valid only as long as the underlying array is alive.</p>
+<h2 id="tuples"><a class="header" href="#tuples">Tuples</a></h2>
+<p>A tuple groups a fixed number of values of possibly different types. The type is written <code>(T1, T2, ...)</code> and values are built with parenthesized, comma-separated expressions:</p>
+<pre><code>t: (i32, str) = (42, "hello")
+</code></pre>
+<p>Elements are accessed by position with <code>.0</code>, <code>.1</code>, …:</p>
+<pre><code>@pf("{t.0} {t.1}\n")     # 42 hello
+
+t.0 = 10                 # element assignment (mutable binding)
+t.0 += 5                 # compound ops work too
+</code></pre>
+<p>Tuples are first-class: they can be stored in variables, passed to and returned from functions, nested, and used as struct fields:</p>
+<pre><code>fn swap(t: (i32, i32)) -&gt; (i32, i32) {
+    ret (t.1, t.0)
+}
+
+n: ((i32, i32), str) = ((1, 2), "x")
+inner: i32 = n.0.1       # chained access into nested tuples
+
+struct Labeled { pos: (f64, f64), name: str }
+</code></pre>
+<p>A tuple-returning call can also be destructured directly into two variables — see <a href="./functions.html#multiple-return-values">Multiple Return Values</a>.</p>
 <h2 id="any"><a class="header" href="#any"><code>any</code></a></h2>
 <p><code>any</code> holds a value of any type alongside a runtime type tag. Use <code>when</code> to inspect:</p>
 <pre><code>x: any = 42

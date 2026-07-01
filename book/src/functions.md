@@ -45,6 +45,15 @@ q, r: i32 = divmod(17, 5)
 @pf("{q} remainder {r}\n")
 ```
 
+The result can also be kept whole as a [tuple](./variables-types.md#tuples) and accessed by position:
+
+```
+t: (i32, i32) = divmod(17, 5)
+@pf("{t.0} remainder {t.1}\n")
+
+u := divmod(9, 4)     # inferred tuple type works too
+```
+
 ## Named Return Values
 
 ```
@@ -129,6 +138,14 @@ extern fn free(p: *u8)
 ```
 
 Variadic `...` is allowed in extern declarations only.
+
+C globals and opaque types can be declared the same way:
+
+```
+extern environ: **u8       # global defined in libc
+extern struct FILE_opaque  # opaque type — use via pointers only
+extern fn fopen(path: *u8, mode: *u8) -> *FILE_opaque
+```
 
 ## Inline
 

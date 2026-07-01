@@ -1,0 +1,56 @@
+enum Shape {
+    Circle(f64),
+    Rect(f64, f64),
+    Point,
+}
+
+impl Shape {
+    fn area(self: Shape) -> f64 {
+        ret when self {
+            Shape.Circle(r)  => 3.14159 * r * r,
+            Shape.Rect(w, h) => w * h,
+            Shape.Point      => 0.0,
+        }
+    }
+}
+
+enum Msg {
+    Quit,
+    Move(i32, i32),
+    Write(str),
+    Color(u8, u8, u8),
+}
+
+fn handle(m: Msg) {
+    when m {
+        Msg.Quit           => @pf("quit\n"),
+        Msg.Move(x, y)     => @pf("move {x},{y}\n"),
+        Msg.Write(txt)     => @pf("write {txt}\n"),
+        Msg.Color(r, g, b) => @pf("color {r} {g} {b}\n"),
+    }
+}
+
+fn main() -> i32 {
+    a: Shape = Shape.Circle(2.0)
+    b: Shape = Shape.Rect(3.0, 4.0)
+    c: Shape = Shape.Point
+    @pf("{a.area()} {b.area()} {c.area()}\n")
+
+    # when statement with wildcard
+    when b {
+        Shape.Point => @pf("point\n"),
+        _           => @pf("not a point\n"),
+    }
+
+    # single binder receives the whole payload tuple
+    when b {
+        Shape.Rect(t) => @pf("dims {t.0} {t.1}\n"),
+        _             => @pf("other\n"),
+    }
+
+    handle(Msg.Quit)
+    handle(Msg.Move(10, 20))
+    handle(Msg.Write("hello"))
+    handle(Msg.Color(255, 128, 0))
+    ret 0
+}
