@@ -85,11 +85,16 @@ if score >= 90 {
     @pf("A\n")
 } elif score >= 80 {
     @pf("B\n")
-} else if score >= 70 {
+} else if score >= 70 {  # "else if" also works
     @pf("C\n")
 } else {
     @pf("F\n")
 }
+
+# Boolean operators: 'and'/'or'/'not' or C-style '&&'/'||'/'!'
+if score >= 70 && score < 90 { @pf("passing\n") }
+if score < 60 || score > 100 { @pf("invalid\n") }
+if !false { @pf("ok\n") }
 
 # range for
 for i => 0..10 {
