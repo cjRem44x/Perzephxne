@@ -103,6 +103,8 @@ typedef struct {
     Type        *cur_fn_ret_ty;
     /* when trailing STMT_WHEN is used as implicit return: alloca index, else -1 */
     int          trailing_result_slot;
+    /* va_list alloca for variadic functions; -1 when not in a variadic fn */
+    int          va_list_tmp;
 } CG;
 
 /* ── Utilities ────────────────────────────────────────────────────────────── */
@@ -1088,6 +1090,50 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                 Val ptr = cg_expr(cg, e->builtin.args.data[0], NULL);
                 emit(cg, "  call void @free(ptr %s)\n", ptr.buf);
                 return val_str("0");
+            }
+
+            /* @va_arg(T) — pop the next variadic argument of type T */
+            if (!strcmp(name, "va_arg")) {
+                if (cg->va_list_tmp < 0)
+                    fatal_at(e->span, "@va_arg used outside a variadic function");
+                if (e->builtin.args.len < 1)
+                    fatal_at(e->span, "@va_arg requires a type argument");
+                Type *arg_ty = e->builtin.args.data[0]->ty;
+                /* the arg is a type name like i32, f64, etc. — resolve it */
+                if (!arg_ty && e->builtin.args.data[0]->kind == EXPR_IDENT) {
+                    /* look up the type from the symbol table's type names */
+                    const char *tname = e->builtin.args.data[0]->ident.name;
+                    static const struct { const char *n; TypeKind k; } tmap[] = {
+                        {"i8",TY_I8},{"i16",TY_I16},{"i32",TY_I32},{"i64",TY_I64},
+                        {"u8",TY_U8},{"u16",TY_U16},{"u32",TY_U32},{"u64",TY_U64},
+                        {"f32",TY_F32},{"f64",TY_F64},{"usize",TY_USIZE},{NULL,0}
+                    };
+                    for (int ii = 0; tmap[ii].n; ii++) {
+                        if (!strcmp(tname, tmap[ii].n)) {
+                            arg_ty = ARENA_NEW(cg->arena, Type);
+                            arg_ty->kind = tmap[ii].k;
+                            break;
+                        }
+                    }
+                }
+                const char *llt = arg_ty ? effective_llvm_type(cg, arg_ty) : "i32";
+                /* C variadic ABI: i8/i16 promoted to i32, f32 promoted to f64 */
+                const char *va_llt = llt;
+                if (!strcmp(llt,"i8") || !strcmp(llt,"i16")) va_llt = "i32";
+                else if (!strcmp(llt,"float")) va_llt = "double";
+                int t = new_tmp(cg);
+                emit(cg, "  %%t%d = va_arg ptr %%t%d, %s\n", t, cg->va_list_tmp, va_llt);
+                if (out_ty) *out_ty = arg_ty;
+                /* truncate/fptrunc back to requested type if promoted */
+                if (strcmp(va_llt, llt) != 0) {
+                    int t2 = new_tmp(cg);
+                    if (!strcmp(llt,"i8") || !strcmp(llt,"i16"))
+                        emit(cg, "  %%t%d = trunc i32 %%t%d to %s\n", t2, t, llt);
+                    else
+                        emit(cg, "  %%t%d = fptrunc double %%t%d to float\n", t2, t);
+                    return val_tmp(t2);
+                }
+                return val_tmp(t);
             }
 
             /* @min / @max */
@@ -3651,6 +3697,9 @@ static void cg_stmt(CG *cg, Stmt *s) {
                 emit_rc_drops_for_scope(cg, sc);
             }
             cg->skip_rc_drop = NULL;
+            /* end va_list if in a variadic function */
+            if (cg->va_list_tmp >= 0)
+                emit(cg, "  call void @llvm.va_end(ptr %%t%d)\n", cg->va_list_tmp);
             if (has_val)
                 emit_br(cg, "  ret %s %s\n", llt, rv.buf);
             else
@@ -4242,7 +4291,16 @@ static void cg_fn(CG *cg, Item *item) {
     cg->cur_fn_ret    = ret_llt;
     cg->cur_fn_ret_ty = item->fn.ret;
     cg->cur_label     = -1; /* -1 = entry block */
+    cg->va_list_tmp   = -1;
     push_scope(cg);
+
+    /* For variadic functions, alloca a va_list and call va_start */
+    if (item->fn.variadic) {
+        int ap = new_tmp(cg);
+        cg->va_list_tmp = ap;
+        emit(cg, "  %%t%d = alloca [24 x i8], align 16\n", ap);
+        emit(cg, "  call void @llvm.va_start(ptr %%t%d)\n", ap);
+    }
 
     /* spill parameters to allocas so they're addressable */
     for (size_t i = 0; i < item->fn.params.len; i++) {
@@ -4568,6 +4626,8 @@ int codegen(Module *mod, FILE *out, int release) {
     emit(&cg, "declare void @llvm.memmove.p0.p0.i64(ptr, ptr, i64, i1)\n");
     emit(&cg, "declare void @llvm.memset.p0.i64(ptr, i8, i64, i1)\n");
     emit(&cg, "declare double @llvm.sqrt.f64(double)\n");
+    emit(&cg, "declare void @llvm.va_start(ptr)\n");
+    emit(&cg, "declare void @llvm.va_end(ptr)\n");
     emit(&cg, "@stdin  = external global ptr\n");
     emit(&cg, "@stderr = external global ptr\n\n");
 

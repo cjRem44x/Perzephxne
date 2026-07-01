@@ -1792,7 +1792,8 @@ static void register_item(Sema *s, Item *item) {
                 break;
             }
             Type *ty = make_ty(s, TY_FN);
-            ty->fn.ret = item->fn.ret;
+            ty->fn.ret      = item->fn.ret;
+            ty->fn.variadic = item->fn.variadic;
             /* build params list so call-site arity checking works */
             if (item->fn.params.len > 0) {
                 ty->fn.params.data = ARENA_ALLOC(s->arena, Type *, item->fn.params.len);
