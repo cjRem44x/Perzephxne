@@ -513,6 +513,21 @@ static Val promote_vararg(CG *cg, Val v, Type *ty, const char **llt_out) {
     return v;
 }
 
+/* Decay a fixed array to a { ptr, i64 } slice.  `arr.buf` is the array's
+   storage pointer (arrays are represented as ptr Vals); length comes from
+   the compile-time array size. */
+static Val array_to_slice(CG *cg, Val arr, Type *arr_ty) {
+    int64_t n = 0;
+    if (arr_ty && arr_ty->kind == TY_ARRAY
+            && arr_ty->array.size && arr_ty->array.size->kind == EXPR_INT)
+        n = (int64_t)arr_ty->array.size->ival;
+    int t0 = new_tmp(cg);
+    emit(cg, "  %%t%d = insertvalue { ptr, i64 } undef, ptr %s, 0\n", t0, arr.buf);
+    int t1 = new_tmp(cg);
+    emit(cg, "  %%t%d = insertvalue { ptr, i64 } %%t%d, i64 %" PRId64 ", 1\n", t1, t0, n);
+    return val_tmp(t1);
+}
+
 /* Increment RC given the smart ptr value buf (e.g. "%t5"). */
 static void emit_rc_inc(CG *cg, const char *smart_ptr_buf) {
     int rc  = new_tmp(cg);
@@ -2605,6 +2620,9 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                 size_t nargs = e->call.args.len;
                 Val   *arg_vals = nargs ? malloc(sizeof(Val)   * nargs) : NULL;
                 Type **arg_tys  = nargs ? malloc(sizeof(Type*) * nargs) : NULL;
+                Symbol *margsym = lookup(cg, mangled);
+                Type *mfn_ty = (margsym && margsym->ty && margsym->ty->kind == TY_FN)
+                               ? margsym->ty : NULL;
                 for (size_t i = 0; i < nargs; i++) {
                     arg_tys[i]  = NULL;
                     arg_vals[i] = cg_expr(cg, e->call.args.data[i], &arg_tys[i]);
@@ -2619,10 +2637,21 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                         }
                     }
                     if (arg_tys[i] && arg_tys[i]->kind == TY_ARRAY) {
-                        int sv = new_tmp(cg);
-                        emit(cg, "  %%t%d = load %s, ptr %s\n",
-                             sv, llvm_type(arg_tys[i]), arg_vals[i].buf);
-                        arg_vals[i] = val_tmp(sv);
+                        /* array arg to slice param: decay to fat pointer
+                           (param index is offset by 1 for the self receiver) */
+                        Type *pty = NULL;
+                        size_t pi = i + (is_static ? 0 : 1);
+                        if (mfn_ty && pi < mfn_ty->fn.params.len)
+                            pty = mfn_ty->fn.params.data[pi];
+                        if (pty && pty->kind == TY_SLICE) {
+                            arg_vals[i] = array_to_slice(cg, arg_vals[i], arg_tys[i]);
+                            arg_tys[i]  = pty;
+                        } else {
+                            int sv = new_tmp(cg);
+                            emit(cg, "  %%t%d = load %s, ptr %s\n",
+                                 sv, llvm_type(arg_tys[i]), arg_vals[i].buf);
+                            arg_vals[i] = val_tmp(sv);
+                        }
                     }
                 }
 
@@ -2709,10 +2738,20 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                     }
                 }
                 if (arg_tys[i] && arg_tys[i]->kind == TY_ARRAY) {
-                    int sv = new_tmp(cg);
-                    emit(cg, "  %%t%d = load %s, ptr %s\n",
-                         sv, llvm_type(arg_tys[i]), arg_vals[i].buf);
-                    arg_vals[i] = val_tmp(sv);
+                    /* array arg to slice param: decay to fat pointer instead of
+                       loading the aggregate (needs the storage ptr we still have) */
+                    Type *pty = (callee_ty && callee_ty->kind == TY_FN
+                                 && i < callee_ty->fn.params.len)
+                                ? callee_ty->fn.params.data[i] : NULL;
+                    if (pty && pty->kind == TY_SLICE) {
+                        arg_vals[i] = array_to_slice(cg, arg_vals[i], arg_tys[i]);
+                        arg_tys[i]  = pty;
+                    } else {
+                        int sv = new_tmp(cg);
+                        emit(cg, "  %%t%d = load %s, ptr %s\n",
+                             sv, llvm_type(arg_tys[i]), arg_vals[i].buf);
+                        arg_vals[i] = val_tmp(sv);
+                    }
                 }
             }
 
@@ -3566,7 +3605,12 @@ static void cg_stmt(CG *cg, Stmt *s) {
                     int is_rc_copy = init_ty && init_ty->kind == TY_SMART_PTR
                                      && s->let.init->kind == EXPR_IDENT;
                     if (is_rc_copy) emit_rc_inc(cg, init.buf);
-                    if (init_ty && init_ty->kind == TY_ARRAY) {
+                    if (init_ty && init_ty->kind == TY_ARRAY
+                            && s->let.ty && s->let.ty->kind == TY_SLICE) {
+                        /* array decays to slice: build { ptr, i64 } fat pointer */
+                        Val sl = array_to_slice(cg, init, init_ty);
+                        emit(cg, "  store { ptr, i64 } %s, ptr %%t%d\n", sl.buf, alloca);
+                    } else if (init_ty && init_ty->kind == TY_ARRAY) {
                         /* array init: EXPR_ARRAY_LIT returns alloca ptr.
                            When declared element type differs from literal element type
                            (e.g. [4]u8 = [10u8,...] where literal has i32 elements),
@@ -3718,6 +3762,12 @@ static void cg_stmt(CG *cg, Stmt *s) {
                         emit(cg, "  %%t%d = load %s, ptr %s\n", loaded, llt, rhs.buf);
                         emit(cg, "  store %s %%t%d, ptr %s\n", llt, loaded, sym->llvm_name);
                     }
+                } else if (s->assign.op == ASSIGN_EQ && sym->ty
+                           && sym->ty->kind == TY_SLICE
+                           && vty && vty->kind == TY_ARRAY) {
+                    /* array decays to slice on assignment */
+                    Val sl = array_to_slice(cg, rhs, vty);
+                    emit(cg, "  store { ptr, i64 } %s, ptr %s\n", sl.buf, sym->llvm_name);
                 } else if (s->assign.op == ASSIGN_EQ) {
                     /* coerce rhs integer width to match lhs type */
                     if (vty && strcmp(llvm_type(vty), llt) != 0) {
@@ -3988,6 +4038,12 @@ static void cg_stmt(CG *cg, Stmt *s) {
                     emit(cg, "  %%t%d = load %s, ptr %s\n",
                          loaded, llvm_type(rt), rv.buf);
                     rv = val_tmp(loaded);
+                }
+                /* array decays to slice when the function returns []T */
+                if (cg->cur_fn_ret_ty && cg->cur_fn_ret_ty->kind == TY_SLICE
+                        && rt && rt->kind == TY_ARRAY) {
+                    rv = array_to_slice(cg, rv, rt);
+                    rt = cg->cur_fn_ret_ty;
                 }
                 /* auto-wrap plain T as @ok(T) when returning from a !T function */
                 if (cg->cur_fn_ret_ty && cg->cur_fn_ret_ty->kind == TY_FAILABLE

@@ -133,6 +133,24 @@ fn sum(s: []i32) -> i32 {
 }
 ```
 
+### Array-to-Slice Decay
+
+A fixed array decays to a slice automatically — in `let` initializers, assignments, function arguments, and returns. The slice views the whole array:
+
+```
+arr: [3]i32 = [10, 20, 30]
+s: []i32 = arr            # same as arr[0..3]
+
+total: i32 = sum(arr)     # array passed where []i32 expected
+total2: i32 = sum([1, 2, 3, 4])   # literal works too
+
+nums: []f64 = [1.5, 2.5]  # slice straight from a literal
+```
+
+The element types must match. Numeric literals adopt the declared element type, so `w: []i64 = [1, 2, 3]` works without suffixes.
+
+A slice does not own its memory — it is valid only as long as the underlying array is alive.
+
 ## `any`
 
 `any` holds a value of any type alongside a runtime type tag. Use `when` to inspect:

@@ -284,6 +284,11 @@ static int ty_coerces(Type *from, Type *to) {
     /* [N]T1 coerces to [N]T2 if T1 coerces to T2 (e.g. [3]i32 → [3]u8) */
     if (from->kind == TY_ARRAY && to->kind == TY_ARRAY
             && ty_coerces(from->array.inner, to->array.inner)) return 1;
+    /* [N]T decays to []T — codegen builds the fat pointer.
+       Element types must match exactly: the slice aliases the array's memory. */
+    if (from->kind == TY_ARRAY && to->kind == TY_SLICE
+            && from->array.inner && to->ptr.inner
+            && ty_eq(from->array.inner, to->ptr.inner)) return 1;
     /* (T1, T2) coerces to (T1', T2') element-wise */
     if (from->kind == TY_TUPLE && to->kind == TY_TUPLE
             && from->tuple.elems.len == to->tuple.elems.len) {
@@ -943,6 +948,20 @@ static void check_stmt(Sema *s, Stmt *st) {
                 }
                 define(s, st->span, st->let.name, decl_ty ? decl_ty : elem_ty, st->let.mutable, 0);
                 break;
+            }
+
+            /* contextual typing: an array literal adopts the declared slice/array
+               element type when both are numeric — [1, 2] works as []i64 without
+               suffixes. codegen converts each element to the annotated width. */
+            if (decl_ty && init_ty && init_ty->kind == TY_ARRAY
+                    && st->let.init && st->let.init->kind == EXPR_ARRAY_LIT) {
+                Type *want = (decl_ty->kind == TY_SLICE) ? decl_ty->ptr.inner
+                           : (decl_ty->kind == TY_ARRAY) ? decl_ty->array.inner : NULL;
+                Type *have = init_ty->array.inner;
+                if (want && have
+                        && ((ty_is_int(want) && ty_is_int(have))
+                            || (ty_is_float(want) && ty_is_float(have))))
+                    init_ty->array.inner = want;
             }
 
             if (decl_ty && init_ty && !ty_coerces(init_ty, decl_ty)) {

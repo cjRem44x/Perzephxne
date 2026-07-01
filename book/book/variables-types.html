@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-b878b536.js";
+            window.path_to_searchindex_js = "searchindex-162d22df.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-b900b046.js"></script>
@@ -272,6 +272,18 @@ len: usize = @len(sl)      # 2
     ret total
 }
 </code></pre>
+<h3 id="array-to-slice-decay"><a class="header" href="#array-to-slice-decay">Array-to-Slice Decay</a></h3>
+<p>A fixed array decays to a slice automatically — in <code>let</code> initializers, assignments, function arguments, and returns. The slice views the whole array:</p>
+<pre><code>arr: [3]i32 = [10, 20, 30]
+s: []i32 = arr            # same as arr[0..3]
+
+total: i32 = sum(arr)     # array passed where []i32 expected
+total2: i32 = sum([1, 2, 3, 4])   # literal works too
+
+nums: []f64 = [1.5, 2.5]  # slice straight from a literal
+</code></pre>
+<p>The element types must match. Numeric literals adopt the declared element type, so <code>w: []i64 = [1, 2, 3]</code> works without suffixes.</p>
+<p>A slice does not own its memory — it is valid only as long as the underlying array is alive.</p>
 <h2 id="any"><a class="header" href="#any"><code>any</code></a></h2>
 <p><code>any</code> holds a value of any type alongside a runtime type tag. Use <code>when</code> to inspect:</p>
 <pre><code>x: any = 42
