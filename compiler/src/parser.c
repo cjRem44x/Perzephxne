@@ -877,8 +877,8 @@ static Expr *parse_primary(Parser *p) {
                     pat = parse_expr_bp(p, 9);
                     LIST_PUSH(p->arena, &arm.pats, Expr, pat);
                 }
-                /* optional bind: `i32 name =>` */
-                if (check(p, TOK_IDENT) && check2(p, TOK_FATARROW)) {
+                /* optional bind: `i32 name =>` or `i32 _ =>` */
+                if ((check(p, TOK_IDENT) || check(p, TOK_UNDER)) && check2(p, TOK_FATARROW)) {
                     arm.bind = cur(p).sval;
                     advance(p);
                 }
@@ -1416,7 +1416,7 @@ static Stmt *parse_stmt(Parser *p) {
                 pat = parse_expr_bp(p, 9);
                 LIST_PUSH(p->arena, &arm.pats, Expr, pat);
             }
-            if (check(p, TOK_IDENT) && check2(p, TOK_FATARROW)) {
+            if ((check(p, TOK_IDENT) || check(p, TOK_UNDER)) && check2(p, TOK_FATARROW)) {
                 arm.bind = cur(p).sval;
                 advance(p);
             }

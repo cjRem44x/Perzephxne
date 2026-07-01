@@ -1005,6 +1005,22 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                     Symbol *sym = lookup(cg, arg->ident.name);
                     if (sym) return val_str(sym->llvm_name);
                 }
+                if (arg->kind == EXPR_FIELD) {
+                    Type *fobj_ty2 = NULL;
+                    Val fobj2 = cg_expr(cg, arg->field.obj, &fobj_ty2);
+                    if (fobj_ty2 && fobj_ty2->kind == TY_NAMED) {
+                        StructInfo *fsi2 = find_struct(cg, fobj_ty2->named.name);
+                        if (fsi2) {
+                            int fidx3 = struct_field_index(fsi2, arg->field.field);
+                            if (fidx3 >= 0) {
+                                int fp3 = new_tmp(cg);
+                                emit(cg, "  %%t%d = getelementptr %%%s, ptr %s, i32 0, i32 %d\n",
+                                     fp3, fobj_ty2->named.name, fobj2.buf, fidx3);
+                                return val_tmp(fp3);
+                            }
+                        }
+                    }
+                }
                 /* fallback: evaluate and return pointer (struct/array already returns alloca) */
                 return cg_expr(cg, arg, out_ty);
             }
@@ -2174,6 +2190,24 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                         Symbol *sym = lookup(cg, e->unop.operand->ident.name);
                         if (sym) return val_str(sym->llvm_name);
                     }
+                    if (e->unop.operand->kind == EXPR_FIELD) {
+                        /* &struct.field — compute field GEP without loading */
+                        Expr *fe = e->unop.operand;
+                        Type *fobj_ty = NULL;
+                        Val fobj = cg_expr(cg, fe->field.obj, &fobj_ty);
+                        if (fobj_ty && fobj_ty->kind == TY_NAMED) {
+                            StructInfo *fsi = find_struct(cg, fobj_ty->named.name);
+                            if (fsi) {
+                                int fidx2 = struct_field_index(fsi, fe->field.field);
+                                if (fidx2 >= 0) {
+                                    int fp2 = new_tmp(cg);
+                                    emit(cg, "  %%t%d = getelementptr %%%s, ptr %s, i32 0, i32 %d\n",
+                                         fp2, fobj_ty->named.name, fobj.buf, fidx2);
+                                    return val_tmp(fp2);
+                                }
+                            }
+                        }
+                    }
                     if (e->unop.operand->kind == EXPR_INDEX) {
                         /* recompute element address without the load */
                         Expr *ie = e->unop.operand;
@@ -2618,9 +2652,16 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
             Type *elem_ty = NULL;
             const char *data_buf = arr.buf;
 
-            if (at && at->kind == TY_SLICE) {
+            if (at && (at->kind == TY_SLICE || at->kind == TY_STR)) {
                 /* arr is a { ptr, i64 } value — extract data pointer first */
-                elem_ty  = at->ptr.inner;
+                if (at->kind == TY_STR) {
+                    /* string indexing yields a char (u8) */
+                    Type *char_ty = ARENA_NEW(cg->arena, Type);
+                    char_ty->kind = TY_CHAR;
+                    elem_ty  = char_ty;
+                } else {
+                    elem_ty = at->ptr.inner;
+                }
                 elem_llt = elem_ty ? llvm_type(elem_ty) : "i8";
                 int dp = new_tmp(cg);
                 emit(cg, "  %%t%d = extractvalue { ptr, i64 } %s, 0\n", dp, arr.buf);
