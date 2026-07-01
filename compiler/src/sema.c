@@ -1562,9 +1562,21 @@ static void subst_expr(Expr *e, const char **params, Type **concretes, size_t n,
             for (size_t i = 0; i < e->struct_lit.fields.len; i++)
                 subst_expr(e->struct_lit.fields.data[i].val, params, concretes, n, a);
             break;
-        case EXPR_IDENT:
-            e->ident.name = subst_mangled(e->ident.name, params, concretes, n, a);
+        case EXPR_IDENT: {
+            /* exact type-param match: bare "T" used as type expression in @alo/@zeroed etc. */
+            int matched = 0;
+            for (size_t i = 0; i < n; i++) {
+                if (!strcmp(e->ident.name, params[i])) {
+                    e->ident.name = gen_type_str(concretes[i], a);
+                    e->ty = concretes[i];
+                    matched = 1;
+                    break;
+                }
+            }
+            if (!matched)
+                e->ident.name = subst_mangled(e->ident.name, params, concretes, n, a);
             break;
+        }
         case EXPR_BINOP:
             subst_expr(e->binop.l, params, concretes, n, a);
             subst_expr(e->binop.r, params, concretes, n, a);
