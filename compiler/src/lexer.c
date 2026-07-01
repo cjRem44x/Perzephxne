@@ -275,8 +275,8 @@ Token lexer_next(Lexer *l) {
         case '%': TOK2('=', TOK_PERCENTEQ, TOK_PERCENT);
         case '~': TOK1(TOK_TILDE);
         case '^': TOK2('=', TOK_CARETEQ,   TOK_CARET);
-        case '&': TOK2('=', TOK_AMPEQ,     TOK_AMP);
-        case '|': TOK2('=', TOK_PIPEEQ,    TOK_PIPE);
+        case '&': if (peek(l)=='&') { advance(l); TOK1(TOK_AND); } TOK2('=', TOK_AMPEQ, TOK_AMP);
+        case '|': if (peek(l)=='|') { advance(l); TOK1(TOK_OR);  } TOK2('=', TOK_PIPEEQ, TOK_PIPE);
         case '<':
             if (peek(l)=='<') {
                 advance(l);
