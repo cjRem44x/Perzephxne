@@ -364,6 +364,18 @@ static int cg_type_byte_size(CG *cg, Type *ty) {
             }
             return 8;
         }
+        case TY_TUPLE: {
+            int total = 0;
+            for (size_t i = 0; i < ty->tuple.elems.len; i++)
+                total += cg_type_byte_size(cg, ty->tuple.elems.data[i]);
+            return total ? total : 8;
+        }
+        case TY_ARRAY: {
+            int64_t n = 0;
+            if (ty->array.size && ty->array.size->kind == EXPR_INT)
+                n = (int64_t)ty->array.size->ival;
+            return (int)n * cg_type_byte_size(cg, ty->array.inner);
+        }
         default: return 8;
     }
 }
@@ -540,6 +552,22 @@ static void emit_rc_inc(CG *cg, const char *smart_ptr_buf) {
 /* forward declarations */
 static Val cg_expr(CG *cg, Expr *e, Type **out_ty);
 static void cg_stmt(CG *cg, Stmt *s);
+
+/* When-arm result extraction: if the arm body is a bare expression, return it.
+   If it is a block ending in an expression (e.g. from the payload-binder
+   desugar), emit the leading statements and return the trailing expression.
+   Returns NULL when the body produces no value. */
+static Expr *cg_arm_result_expr(CG *cg, Stmt *body) {
+    if (!body) return NULL;
+    if (body->kind == STMT_EXPR) return body->expr;
+    if (body->kind == STMT_BLOCK && body->block.len > 0
+            && body->block.data[body->block.len - 1]->kind == STMT_EXPR) {
+        for (size_t k = 0; k + 1 < body->block.len; k++)
+            cg_stmt(cg, body->block.data[k]);
+        return body->block.data[body->block.len - 1]->expr;
+    }
+    return NULL;
+}
 
 static void emit_defers_for_scope(CG *cg, Scope *sc) {
     /* Emit into the CURRENT basic block only — cg_stmt's terminated guard prevents
@@ -3230,10 +3258,11 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                         define_sym(cg, arm->bind, bind_llvm, 0, matched_payload_ty);
                     }
 
-                    /* body: if STMT_EXPR, store result; otherwise just execute */
-                    if (arm->body && arm->body->kind == STMT_EXPR && arm->body->expr) {
+                    /* body: expression (possibly behind binder lets) stores result */
+                    Expr *res_ex = cg_arm_result_expr(cg, arm->body);
+                    if (res_ex) {
                         Type *arm_ty = NULL;
-                        Val arm_val = cg_expr(cg, arm->body->expr, &arm_ty);
+                        Val arm_val = cg_expr(cg, res_ex, &arm_ty);
                         const char *store_llt = arm_ty ? effective_llvm_type(cg, arm_ty) : res_llt;
                         emit(cg, "  store %s %s, ptr %%t%d\n", store_llt, arm_val.buf, res_slot);
                     } else if (arm->body) {
@@ -3286,9 +3315,10 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                     emit_label(cg, body_l);
                     push_scope(cg);
 
-                    if (arm->body && arm->body->kind == STMT_EXPR && arm->body->expr) {
+                    Expr *res_ex2 = cg_arm_result_expr(cg, arm->body);
+                    if (res_ex2) {
                         Type *arm_ty = NULL;
-                        Val arm_val = cg_expr(cg, arm->body->expr, &arm_ty);
+                        Val arm_val = cg_expr(cg, res_ex2, &arm_ty);
                         const char *store_llt = arm_ty ? effective_llvm_type(cg, arm_ty) : res_llt;
                         emit(cg, "  store %s %s, ptr %%t%d\n", store_llt, arm_val.buf, res_slot);
                     } else if (arm->body) {
@@ -4530,10 +4560,11 @@ static void cg_stmt(CG *cg, Stmt *s) {
                         define_sym(cg, arm->bind, bind_llvm, 0, matched_payload_ty);
                     }
 
-                    if (cg->trailing_result_slot >= 0
-                            && arm->body && arm->body->kind == STMT_EXPR && arm->body->expr) {
+                    Expr *tr_ex = (cg->trailing_result_slot >= 0)
+                                  ? cg_arm_result_expr(cg, arm->body) : NULL;
+                    if (tr_ex) {
                         Type *arm_ty = NULL;
-                        Val arm_val = cg_expr(cg, arm->body->expr, &arm_ty);
+                        Val arm_val = cg_expr(cg, tr_ex, &arm_ty);
                         const char *store_llt = arm_ty ? effective_llvm_type(cg, arm_ty) : "i64";
                         emit(cg, "  store %s %s, ptr %%t%d\n",
                              store_llt, arm_val.buf, cg->trailing_result_slot);
@@ -4597,10 +4628,11 @@ static void cg_stmt(CG *cg, Stmt *s) {
                             cond_t, body_l, next_l);
                     emit_label(cg, body_l);
                     push_scope(cg);
-                    if (cg->trailing_result_slot >= 0
-                            && arm->body && arm->body->kind == STMT_EXPR && arm->body->expr) {
+                    Expr *tr_ex2 = (cg->trailing_result_slot >= 0)
+                                   ? cg_arm_result_expr(cg, arm->body) : NULL;
+                    if (tr_ex2) {
                         Type *arm_ty = NULL;
-                        Val arm_val = cg_expr(cg, arm->body->expr, &arm_ty);
+                        Val arm_val = cg_expr(cg, tr_ex2, &arm_ty);
                         const char *store_llt = arm_ty ? effective_llvm_type(cg, arm_ty) : "i64";
                         emit(cg, "  store %s %s, ptr %%t%d\n",
                              store_llt, arm_val.buf, cg->trailing_result_slot);

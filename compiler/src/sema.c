@@ -299,6 +299,80 @@ static int ty_coerces(Type *from, Type *to) {
     return 0;
 }
 
+/* ── Tagged-union when-arm desugar ────────────────────────────────────────────
+   Rewrites `Enum.Variant` and `Enum.Variant(b1, b2, ...)` arm patterns on a
+   tagged-union subject into the canonical ".Variant" ident form the matcher
+   understands.  Single binders become arm->bind; multiple binders bind a
+   hidden tuple and prepend element lets to the arm body. */
+static void desugar_union_arm(Sema *s, UnionInfo *ui, WhenArm *arm) {
+    for (size_t pi = 0; pi < arm->pats.len; pi++) {
+        Expr *pat = arm->pats.data[pi];
+        Expr *fieldex = NULL;
+        ExprList binders = {0};
+        if (pat->kind == EXPR_FIELD) {
+            fieldex = pat;
+        } else if (pat->kind == EXPR_CALL && pat->call.callee->kind == EXPR_FIELD) {
+            fieldex = pat->call.callee;
+            binders = pat->call.args;
+        }
+        if (!fieldex || fieldex->field.obj->kind != EXPR_IDENT) continue;
+        if (strcmp(fieldex->field.obj->ident.name, ui->name)) continue;
+        const char *vname = fieldex->field.field;
+        int is_variant = 0;
+        for (size_t vi = 0; vi < ui->n_variants; vi++)
+            if (!strcmp(ui->variants[vi].name, vname)) { is_variant = 1; break; }
+        if (!is_variant) continue;
+
+        /* rewrite pattern in place to the ".variant" ident form */
+        char *dotted = arena_alloc(s->arena, strlen(vname) + 2);
+        sprintf(dotted, ".%s", vname);
+        pat->kind = EXPR_IDENT;
+        pat->ident.name = dotted;
+
+        if (binders.len == 0) continue;
+        if (binders.len == 1) {
+            if (binders.data[0]->kind == EXPR_IDENT)
+                arm->bind = binders.data[0]->ident.name;
+            continue;
+        }
+        /* multiple binders: bind the payload tuple to a hidden name and
+           prepend `bN : __payK.N` lets to the arm body */
+        static int payid = 0;
+        char *pname = arena_alloc(s->arena, 24);
+        snprintf(pname, 24, "__pay%d", payid++);
+        arm->bind = pname;
+        Stmt **sl = ARENA_ALLOC(s->arena, Stmt *, binders.len + 1);
+        size_t sn = 0;
+        for (size_t bi = 0; bi < binders.len; bi++) {
+            if (binders.data[bi]->kind != EXPR_IDENT) continue; /* skip _ */
+            Expr *payref = ARENA_NEW(s->arena, Expr);
+            payref->kind = EXPR_IDENT;
+            payref->span = arm->span;
+            payref->ident.name = pname;
+            Expr *fe = ARENA_NEW(s->arena, Expr);
+            fe->kind = EXPR_FIELD;
+            fe->span = arm->span;
+            fe->field.obj = payref;
+            char *fidx = arena_alloc(s->arena, 8);
+            snprintf(fidx, 8, "%zu", bi);
+            fe->field.field = fidx;
+            Stmt *ls = ARENA_NEW(s->arena, Stmt);
+            ls->kind = STMT_LET;
+            ls->span = arm->span;
+            ls->let.name = binders.data[bi]->ident.name;
+            ls->let.init = fe;
+            sl[sn++] = ls;
+        }
+        sl[sn++] = arm->body;
+        Stmt *blk = ARENA_NEW(s->arena, Stmt);
+        blk->kind = STMT_BLOCK;
+        blk->span = arm->span;
+        blk->block.data = sl;
+        blk->block.len  = sn;
+        arm->body = blk;
+    }
+}
+
 /* ── Type resolution ──────────────────────────────────────────────────────── */
 
 /* Walk a parsed Type and resolve NAMED types; fill in defaults. Returns ty. */
@@ -598,6 +672,51 @@ static Type *check_expr(Sema *s, Expr *e) {
         }
 
         case EXPR_CALL: {
+            /* tagged-union construction sugar: Shape.Circle(5.0), Shape.Rect(w, h).
+               Rewrite in place to the canonical struct-literal form. */
+            if (e->call.callee->kind == EXPR_FIELD
+                    && e->call.callee->field.obj->kind == EXPR_IDENT) {
+                UnionInfo *cui = NULL;
+                for (UnionInfo *u = s->unions; u; u = u->next)
+                    if (!strcmp(u->name, e->call.callee->field.obj->ident.name)) {
+                        cui = u; break;
+                    }
+                /* only rewrite when the field names an actual variant, so
+                   static impl methods on the union still resolve normally */
+                if (cui) {
+                    const char *vn2 = e->call.callee->field.field;
+                    int is_variant = 0;
+                    for (size_t vi = 0; vi < cui->n_variants; vi++)
+                        if (!strcmp(cui->variants[vi].name, vn2)) { is_variant = 1; break; }
+                    if (!is_variant) cui = NULL;
+                }
+                if (cui) {
+                    const char *vname = e->call.callee->field.field;
+                    ExprList args = e->call.args; /* copy before union overwrite */
+                    Expr *val;
+                    if (args.len == 0) {
+                        val = ARENA_NEW(s->arena, Expr);
+                        val->kind = EXPR_UNDEF;
+                        val->span = e->span;
+                    } else if (args.len == 1) {
+                        val = args.data[0];
+                    } else {
+                        /* multiple payload values → tuple */
+                        val = ARENA_NEW(s->arena, Expr);
+                        val->kind = EXPR_TUPLE;
+                        val->span = e->span;
+                        val->array_lit = args;
+                    }
+                    FieldInit *fi = ARENA_ALLOC(s->arena, FieldInit, 1);
+                    fi[0].name = vname;
+                    fi[0].val  = val;
+                    e->kind = EXPR_STRUCT_LIT;
+                    e->struct_lit.ty_name     = cui->name;
+                    e->struct_lit.fields.data = fi;
+                    e->struct_lit.fields.len  = 1;
+                    return check_expr(s, e);
+                }
+            }
             Type *callee_ty = check_expr(s, e->call.callee);
             for (size_t i = 0; i < e->call.args.len; i++)
                 check_expr(s, e->call.args.data[i]);
@@ -661,6 +780,31 @@ static Type *check_expr(Sema *s, Expr *e) {
         }
 
         case EXPR_FIELD: {
+            /* tagged-union unit-variant sugar: Shape.Point → Shape{.Point} */
+            if (e->field.obj->kind == EXPR_IDENT) {
+                UnionInfo *fui = NULL;
+                for (UnionInfo *u = s->unions; u; u = u->next)
+                    if (!strcmp(u->name, e->field.obj->ident.name)) { fui = u; break; }
+                if (fui) {
+                    const char *vname = e->field.field;
+                    int is_variant = 0;
+                    for (size_t vi = 0; vi < fui->n_variants; vi++)
+                        if (!strcmp(fui->variants[vi].name, vname)) { is_variant = 1; break; }
+                    if (is_variant) {
+                        Expr *uv = ARENA_NEW(s->arena, Expr);
+                        uv->kind = EXPR_UNDEF;
+                        uv->span = e->span;
+                        FieldInit *fi = ARENA_ALLOC(s->arena, FieldInit, 1);
+                        fi[0].name = vname;
+                        fi[0].val  = uv;
+                        e->kind = EXPR_STRUCT_LIT;
+                        e->struct_lit.ty_name     = fui->name;
+                        e->struct_lit.fields.data = fi;
+                        e->struct_lit.fields.len  = 1;
+                        return check_expr(s, e);
+                    }
+                }
+            }
             Type *obj_ty = check_expr(s, e->field.obj);
             obj_ty = resolve_named(s, obj_ty);
             /* auto-deref: *Struct.field and ^Struct.method transparently access the struct */
@@ -801,6 +945,7 @@ static Type *check_expr(Sema *s, Expr *e) {
                 WhenArm *arm = &e->when.arms.data[i];
                 push_scope(s);
                 if (wui) {
+                    desugar_union_arm(s, wui, arm);
                     for (size_t pi = 0; pi < arm->pats.len; pi++) {
                         Expr *pat = arm->pats.data[pi];
                         if (pat->kind == EXPR_DISCARD) continue;
@@ -830,9 +975,17 @@ static Type *check_expr(Sema *s, Expr *e) {
                         check_expr(s, arm->pats.data[pi]);
                 }
                 check_stmt(s, arm->body);
-                /* infer result type from the first arm that is a bare expression */
-                if (!e->ty && arm->body && arm->body->kind == STMT_EXPR && arm->body->expr)
-                    e->ty = arm->body->expr->ty;
+                /* infer result type from the first arm that is a bare expression
+                   (or a desugared block ending in one) */
+                if (!e->ty && arm->body) {
+                    if (arm->body->kind == STMT_EXPR && arm->body->expr)
+                        e->ty = arm->body->expr->ty;
+                    else if (arm->body->kind == STMT_BLOCK && arm->body->block.len > 0) {
+                        Stmt *last = arm->body->block.data[arm->body->block.len - 1];
+                        if (last->kind == STMT_EXPR && last->expr)
+                            e->ty = last->expr->ty;
+                    }
+                }
                 pop_scope(s);
             }
             break;
@@ -886,12 +1039,43 @@ static Type *check_expr(Sema *s, Expr *e) {
                     } else {
                         const char *fname = e->struct_lit.fields.data[0].name;
                         int found = 0;
+                        Type *vty = NULL;
                         for (size_t vi = 0; vi < ui->n_variants; vi++) {
-                            if (!strcmp(ui->variants[vi].name, fname)) { found = 1; break; }
+                            if (!strcmp(ui->variants[vi].name, fname)) {
+                                found = 1;
+                                vty = ui->variants[vi].ty;
+                                break;
+                            }
                         }
                         if (!found)
                             sema_error(s, e->span, "union '%s' has no variant '%s'",
                                        ui->name, fname);
+                        /* contextual payload typing: numeric literals adopt the
+                           declared payload type so the stored layout matches the
+                           layout the matcher reads back */
+                        Expr *pval = e->struct_lit.fields.data[0].val;
+                        if (found && vty && pval && pval->ty) {
+                            if (vty->kind == TY_TUPLE && pval->kind == EXPR_TUPLE
+                                    && pval->ty->kind == TY_TUPLE
+                                    && pval->ty->tuple.elems.len == vty->tuple.elems.len) {
+                                for (size_t ti = 0; ti < vty->tuple.elems.len; ti++) {
+                                    Type *want = vty->tuple.elems.data[ti];
+                                    Type *have = pval->ty->tuple.elems.data[ti];
+                                    Expr *elem = pval->array_lit.data[ti];
+                                    if (want && have && elem
+                                            && (elem->kind == EXPR_INT || elem->kind == EXPR_FLOAT)
+                                            && ((ty_is_int(want) && ty_is_int(have))
+                                                || (ty_is_float(want) && ty_is_float(have)))) {
+                                        pval->ty->tuple.elems.data[ti] = want;
+                                        elem->ty = want;
+                                    }
+                                }
+                            } else if ((pval->kind == EXPR_INT || pval->kind == EXPR_FLOAT)
+                                    && ((ty_is_int(vty) && ty_is_int(pval->ty))
+                                        || (ty_is_float(vty) && ty_is_float(pval->ty)))) {
+                                pval->ty = vty;
+                            }
+                        }
                     }
                     break;
                 }
@@ -1152,6 +1336,7 @@ static void check_stmt(Sema *s, Stmt *st) {
                 WhenArm *arm = &st->when.arms.data[i];
                 push_scope(s);
                 if (ui) {
+                    desugar_union_arm(s, ui, arm);
                     /* tagged union: patterns are ".variantName" dot-prefixed idents */
                     for (size_t pi = 0; pi < arm->pats.len; pi++) {
                         Expr *pat = arm->pats.data[pi];

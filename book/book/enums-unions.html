@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-47d6d468.js";
+            window.path_to_searchindex_js = "searchindex-d8d820ca.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-b900b046.js"></script>
@@ -179,6 +179,8 @@
                     <main>
                         <h1 id="enums--unions"><a class="header" href="#enums--unions">Enums &amp; Unions</a></h1>
 <h2 id="enums"><a class="header" href="#enums">Enums</a></h2>
+<p>Enums come in two forms: plain enums (named integer constants) and payload enums (sum types, where variants carry values).</p>
+<h3 id="plain-enums"><a class="header" href="#plain-enums">Plain Enums</a></h3>
 <pre><code>enum Direction {
     North,
     South,
@@ -195,6 +197,33 @@ when d {
     Direction.West  =&gt; @pf("going west\n"),
 }
 </code></pre>
+<h3 id="payload-enums-sum-types"><a class="header" href="#payload-enums-sum-types">Payload Enums (Sum Types)</a></h3>
+<p>Variants can carry values. Write the payload types in parentheses after the variant name:</p>
+<pre><code>enum Shape {
+    Circle(f64),
+    Rect(f64, f64),
+    Point,
+}
+</code></pre>
+<p>Construct a variant by calling it; unit variants are named directly:</p>
+<pre><code>a: Shape = Shape.Circle(2.0)
+b: Shape = Shape.Rect(3.0, 4.0)
+c: Shape = Shape.Point
+</code></pre>
+<p>Match with <code>when</code> and bind the payload values by position:</p>
+<pre><code>area: f64 = when s {
+    Shape.Circle(r)  =&gt; 3.14159 * r * r,
+    Shape.Rect(w, h) =&gt; w * h,
+    Shape.Point      =&gt; 0.0,
+}
+</code></pre>
+<p>A single binder on a multi-value variant receives the whole payload as a <a href="./variables-types.html#tuples">tuple</a>:</p>
+<pre><code>when b {
+    Shape.Rect(t) =&gt; @pf("{t.0} x {t.1}\n"),
+    _             =&gt; {},
+}
+</code></pre>
+<p>A multi-value payload is stored as a tuple internally; the representation is a discriminant plus payload storage sized to the largest variant (the same layout as a <a href="#tagged-unions">tagged union</a>). A payload enum cannot also have a backing integer type.</p>
 <h2 id="integer-backed-enum"><a class="header" href="#integer-backed-enum">Integer-Backed Enum</a></h2>
 <p>Add <code>=&gt; TYPE</code> after the name to specify a backing integer. Variants can have explicit values:</p>
 <pre><code>enum Color =&gt; u8 {
@@ -258,6 +287,7 @@ describe(a)
 describe(b)
 </code></pre>
 <p>Variant patterns use <code>.name</code>. If the variant carries a payload, add a binding name after the pattern.</p>
+<p>The <a href="#payload-enums-sum-types">payload enum</a> syntax is sugar for exactly this representation — <code>enum Shape { Circle(f64), Point }</code> and <code>unn Shape =&gt; enum { Circle: f64, Point }</code> produce the same type, and the two pattern forms (<code>Shape.Circle(r)</code> and <code>.Circle r</code>) are interchangeable.</p>
 
                     </main>
 

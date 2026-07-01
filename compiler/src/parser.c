@@ -1959,15 +1959,53 @@ static Item *parse_item(Parser *p) {
         if (eat(p, TOK_FATARROW)) backing = parse_type(p);
         expect(p, TOK_LBRACE);
         EnumVariantList variants = {0};
+        FieldList ufields = {0}; /* payload variants → tagged-union desugar */
+        int any_payload = 0;
         while (!check(p, TOK_RBRACE) && !check(p, TOK_EOF)) {
+            Span vspan = cur(p).span;
             const char *vn = expect(p, TOK_IDENT).sval;
             Expr *vval = NULL;
-            if (eat(p, TOK_EQ)) vval = parse_expr(p);
+            Type *pty  = NULL;
+            if (check(p, TOK_LPAREN)) {
+                /* payload variant: Name(T1, ...) — multiple types become a tuple */
+                advance(p);
+                TypeList ptys = {0};
+                while (!check(p, TOK_RPAREN) && !check(p, TOK_EOF)) {
+                    Type *t1 = parse_type(p);
+                    LIST_PUSH(p->arena, &ptys, Type, t1);
+                    if (!eat(p, TOK_COMMA)) break;
+                }
+                expect(p, TOK_RPAREN);
+                if (ptys.len == 1) {
+                    pty = ptys.data[0];
+                } else if (ptys.len > 1) {
+                    pty = mktype(p, TY_TUPLE, vspan);
+                    pty->tuple.elems = ptys;
+                }
+                any_payload = 1;
+            } else if (eat(p, TOK_EQ)) {
+                vval = parse_expr(p);
+            }
             EnumVariant ev = { .name = vn, .val = vval };
             SLICE_PUSH(p->arena, &variants, EnumVariant, ev);
+            Field f = { .name = vn, .ty = pty };
+            SLICE_PUSH(p->arena, &ufields, Field, f);
             eat(p, TOK_COMMA);
         }
         expect(p, TOK_RBRACE);
+        if (any_payload) {
+            /* enum with payload variants desugars to a tagged union:
+               { i32 tag, [N x i8] payload } with the same variant order */
+            if (backing)
+                fatal_at(span, "enum with payload variants cannot have a backing type");
+            Item *item = ARENA_NEW(p->arena, Item);
+            item->kind          = ITEM_UNION;
+            item->name          = name;
+            item->span          = span_merge(span, cur(p).span);
+            item->union_.fields = ufields;
+            item->union_.tagged = 1;
+            return item;
+        }
         Item *item = ARENA_NEW(p->arena, Item);
         item->kind              = ITEM_ENUM;
         item->name              = name;
