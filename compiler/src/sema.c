@@ -414,12 +414,8 @@ static Type *check_expr(Sema *s, Expr *e) {
                 check_expr(s, e->builtin.args.data[i]);
             Type *ret = builtin_ret_ty(s, e->builtin.name);
             if (!strcmp(e->builtin.name, "new") && e->builtin.args.len > 0) {
-                /* @new(val: T) → ^T; widen bare literal args like := does */
-                Expr *narg = e->builtin.args.data[0];
-                int nlit = narg->kind == EXPR_INT || narg->kind == EXPR_FLOAT ||
-                           narg->kind == EXPR_BOOL || narg->kind == EXPR_CHAR;
-                Type *inner = narg->ty;
-                if (nlit && inner) { inner = widen_inferred(s, inner); narg->ty = inner; }
+                /* @new(val: T) → ^T; keep the literal's natural type (i32 for 42, etc.) */
+                Type *inner = e->builtin.args.data[0]->ty;
                 ret = make_ptr(s, TY_SMART_PTR, inner);
             } else if (!strcmp(e->builtin.name, "clone") && e->builtin.args.len > 0) {
                 /* @clone(ptr: ^T) → ^T */

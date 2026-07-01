@@ -2223,7 +2223,14 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                     Symbol *msym = lookup(cg, mangled);
                     if (msym && msym->ty && msym->ty->kind == TY_FN && msym->ty->fn.params.len > 0) {
                         Type *self_param_ty = msym->ty->fn.params.data[0];
-                        if (self_param_ty && self_param_ty->kind != TY_PTR && self_param_ty->kind != TY_SMART_PTR) {
+                        /* struct-typed self is now passed by ptr — keep self_llt="ptr" and
+                           pass the alloca pointer directly (no load needed) */
+                        if (self_param_ty && self_param_ty->kind == TY_NAMED
+                                && find_struct(cg, self_param_ty->named.name)) {
+                            self_llt = "ptr";
+                            /* self_val.buf is already the alloca ptr — pass as-is */
+                        } else if (self_param_ty && self_param_ty->kind != TY_PTR
+                                && self_param_ty->kind != TY_SMART_PTR) {
                             self_llt = effective_llvm_type(cg, self_param_ty);
                             int sv = new_tmp(cg);
                             emit(cg, "  %%t%d = load %s, ptr %s\n", sv, self_llt, self_val.buf);
@@ -3968,7 +3975,14 @@ static void cg_fn(CG *cg, Item *item) {
     for (size_t i = 0; i < item->fn.params.len; i++) {
         Param *par = &item->fn.params.data[i];
         if (i) emit(cg, ", ");
-        emit(cg, "%s %%%s", effective_llvm_type(cg, par->ty), par->name);
+        /* struct-typed self is passed as ptr so mutations propagate to caller */
+        int self_by_ptr = (i == 0 && strcmp(par->name, "self") == 0
+                           && par->ty && par->ty->kind == TY_NAMED
+                           && find_struct(cg, par->ty->named.name));
+        if (self_by_ptr)
+            emit(cg, "ptr %%%s", par->name);
+        else
+            emit(cg, "%s %%%s", effective_llvm_type(cg, par->ty), par->name);
     }
     if (item->fn.variadic) {
         if (item->fn.params.len) emit(cg, ", ");
@@ -3984,6 +3998,17 @@ static void cg_fn(CG *cg, Item *item) {
     /* spill parameters to allocas so they're addressable */
     for (size_t i = 0; i < item->fn.params.len; i++) {
         Param *par = &item->fn.params.data[i];
+        /* struct-typed self: already a ptr to the caller's alloca — register directly */
+        int self_by_ptr = (i == 0 && strcmp(par->name, "self") == 0
+                           && par->ty && par->ty->kind == TY_NAMED
+                           && find_struct(cg, par->ty->named.name));
+        if (self_by_ptr) {
+            char param_llvm[128];
+            snprintf(param_llvm, sizeof(param_llvm), "%%%s", par->name);
+            const char *sym_llvm = arena_strdup(cg->arena, param_llvm);
+            define_sym(cg, par->name, sym_llvm, 0, par->ty);
+            continue;
+        }
         const char *llt = effective_llvm_type(cg, par->ty);
         int alloca = new_tmp(cg);
         emit(cg, "  %%t%d = alloca %s\n", alloca, llt);
