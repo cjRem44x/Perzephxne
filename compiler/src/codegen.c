@@ -3823,8 +3823,16 @@ static void cg_stmt(CG *cg, Stmt *s) {
                 } else {
                     /* slice / str: fat pointer { ptr, i64 } */
                     if (iter_ty && (iter_ty->kind == TY_SLICE || iter_ty->kind == TY_STR)) {
-                        elem_ty  = (iter_ty->kind == TY_SLICE) ? iter_ty->ptr.inner : NULL;
-                        elem_llt = elem_ty ? llvm_type(elem_ty) : "ptr";
+                        if (iter_ty->kind == TY_SLICE) {
+                            elem_ty  = iter_ty->ptr.inner;
+                            elem_llt = elem_ty ? llvm_type(elem_ty) : "i8";
+                        } else {
+                            /* str: iterate over bytes as char */
+                            Type *ct = ARENA_NEW(cg->arena, Type);
+                            ct->kind = TY_CHAR;
+                            elem_ty  = ct;
+                            elem_llt = "i8";
+                        }
                     }
                     emit(cg, "  %%t%d = extractvalue { ptr, i64 } %s, 0\n", data_t, iter.buf);
                     emit(cg, "  %%t%d = extractvalue { ptr, i64 } %s, 1\n", len_t, iter.buf);

@@ -71,7 +71,8 @@ fn parse(s: str) -> !i32 {
 import(io = "std/io", math = "std/math")
 
 fn main() {
-    io.println("pi ≈ {math.PI}")
+    io.println("Hello, World!")
+    @pf("pi ≈ {math.PI}\n")
 }
 ```
 
