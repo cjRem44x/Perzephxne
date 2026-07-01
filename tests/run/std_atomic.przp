@@ -1,0 +1,11 @@
+import(a = "std/atomic")
+
+fn main() -> i32 {
+    counter: i64 = 1
+    old: i64 = a.add(&counter, 4)
+    now: i64 = a.load(&counter)
+    swapped: bool = a.cas(&counter, 5, 9)
+    dec: i64 = a.dec(&counter)
+    @pf("{old} {now} {swapped} {dec}\n")
+    ret 0
+}

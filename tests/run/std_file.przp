@@ -1,0 +1,12 @@
+import(file = "std/file")
+
+fn main() -> i32 {
+    ok: bool = file.write_all("tests/tmp/std_file.txt", "abc")
+    file.append("tests/tmp/std_file.txt", "def")
+    content: str = file.read_all("tests/tmp/std_file.txt")
+    sz: i64 = file.size("tests/tmp/std_file.txt")
+    exists: bool = file.exists("tests/tmp/std_file.txt")
+    removed: bool = file.remove_file("tests/tmp/std_file.txt")
+    @pf("{ok} {content} {sz} {exists} {removed}\n")
+    ret 0
+}

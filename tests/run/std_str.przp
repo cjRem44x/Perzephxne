@@ -1,0 +1,11 @@
+import(s = "std/str")
+
+fn main() -> i32 {
+    up: str = s.to_upper("ab")
+    trimmed: str = s.trim("  hi  ")
+    joined: str = s.concat(up, trimmed)
+    idx: usize = s.find(joined, "hi")
+    ok: bool = s.starts_with(joined, "AB") && s.ends_with(joined, "hi")
+    @pf("{joined} {idx} {ok}\n")
+    ret 0
+}

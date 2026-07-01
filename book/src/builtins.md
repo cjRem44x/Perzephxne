@@ -21,6 +21,9 @@ name: str = "World"
 greeting: str = @fmt("Hello, {name}!")
 ```
 
+Interpolated `bool` values are printed as C-style integers (`1` or `0`). Use
+`@str(value)` when you need `"true"` or `"false"` text.
+
 Use `{{` and `}}` to emit literal braces.
 
 ## Type Casts

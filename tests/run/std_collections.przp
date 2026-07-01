@@ -1,0 +1,13 @@
+import(c = "std/collections")
+
+fn main() -> i32 {
+    v: c.Vec = c.Vec.new()
+    c.Vec.push(&v, 10)
+    c.Vec.push(&v, 32)
+    c.Vec.set(&v, 0, 11)
+    sum: i64 = c.Vec.get(&v, 0) + c.Vec.pop(&v)
+    len: usize = c.Vec.len_of(&v)
+    c.Vec.free_vec(&v)
+    @pf("{sum} {len}\n")
+    ret 0
+}

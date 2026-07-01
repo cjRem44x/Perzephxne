@@ -1,0 +1,9 @@
+import(os = "std/os")
+
+fn main() -> i32 {
+    cwd: str = os.cwd()
+    missing: str = os.getenv_str("PRZP_TEST_MISSING_ENV")
+    ok: bool = cwd.len > 0 && missing.len == 0
+    @pf("{ok}\n")
+    ret 0
+}

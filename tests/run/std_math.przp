@@ -1,0 +1,9 @@
+import(math = "std/math")
+
+fn main() -> i32 {
+    a: i32 = math.abs_i32(-7)
+    b: i32 = math.clamp_i32(99, 0, 10)
+    c: i64 = math.max_i64(40, 42)
+    @pf("{a} {b} {c}\n")
+    ret 0
+}

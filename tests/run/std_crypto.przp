@@ -1,0 +1,12 @@
+import(c = "std/crypto")
+
+fn main() -> i32 {
+    d: u64 = c.hash_djb2("abc")
+    f: u64 = c.hash_fnv1a("abc")
+    data: [3]u8 = [1u8, 2u8, 3u8]
+    c.xor_encrypt(&data[0], 3, "k")
+    c.xor_encrypt(&data[0], 3, "k")
+    restored: bool = data[0] == 1u8 && data[1] == 2u8 && data[2] == 3u8
+    @pf("{d} {f} {restored}\n")
+    ret 0
+}

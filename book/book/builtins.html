@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-716408eb.js";
+            window.path_to_searchindex_js = "searchindex-efa3a3de.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-7f1b7573.js"></script>
@@ -200,6 +200,8 @@
 
 greeting: str = @fmt("Hello, {name}!")
 </code></pre>
+<p>Interpolated <code>bool</code> values are printed as C-style integers (<code>1</code> or <code>0</code>). Use
+<code>@str(value)</code> when you need <code>"true"</code> or <code>"false"</code> text.</p>
 <p>Use <code>{{</code> and <code>}}</code> to emit literal braces.</p>
 <h2 id="type-casts"><a class="header" href="#type-casts">Type Casts</a></h2>
 <p><code>@T(val)</code> converts <code>val</code> to type <code>T</code>:</p>

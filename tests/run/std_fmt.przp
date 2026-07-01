@@ -1,0 +1,9 @@
+import(fmt = "std/fmt")
+
+fn main() -> i32 {
+    h: str = fmt.hex(255u64)
+    p: str = fmt.pad_left("7", 3, 48u8)
+    b: str = fmt.from_bool(true)
+    @pf("{h} {p} {b}\n")
+    ret 0
+}
