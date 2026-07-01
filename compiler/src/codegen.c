@@ -4225,6 +4225,30 @@ static void cg_global(CG *cg, Item *item) {
                 break;
             }
             case EXPR_BOOL: emit(cg, "%d", item->global.init->bval); break;
+            case EXPR_ARRAY_LIT: {
+                /* [N x T] [T v0, T v1, ...] */
+                Expr *al = item->global.init;
+                Type *ety = item->global.ty && item->global.ty->kind == TY_ARRAY
+                          ? item->global.ty->array.inner : NULL;
+                const char *ellt = ety ? llvm_type(ety) : "i32";
+                emit(cg, "[");
+                for (size_t ei = 0; ei < al->array_lit.len; ei++) {
+                    if (ei) emit(cg, ", ");
+                    Expr *elem = al->array_lit.data[ei];
+                    emit(cg, "%s ", ellt);
+                    switch (elem->kind) {
+                        case EXPR_INT:   emit(cg, "%" PRIu64, elem->ival); break;
+                        case EXPR_FLOAT: {
+                            union { double d; uint64_t u; } b2; b2.d = elem->fval;
+                            emit(cg, "0x%016" PRIX64, b2.u); break;
+                        }
+                        case EXPR_BOOL:  emit(cg, "%d", elem->bval); break;
+                        default:         emit(cg, "0"); break;
+                    }
+                }
+                emit(cg, "]");
+                break;
+            }
             default:        emit(cg, "zeroinitializer"); break;
         }
     } else {
