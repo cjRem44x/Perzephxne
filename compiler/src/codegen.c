@@ -3367,12 +3367,13 @@ static void cg_stmt(CG *cg, Stmt *s) {
                     int cur_t = new_tmp(cg);
                     emit(cg, "  %%t%d = load %s, ptr %s\n", cur_t, llt, sym->llvm_name);
                     int res_t = new_tmp(cg);
+                    int is_flt_v = sym->ty && type_is_float(sym->ty);
                     switch (s->assign.op) {
-                        case ASSIGN_ADD: emit(cg, "  %%t%d = add %s %%t%d, %s\n", res_t, llt, cur_t, rhs.buf); break;
-                        case ASSIGN_SUB: emit(cg, "  %%t%d = sub %s %%t%d, %s\n", res_t, llt, cur_t, rhs.buf); break;
-                        case ASSIGN_MUL: emit(cg, "  %%t%d = mul %s %%t%d, %s\n", res_t, llt, cur_t, rhs.buf); break;
-                        case ASSIGN_DIV: emit(cg, "  %%t%d = sdiv %s %%t%d, %s\n",res_t, llt, cur_t, rhs.buf); break;
-                        case ASSIGN_MOD: emit(cg, "  %%t%d = srem %s %%t%d, %s\n",res_t, llt, cur_t, rhs.buf); break;
+                        case ASSIGN_ADD: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res_t, is_flt_v?"fadd":"add", llt, cur_t, rhs.buf); break;
+                        case ASSIGN_SUB: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res_t, is_flt_v?"fsub":"sub", llt, cur_t, rhs.buf); break;
+                        case ASSIGN_MUL: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res_t, is_flt_v?"fmul":"mul", llt, cur_t, rhs.buf); break;
+                        case ASSIGN_DIV: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res_t, is_flt_v?"fdiv":"sdiv", llt, cur_t, rhs.buf); break;
+                        case ASSIGN_MOD: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res_t, is_flt_v?"frem":"srem", llt, cur_t, rhs.buf); break;
                         default:         emit(cg, "  %%t%d = add %s %%t%d, 0\n",  res_t, llt, cur_t); break;
                     }
                     emit(cg, "  store %s %%t%d, ptr %s\n", llt, res_t, sym->llvm_name);
@@ -3488,13 +3489,14 @@ static void cg_stmt(CG *cg, Stmt *s) {
                     int cur = new_tmp(cg);
                     emit(cg, "  %%t%d = load %s, ptr %%t%d\n", cur, elem_llt, ep);
                     int res = new_tmp(cg);
+                    int is_flt_e = elem_ty && type_is_float(elem_ty);
                     switch (s->assign.op) {
-                        case ASSIGN_ADD: emit(cg, "  %%t%d = add %s %%t%d, %s\n",  res, elem_llt, cur, rhs.buf); break;
-                        case ASSIGN_SUB: emit(cg, "  %%t%d = sub %s %%t%d, %s\n",  res, elem_llt, cur, rhs.buf); break;
-                        case ASSIGN_MUL: emit(cg, "  %%t%d = mul %s %%t%d, %s\n",  res, elem_llt, cur, rhs.buf); break;
-                        case ASSIGN_DIV: emit(cg, "  %%t%d = sdiv %s %%t%d, %s\n", res, elem_llt, cur, rhs.buf); break;
-                        case ASSIGN_MOD: emit(cg, "  %%t%d = srem %s %%t%d, %s\n", res, elem_llt, cur, rhs.buf); break;
-                        default:         emit(cg, "  %%t%d = add %s %%t%d, 0\n",   res, elem_llt, cur); break;
+                        case ASSIGN_ADD: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res, is_flt_e?"fadd":"add",  elem_llt, cur, rhs.buf); break;
+                        case ASSIGN_SUB: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res, is_flt_e?"fsub":"sub",  elem_llt, cur, rhs.buf); break;
+                        case ASSIGN_MUL: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res, is_flt_e?"fmul":"mul",  elem_llt, cur, rhs.buf); break;
+                        case ASSIGN_DIV: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res, is_flt_e?"fdiv":"sdiv", elem_llt, cur, rhs.buf); break;
+                        case ASSIGN_MOD: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res, is_flt_e?"frem":"srem", elem_llt, cur, rhs.buf); break;
+                        default:         emit(cg, "  %%t%d = add %s %%t%d, 0\n",  res, elem_llt, cur); break;
                     }
                     emit(cg, "  store %s %%t%d, ptr %%t%d\n", elem_llt, res, ep);
                 }
