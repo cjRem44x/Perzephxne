@@ -84,6 +84,8 @@ b3: bool = @bool("yes")    # false
 | `@memcpy(dst, src, n)` | copy `n` bytes from src to dst |
 | `@memmove(dst, src, n)` | copy `n` bytes, handles overlap |
 | `@memset(dst, byte, n)` | fill `n` bytes with `byte` |
+| `@addr(expr)` | address of a variable, field, or index expression — like `&` but usable in more contexts |
+| `@str_raw(ptr, len)` | construct a `str` fat pointer from a raw `*u8` and a `usize` length |
 
 ```
 f: f32    = 1.0
@@ -144,6 +146,32 @@ bits: u32 = @bitcast(u32, f)   # raw bit pattern — 0x3F800000
 |---|---|---|
 | `@args` | `-> []str` | command-line arguments |
 | `@exit(code)` | `fn(i32)` | exit process immediately |
+
+## Failable Values
+
+Failable (`!T`) values carry a result and an error flag. These builtins inspect and extract them.
+
+| Builtin | Signature | Description |
+|---|---|---|
+| `@ok(val)` | `fn(!T) -> T` | extract the value; panics if the error flag is set |
+| `@unwrap(val)` | `fn(!T) -> T` | alias for `@ok` |
+| `@err(val)` | `fn(!T) -> i32` | extract the error code (0 = success) |
+| `@is_ok(val)` | `fn(!T) -> bool` | true if the error flag is not set |
+
+```
+val, err: !i32 = @i32("42")
+if @is_ok(val) {
+    @pf("parsed: %d\n", @ok(val))
+} else {
+    @pf("error code: %d\n", @err(val))
+}
+```
+
+Plain assignment silently extracts the value (error flag discarded):
+
+```
+n: i32 = @i32("42")   # flag ignored
+```
 
 ## Checked Arithmetic
 

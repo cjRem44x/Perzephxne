@@ -36,10 +36,10 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-9e5a952b.js";
+            window.path_to_searchindex_js = "searchindex-45d9a87b.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-283af563.js"></script>
+        <script src="toc-7f1b7573.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -364,6 +364,37 @@ PI: f64 : 3.14  # immutable — assignment after this is a compile error
 <pre><code>N: usize : 10
 N = 20           # ERROR: cannot assign to immutable binding 'N'
 </code></pre>
+<h2 id="type-inference"><a class="header" href="#type-inference">Type Inference</a></h2>
+<p>Use <code>:=</code> (mutable) or <code>::</code> (immutable) to let the compiler infer the type from the initializer.</p>
+<p>When the right-hand side is a bare <strong>literal</strong> (integer, float, string, bool, char), the type is widened to the natural hardware-width so you never accidentally box yourself into a narrow type:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Literal kind</th><th>Inferred binding type</th></tr>
+</thead>
+<tbody>
+<tr><td>integer literal (<code>0</code>, <code>42</code>, …)</td><td><code>i64</code></td></tr>
+<tr><td>float literal (<code>1.5</code>, <code>3.14</code>, …)</td><td><code>f64</code> (already the default)</td></tr>
+<tr><td>string literal</td><td><code>str</code></td></tr>
+<tr><td>bool / char literal</td><td><code>bool</code> / <code>char</code></td></tr>
+</tbody>
+</table>
+</div>
+<pre><code>count  := 0          # i64 — integer literal widens to i64
+ratio  := 1.5        # f64
+name   :: "Alice"    # str, immutable
+active := true       # bool
+
+count = count + 1    # ok — count is mutable i64
+name  = "Bob"        # ERROR: cannot assign to immutable binding 'name'
+</code></pre>
+<p>When the right-hand side is anything other than a bare literal (a call, variable, expression), the binding takes the <strong>exact</strong> inferred type — no widening:</p>
+<pre><code>fn get_score() -&gt; i32 { ret 100 }
+fn get_ratio() -&gt; f32 { ret 0.5 }
+
+s := get_score()   # i32 — exact return type
+r := get_ratio()   # f32 — exact return type
+</code></pre>
 <h2 id="primitive-types"><a class="header" href="#primitive-types">Primitive Types</a></h2>
 <h3 id="integers"><a class="header" href="#integers">Integers</a></h3>
 <pre><code>u8   i8
@@ -509,11 +540,28 @@ bad, err2: !i32 = @i32("abc")  # bad=0   err2=1
 bits: u32 = @bitcast(u32, f)   # 0x3F800000
 </code></pre>
 <h2 id="type-aliases"><a class="header" href="#type-aliases">Type Aliases</a></h2>
-<pre><code>type int  = i32
-type uint = u32
-type byte = u8
-type cstr = *u8    # null-terminated C string
+<p><code>type</code> creates a new name for an existing type. The alias is fully interchangeable with the underlying type.</p>
+<pre><code>type int   = i32
+type uint  = u32
+type byte  = u8
+type cstr  = *u8      # null-terminated C string
+
+type Score   = i64
+type Meters  = f64
+type Seconds = f64
+type NodeId  = u32
+type Buffer  = *u8
 </code></pre>
+<p>Aliases work everywhere a type is expected — variable declarations, function parameters, and return types:</p>
+<pre><code>fn speed(dist: Meters, time: Seconds) -&gt; f64 {
+    ret dist / time
+}
+
+d: Meters  = 100.0
+t: Seconds = 9.58
+s: f64 = speed(d, t)   # 10.44
+</code></pre>
+<p>The built-in aliases <code>int</code>, <code>uint</code>, <code>byte</code>, and <code>cstr</code> are pre-defined and available in every file.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="generics"><a class="header" href="#generics">Generics</a></h1>
 <p>Generic functions and types are parameterized over one or more type variables written in <code>[T]</code> after the name.</p>
@@ -568,6 +616,17 @@ fn find[T](s: []T, pred: fn(T) -&gt; bool) -&gt; Option[T] {
     @pf("Hello, {name}!\n")
 }
 </code></pre>
+<h2 id="inferred-return-type"><a class="header" href="#inferred-return-type">Inferred Return Type</a></h2>
+<p>Omit <code>-&gt;</code> with a <code>ret</code> statement and the compiler infers the return type from the returned expression. The inferred type is the exact type of the <code>ret</code> expression — no widening is applied.</p>
+<pre><code>fn double(x: i64) {
+    ret x * 2      # inferred -&gt; i64
+}
+
+fn scale(x: f32, factor: f32) {
+    ret x * factor # inferred -&gt; f32
+}
+</code></pre>
+<p>This is equivalent to annotating the return type explicitly. Use explicit annotations when the function is part of a public API or when there are multiple <code>ret</code> paths that might resolve to different types.</p>
 <h2 id="multiple-return-values"><a class="header" href="#multiple-return-values">Multiple Return Values</a></h2>
 <pre><code>fn divmod(a: i32, b: i32) -&gt; (i32, i32) {
     ret (a / b, a % b)
@@ -659,6 +718,30 @@ if x &gt; 100 {
 }
 </code></pre>
 <p>Braces are required. Conditions do not need parentheses.</p>
+<h2 id="if-as-an-expression"><a class="header" href="#if-as-an-expression"><code>if</code> as an Expression</a></h2>
+<p><code>if</code> can produce a value. The last expression in each block is the result:</p>
+<pre><code>x: i32 = 7
+
+label: str = if x &gt; 10 { "big" } else { "small" }
+
+# elif chains work too
+grade := if x &gt;= 90 {
+    "A"
+} else if x &gt;= 70 {
+    "B"
+} else {
+    "C"
+}
+
+# multi-statement blocks — last expression is the value
+n := if x &gt; 0 {
+    a: i32 = x * 2
+    a + 1        # result
+} else {
+    0
+}
+</code></pre>
+<p>The type is inferred from the <code>then</code> branch. Both branches must produce the same type.</p>
 <h2 id="loops"><a class="header" href="#loops">Loops</a></h2>
 <h3 id="loop"><a class="header" href="#loop"><code>loop</code></a></h3>
 <p>Infinite loop:</p>
@@ -745,6 +828,31 @@ when s {
     _ =&gt; "other",
 }
 </code></pre>
+<h2 id="labels-and-goto"><a class="header" href="#labels-and-goto">Labels and <code>goto</code></a></h2>
+<p>Labels mark a position within a function. <code>goto</code> jumps to a label. Both are <strong>function-internal</strong> — a label cannot be reached from outside the function it is declared in.</p>
+<pre><code>fn process(skip: bool) {
+    if skip { goto done }
+
+    @pf("doing work\n")
+    # ... more statements ...
+
+    done:
+    @pf("finished\n")
+}
+</code></pre>
+<p>Labels can appear before any statement, including in the middle of a block. Forward and backward jumps are both allowed:</p>
+<pre><code>fn retry_loop() {
+    attempts: i64 = 0
+
+    try_again:
+    attempts += 1
+    if attempts &lt; 3 { goto try_again }
+
+    @pf("gave up after {attempts} tries\n")
+}
+</code></pre>
+<p>Jumping over a variable declaration is allowed. Code between the <code>goto</code> and the label is simply skipped.</p>
+<p><code>goto</code> is intentionally restricted to the current function to avoid the classic C pitfall of jumping into another function’s stack frame.</p>
 <h2 id="ret"><a class="header" href="#ret"><code>ret</code></a></h2>
 <p>Return from the current function:</p>
 <pre><code>fn abs(x: i32) -&gt; i32 {
@@ -1019,6 +1127,27 @@ p: *i32 = &amp;x      # address-of
 v: i32  = p.*     # dereference
 p.* = 100         # write through pointer
 </code></pre>
+<h2 id="struct-field-access-through-a-pointer"><a class="header" href="#struct-field-access-through-a-pointer">Struct Field Access Through a Pointer</a></h2>
+<p>Two equivalent syntaxes work for accessing fields of a struct through a pointer:</p>
+<pre><code>p: *Foo = &amp;my_foo
+
+# dot — auto-derefs *Foo automatically
+x: i32 = p.x
+
+# arrow — C-style, identical to dot on pointer types
+x: i32 = p-&gt;x
+</code></pre>
+<p>For explicit dereference followed by field access:</p>
+<pre><code>x: i32 = p.*.x     # .* dereferences, then .x accesses the field
+</code></pre>
+<p>Assignment works the same way:</p>
+<pre><code>p-&gt;x  = 10
+p.*.x = 10     # identical
+p.x   = 10     # identical
+</code></pre>
+<blockquote>
+<p><code>-&gt;</code> and <code>.</code> on a <code>*T</code> are interchangeable — both auto-deref the pointer.</p>
+</blockquote>
 <h2 id="pointer-arithmetic"><a class="header" href="#pointer-arithmetic">Pointer Arithmetic</a></h2>
 <pre><code>arr: [5]i32 = [1, 2, 3, 4, 5]
 p: *i32 = &amp;arr[0]
@@ -1090,6 +1219,79 @@ ok: bool = parse("42", &amp;n)
 <pre><code>extern struct SDL_Window   # declared but not defined
 type WindowHandle = *SDL_Window
 </code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="smart-pointers"><a class="header" href="#smart-pointers">Smart Pointers</a></h1>
+<p>A smart pointer <code>^T</code> is a reference-counted heap allocation. The runtime automatically frees the memory when the last reference goes out of scope — no manual <code>free</code> needed.</p>
+<h2 id="allocation-1"><a class="header" href="#allocation-1">Allocation</a></h2>
+<p>Use <code>@new</code> to create a smart pointer:</p>
+<pre><code># wrap a value
+p: ^i64 = @new(42)
+q: ^f64 = @new(3.14)
+
+# allocate a zero-initialized instance by type name
+r: ^i32 = @new(i32)
+
+# wrap a struct value
+s: ^vec2 = @new(vec2{.x = 1.0, .y = 2.0})
+</code></pre>
+<p>Integer and float literals inside <code>@new</code> widen the same way <code>:=</code> does (<code>i64</code> / <code>f64</code>), so <code>@new(42)</code> returns <code>^i64</code>.</p>
+<h2 id="dereference"><a class="header" href="#dereference">Dereference</a></h2>
+<p>Use <code>.^</code> to read or write through the pointer:</p>
+<pre><code>p: ^i64 = @new(10)
+p.^ = 20            # write through
+val: i64 = p.^      # read through
+@pf("{val}\n")      # 20
+</code></pre>
+<h2 id="reference-counting"><a class="header" href="#reference-counting">Reference Counting</a></h2>
+<p>The compiler automatically increments and decrements the reference count:</p>
+<pre><code>fn take_ref(q: ^i64) {
+    @pf("inside: {q.^}\n")
+}   # RC decremented here; freed if it reaches zero
+
+p: ^i64 = @new(99)
+take_ref(p)         # RC = 2 on entry, 1 on exit
+</code></pre>
+<p>Use <code>@clone</code> when you need to explicitly share ownership (returns the same pointer with RC incremented):</p>
+<pre><code>a: ^i64 = @new(7)
+b: ^i64 = @clone(a)   # a and b share the allocation; RC = 2
+</code></pre>
+<h2 id="inspecting-the-type"><a class="header" href="#inspecting-the-type">Inspecting the Type</a></h2>
+<p><code>@typeof</code> returns a <code>str</code> describing the type:</p>
+<pre><code>p: ^i32 = @new(i32)
+@pf("{@typeof(p)}\n")   # "^i32"
+</code></pre>
+<h2 id="field-access-on-struct"><a class="header" href="#field-access-on-struct">Field Access on <code>^Struct</code></a></h2>
+<p>For smart pointers to structs, use <code>.^.field</code> or dereference first:</p>
+<pre><code>struct Point { x: i32, y: i32 }
+
+p: ^Point = @new(Point{.x=1, .y=2})
+x: i32 = p.^.x
+</code></pre>
+<h2 id="mutating-through-a-pointer"><a class="header" href="#mutating-through-a-pointer">Mutating Through a Pointer</a></h2>
+<pre><code>fn increment(p: ^i64) {
+    p.^ = p.^ + 1
+}
+
+counter: ^i64 = @new(0)
+increment(counter)
+increment(counter)
+@pf("{counter.^}\n")    # 2
+</code></pre>
+<h2 id="smart-pointer-vs-raw-pointer"><a class="header" href="#smart-pointer-vs-raw-pointer">Smart Pointer vs Raw Pointer</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th></th><th>Raw <code>*T</code></th><th>Smart <code>^T</code></th></tr>
+</thead>
+<tbody>
+<tr><td>Allocation</td><td><code>@alo(T)</code> / <code>malloc</code></td><td><code>@new(val)</code></td></tr>
+<tr><td>Deallocation</td><td>manual <code>@free</code> / <code>free</code></td><td>automatic at scope exit</td></tr>
+<tr><td>Null</td><td><code>null</code></td><td>never null after <code>@new</code></td></tr>
+<tr><td>Sharing</td><td>unsafe aliasing</td><td>reference-counted</td></tr>
+<tr><td>Overhead</td><td>none</td><td>8-byte RC header per allocation</td></tr>
+</tbody>
+</table>
+</div>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="error-handling"><a class="header" href="#error-handling">Error Handling</a></h1>
 <p>Errors in Perzephxne are values — not exceptions. There are no <code>try/catch</code> blocks.</p>
@@ -1443,6 +1645,8 @@ b3: bool = @bool("yes")    # false
 <tr><td><code>@memcpy(dst, src, n)</code></td><td>copy <code>n</code> bytes from src to dst</td></tr>
 <tr><td><code>@memmove(dst, src, n)</code></td><td>copy <code>n</code> bytes, handles overlap</td></tr>
 <tr><td><code>@memset(dst, byte, n)</code></td><td>fill <code>n</code> bytes with <code>byte</code></td></tr>
+<tr><td><code>@addr(expr)</code></td><td>address of a variable, field, or index expression — like <code>&amp;</code> but usable in more contexts</td></tr>
+<tr><td><code>@str_raw(ptr, len)</code></td><td>construct a <code>str</code> fat pointer from a raw <code>*u8</code> and a <code>usize</code> length</td></tr>
 </tbody>
 </table>
 </div>
@@ -1534,6 +1738,31 @@ bits: u32 = @bitcast(u32, f)   # raw bit pattern — 0x3F800000
 </tbody>
 </table>
 </div>
+<h2 id="failable-values"><a class="header" href="#failable-values">Failable Values</a></h2>
+<p>Failable (<code>!T</code>) values carry a result and an error flag. These builtins inspect and extract them.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Builtin</th><th>Signature</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>@ok(val)</code></td><td><code>fn(!T) -&gt; T</code></td><td>extract the value; panics if the error flag is set</td></tr>
+<tr><td><code>@unwrap(val)</code></td><td><code>fn(!T) -&gt; T</code></td><td>alias for <code>@ok</code></td></tr>
+<tr><td><code>@err(val)</code></td><td><code>fn(!T) -&gt; i32</code></td><td>extract the error code (0 = success)</td></tr>
+<tr><td><code>@is_ok(val)</code></td><td><code>fn(!T) -&gt; bool</code></td><td>true if the error flag is not set</td></tr>
+</tbody>
+</table>
+</div>
+<pre><code>val, err: !i32 = @i32("42")
+if @is_ok(val) {
+    @pf("parsed: %d\n", @ok(val))
+} else {
+    @pf("error code: %d\n", @err(val))
+}
+</code></pre>
+<p>Plain assignment silently extracts the value (error flag discarded):</p>
+<pre><code>n: i32 = @i32("42")   # flag ignored
+</code></pre>
 <h2 id="checked-arithmetic-1"><a class="header" href="#checked-arithmetic-1">Checked Arithmetic</a></h2>
 <p>These return <code>!T</code> — use failable destructure to check for overflow:</p>
 <div class="table-wrapper">
@@ -1553,6 +1782,25 @@ if err != 0 { @panic("integer overflow") }
 </code></pre>
 <p>Plain assignment silently extracts the value (overflow still sets the flag, but it is discarded):</p>
 <pre><code>result: i32 = @checked_add(a, b)   # flag ignored
+</code></pre>
+<h2 id="random-numbers"><a class="header" href="#random-numbers">Random Numbers</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Builtin</th><th>Signature</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>@rng(T, min, max)</code></td><td><code>fn(type, T, T) -&gt; T</code></td><td>random integer or float in <code>[min, max]</code> inclusive</td></tr>
+<tr><td><code>@rng_seed(n)</code></td><td><code>fn(i32)</code></td><td>seed the RNG (default: unseeded / stdlib <code>rand</code>)</td></tr>
+</tbody>
+</table>
+</div>
+<p><code>T</code> must be an integer or float type. Pass the type name as the first argument:</p>
+<pre><code>x: i32  = @rng(i32, 1, 6)       # roll a die
+y: f64  = @rng(f64, 0.0, 1.0)   # uniform float
+z: u64  = @rng(u64, 0, 100)     # unsigned range
+
+@rng_seed(42)                    # reproducible sequence
 </code></pre>
 <h2 id="assembly"><a class="header" href="#assembly">Assembly</a></h2>
 <div class="table-wrapper">
@@ -1699,6 +1947,71 @@ c.Vec.push(&amp;v, 30)
 @pf("len=%d\n", v.len)
 c.Vec.free_vec(&amp;v)
 </code></pre>
+<h2 id="stdfile"><a class="header" href="#stdfile"><code>std/file</code></a></h2>
+<p>Path-based file utilities — no open handle needed for common operations.</p>
+<pre><code>import(file = "std/file")
+
+ok: bool = file.exists("data.txt")
+sz: i64  = file.size("data.txt")
+
+content: str = file.read_all("data.txt")
+file.write_all("out.txt", content)
+file.append("log.txt", "entry\n")
+
+file.remove_file("tmp.txt")
+file.rename_file("old.txt", "new.txt")
+</code></pre>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Function</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>file.exists(path)</code></td><td>true if the path exists and is accessible</td></tr>
+<tr><td><code>file.size(path)</code></td><td>byte size, or -1 on error</td></tr>
+<tr><td><code>file.read_all(path)</code></td><td>read entire file into a heap-allocated <code>str</code></td></tr>
+<tr><td><code>file.write_all(path, content)</code></td><td>create/overwrite with <code>content</code>; returns <code>bool</code></td></tr>
+<tr><td><code>file.append(path, content)</code></td><td>append <code>content</code> (creates if missing); returns <code>bool</code></td></tr>
+<tr><td><code>file.remove_file(path)</code></td><td>delete the file; returns <code>bool</code></td></tr>
+<tr><td><code>file.rename_file(old, new)</code></td><td>rename/move a file; returns <code>bool</code></td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="stdcrypto"><a class="header" href="#stdcrypto"><code>std/crypto</code></a></h2>
+<p>Non-cryptographic and cryptographic hashing, XOR stream cipher, and SHA-256.</p>
+<pre><code>import(crypto = "std/crypto")
+
+# Fast non-cryptographic hashes (good for hash tables)
+h1: u64 = crypto.hash_djb2("hello")
+h2: u64 = crypto.hash_fnv1a("hello")
+
+# XOR stream cipher — call twice to decrypt
+buf: [16]u8 = undef
+# ... fill buf ...
+crypto.xor_encrypt(&amp;buf[0], 16, "secretkey")
+
+# SHA-256 — returns a 32-byte heap buffer
+digest: *u8 = crypto.sha256(data_ptr, data_len)
+
+# SHA-256 as a lowercase hex string (64 characters)
+hex: str = crypto.sha256_hex(data_ptr, data_len)
+</code></pre>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Function</th><th>Signature</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>hash_djb2(s)</code></td><td><code>fn(str) -&gt; u64</code></td><td>djb2 non-crypto hash</td></tr>
+<tr><td><code>hash_fnv1a(s)</code></td><td><code>fn(str) -&gt; u64</code></td><td>FNV-1a 64-bit non-crypto hash</td></tr>
+<tr><td><code>xor_encrypt(data, len, key)</code></td><td><code>fn(*u8, usize, str)</code></td><td>XOR stream cipher in-place</td></tr>
+<tr><td><code>sha256(data, len)</code></td><td><code>fn(*u8, usize) -&gt; *u8</code></td><td>SHA-256 digest (32 bytes, heap)</td></tr>
+<tr><td><code>sha256_hex(data, len)</code></td><td><code>fn(*u8, usize) -&gt; str</code></td><td>SHA-256 as 64-char hex string</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="stdcollections-1"><a class="header" href="#stdcollections-1"><code>std/collections</code></a></h2>
+<p>A growable array of <code>i64</code> values.</p>
 <div class="table-wrapper">
 <table>
 <thead>
@@ -1712,6 +2025,154 @@ c.Vec.free_vec(&amp;v)
 </tbody>
 </table>
 </div>
+<h2 id="stdfmt"><a class="header" href="#stdfmt"><code>std/fmt</code></a></h2>
+<p>String formatting utilities. For interpolation-style formatting use the <code>@fmt</code> builtin directly (<code>@fmt("x={} y={}", x, y)</code>). This module provides type-to-string conversion and padding.</p>
+<pre><code>import(fmt = "std/fmt")
+
+h: str  = fmt.hex(255u64)         # "ff"
+hu: str = fmt.hex_upper(255u64)   # "FF"
+fi: str = fmt.fixed(3.14159, 2)   # "3.14"
+pl: str = fmt.pad_left("hi",  6, 32u8)  # "    hi"
+pr: str = fmt.pad_right("hi", 6, 46u8)  # "hi...."
+zp: str = fmt.zero_pad(7, 3)      # "007"
+</code></pre>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Function</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>fmt.from_int(n)</code></td><td><code>i64</code> → decimal string</td></tr>
+<tr><td><code>fmt.from_uint(n)</code></td><td><code>u64</code> → decimal string</td></tr>
+<tr><td><code>fmt.from_float(f)</code></td><td><code>f64</code> → decimal string</td></tr>
+<tr><td><code>fmt.from_bool(b)</code></td><td><code>"true"</code> or <code>"false"</code></td></tr>
+<tr><td><code>fmt.hex(n)</code></td><td><code>u64</code> → lowercase hex (no prefix)</td></tr>
+<tr><td><code>fmt.hex_upper(n)</code></td><td><code>u64</code> → uppercase hex</td></tr>
+<tr><td><code>fmt.fixed(f, decimals)</code></td><td><code>f64</code> with fixed decimal places</td></tr>
+<tr><td><code>fmt.pad_left(s, width, ch)</code></td><td>prepend <code>ch</code> to reach <code>width</code></td></tr>
+<tr><td><code>fmt.pad_right(s, width, ch)</code></td><td>append <code>ch</code> to reach <code>width</code></td></tr>
+<tr><td><code>fmt.zero_pad(n, width)</code></td><td>left-pad integer with <code>'0'</code></td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="stdstr-additions"><a class="header" href="#stdstr-additions"><code>std/str</code> additions</a></h2>
+<p>Beyond the core functions, <code>std/str</code> also provides:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Function</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>s.replace(s, old, new_)</code></td><td>replace first occurrence of <code>old</code> with <code>new_</code></td></tr>
+<tr><td><code>s.replace_all(s, old, new_)</code></td><td>replace all non-overlapping occurrences</td></tr>
+<tr><td><code>s.split_count(s, delim)</code></td><td>count tokens when splitting by <code>delim</code></td></tr>
+<tr><td><code>s.split_next(s, delim, pos)</code></td><td>extract next token, advance <code>pos</code> past delimiter</td></tr>
+<tr><td><code>s.index_of_char(s, ch)</code></td><td>byte offset of first <code>ch</code>, or <code>s.len</code> if absent</td></tr>
+<tr><td><code>s.is_digit_str(s)</code></td><td>true if all characters are ASCII digits</td></tr>
+<tr><td><code>s.is_alpha_str(s)</code></td><td>true if all characters are ASCII letters</td></tr>
+</tbody>
+</table>
+</div>
+<pre><code>import(s = "std/str")
+
+# split "a,b,c" into tokens
+cnt: usize = s.split_count("a,b,c", ",")   # 3
+pos: usize = 0
+while pos &lt; 5 {
+    tok: str = s.split_next("a,b,c", ",", &amp;pos)
+    if tok.len == 0 { break }
+    @pf("%s\n", tok.data)
+}
+
+replaced: str = s.replace_all("aabbaa", "aa", "X")  # "XbbX"
+</code></pre>
+<h2 id="stdos-additions"><a class="header" href="#stdos-additions"><code>std/os</code> additions</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Function</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>os.cwd()</code></td><td>current working directory as a <code>str</code></td></tr>
+<tr><td><code>os.mkdir_dir(path)</code></td><td>create directory (mode 755); <code>true</code> on success</td></tr>
+<tr><td><code>os.chdir_to(path)</code></td><td>change working directory; <code>true</code> on success</td></tr>
+<tr><td><code>os.rmdir_dir(path)</code></td><td>remove empty directory; <code>true</code> on success</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="stdatomic"><a class="header" href="#stdatomic"><code>std/atomic</code></a></h2>
+<p>Lock-free atomic operations on <code>i64</code> values. All operations use sequentially-consistent ordering.</p>
+<pre><code>import(atomic = "std/atomic")
+
+counter: i64 = 0
+
+atomic.add(&amp;counter, 1)        # add 1, return old value
+atomic.sub(&amp;counter, 1)        # subtract 1, return old value
+v: i64 = atomic.load(&amp;counter) # atomic read
+atomic.store(&amp;counter, 0)      # atomic write
+ok: bool = atomic.cas(&amp;counter, 0, 42)  # compare-and-swap
+
+atomic.inc(&amp;counter)   # add 1, return new value
+atomic.dec(&amp;counter)   # subtract 1, return new value
+</code></pre>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Function</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>atomic.load(ptr)</code></td><td>atomically read <code>*ptr</code></td></tr>
+<tr><td><code>atomic.store(ptr, val)</code></td><td>atomically write <code>val</code> to <code>*ptr</code></td></tr>
+<tr><td><code>atomic.add(ptr, val)</code></td><td>add <code>val</code>, return <strong>old</strong> value</td></tr>
+<tr><td><code>atomic.sub(ptr, val)</code></td><td>subtract <code>val</code>, return <strong>old</strong> value</td></tr>
+<tr><td><code>atomic.bit_and(ptr, val)</code></td><td>bitwise AND, return old value</td></tr>
+<tr><td><code>atomic.bit_or(ptr, val)</code></td><td>bitwise OR, return old value</td></tr>
+<tr><td><code>atomic.xor(ptr, val)</code></td><td>bitwise XOR, return old value</td></tr>
+<tr><td><code>atomic.swap(ptr, val)</code></td><td>swap with <code>val</code>, return old value</td></tr>
+<tr><td><code>atomic.cas(ptr, expected, desired)</code></td><td>compare-and-swap; <code>true</code> if swapped</td></tr>
+<tr><td><code>atomic.inc(ptr)</code></td><td>add 1, return <strong>new</strong> value</td></tr>
+<tr><td><code>atomic.dec(ptr)</code></td><td>subtract 1, return <strong>new</strong> value</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="stdsync"><a class="header" href="#stdsync"><code>std/sync</code></a></h2>
+<p>Mutex and RwLock via pthreads. Link with <code>-lpthread</code>.</p>
+<pre><code>import(sync = "std/sync")
+
+mu: sync.Mutex = sync.mutex_new()
+sync.lock(&amp;mu)
+defer sync.unlock(&amp;mu)
+# ... critical section ...
+
+rw: sync.RwLock = sync.rwlock_new()
+sync.rlock(&amp;rw)    # shared reader lock
+sync.rwunlock(&amp;rw)
+sync.wlock(&amp;rw)    # exclusive writer lock
+sync.rwunlock(&amp;rw)
+</code></pre>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Function</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>sync.mutex_new()</code></td><td>create an initialized <code>Mutex</code></td></tr>
+<tr><td><code>sync.lock(m)</code></td><td>acquire (blocks until available)</td></tr>
+<tr><td><code>sync.trylock(m)</code></td><td>try to acquire; <code>true</code> if taken</td></tr>
+<tr><td><code>sync.unlock(m)</code></td><td>release</td></tr>
+<tr><td><code>sync.mutex_destroy(m)</code></td><td>free pthread resources</td></tr>
+<tr><td><code>sync.rwlock_new()</code></td><td>create an initialized <code>RwLock</code></td></tr>
+<tr><td><code>sync.rlock(rw)</code></td><td>acquire shared reader lock</td></tr>
+<tr><td><code>sync.tryrlock(rw)</code></td><td>try reader lock; <code>true</code> if taken</td></tr>
+<tr><td><code>sync.wlock(rw)</code></td><td>acquire exclusive writer lock</td></tr>
+<tr><td><code>sync.trywlock(rw)</code></td><td>try writer lock; <code>true</code> if taken</td></tr>
+<tr><td><code>sync.rwunlock(rw)</code></td><td>release reader or writer lock</td></tr>
+<tr><td><code>sync.rwlock_destroy(rw)</code></td><td>free pthread resources</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="stdnet-planned"><a class="header" href="#stdnet-planned"><code>std/net</code> <em>(planned)</em></a></h2>
+<p>TCP/UDP sockets and HTTP client. Not yet implemented.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="operator-precedence"><a class="header" href="#operator-precedence">Operator Precedence</a></h1>
 <p>Operators are listed from highest to lowest precedence.</p>

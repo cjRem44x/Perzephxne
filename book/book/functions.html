@@ -35,10 +35,10 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-9e5a952b.js";
+            window.path_to_searchindex_js = "searchindex-45d9a87b.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-283af563.js"></script>
+        <script src="toc-7f1b7573.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -189,6 +189,17 @@
     @pf("Hello, {name}!\n")
 }
 </code></pre>
+<h2 id="inferred-return-type"><a class="header" href="#inferred-return-type">Inferred Return Type</a></h2>
+<p>Omit <code>-&gt;</code> with a <code>ret</code> statement and the compiler infers the return type from the returned expression. The inferred type is the exact type of the <code>ret</code> expression — no widening is applied.</p>
+<pre><code>fn double(x: i64) {
+    ret x * 2      # inferred -&gt; i64
+}
+
+fn scale(x: f32, factor: f32) {
+    ret x * factor # inferred -&gt; f32
+}
+</code></pre>
+<p>This is equivalent to annotating the return type explicitly. Use explicit annotations when the function is part of a public API or when there are multiple <code>ret</code> paths that might resolve to different types.</p>
 <h2 id="multiple-return-values"><a class="header" href="#multiple-return-values">Multiple Return Values</a></h2>
 <pre><code>fn divmod(a: i32, b: i32) -&gt; (i32, i32) {
     ret (a / b, a % b)

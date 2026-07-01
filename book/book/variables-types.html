@@ -35,10 +35,10 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-9e5a952b.js";
+            window.path_to_searchindex_js = "searchindex-45d9a87b.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-283af563.js"></script>
+        <script src="toc-7f1b7573.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -187,6 +187,37 @@ PI: f64 : 3.14  # immutable — assignment after this is a compile error
 <pre><code>N: usize : 10
 N = 20           # ERROR: cannot assign to immutable binding 'N'
 </code></pre>
+<h2 id="type-inference"><a class="header" href="#type-inference">Type Inference</a></h2>
+<p>Use <code>:=</code> (mutable) or <code>::</code> (immutable) to let the compiler infer the type from the initializer.</p>
+<p>When the right-hand side is a bare <strong>literal</strong> (integer, float, string, bool, char), the type is widened to the natural hardware-width so you never accidentally box yourself into a narrow type:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Literal kind</th><th>Inferred binding type</th></tr>
+</thead>
+<tbody>
+<tr><td>integer literal (<code>0</code>, <code>42</code>, …)</td><td><code>i64</code></td></tr>
+<tr><td>float literal (<code>1.5</code>, <code>3.14</code>, …)</td><td><code>f64</code> (already the default)</td></tr>
+<tr><td>string literal</td><td><code>str</code></td></tr>
+<tr><td>bool / char literal</td><td><code>bool</code> / <code>char</code></td></tr>
+</tbody>
+</table>
+</div>
+<pre><code>count  := 0          # i64 — integer literal widens to i64
+ratio  := 1.5        # f64
+name   :: "Alice"    # str, immutable
+active := true       # bool
+
+count = count + 1    # ok — count is mutable i64
+name  = "Bob"        # ERROR: cannot assign to immutable binding 'name'
+</code></pre>
+<p>When the right-hand side is anything other than a bare literal (a call, variable, expression), the binding takes the <strong>exact</strong> inferred type — no widening:</p>
+<pre><code>fn get_score() -&gt; i32 { ret 100 }
+fn get_ratio() -&gt; f32 { ret 0.5 }
+
+s := get_score()   # i32 — exact return type
+r := get_ratio()   # f32 — exact return type
+</code></pre>
 <h2 id="primitive-types"><a class="header" href="#primitive-types">Primitive Types</a></h2>
 <h3 id="integers"><a class="header" href="#integers">Integers</a></h3>
 <pre><code>u8   i8
@@ -332,11 +363,28 @@ bad, err2: !i32 = @i32("abc")  # bad=0   err2=1
 bits: u32 = @bitcast(u32, f)   # 0x3F800000
 </code></pre>
 <h2 id="type-aliases"><a class="header" href="#type-aliases">Type Aliases</a></h2>
-<pre><code>type int  = i32
-type uint = u32
-type byte = u8
-type cstr = *u8    # null-terminated C string
+<p><code>type</code> creates a new name for an existing type. The alias is fully interchangeable with the underlying type.</p>
+<pre><code>type int   = i32
+type uint  = u32
+type byte  = u8
+type cstr  = *u8      # null-terminated C string
+
+type Score   = i64
+type Meters  = f64
+type Seconds = f64
+type NodeId  = u32
+type Buffer  = *u8
 </code></pre>
+<p>Aliases work everywhere a type is expected — variable declarations, function parameters, and return types:</p>
+<pre><code>fn speed(dist: Meters, time: Seconds) -&gt; f64 {
+    ret dist / time
+}
+
+d: Meters  = 100.0
+t: Seconds = 9.58
+s: f64 = speed(d, t)   # 10.44
+</code></pre>
+<p>The built-in aliases <code>int</code>, <code>uint</code>, <code>byte</code>, and <code>cstr</code> are pre-defined and available in every file.</p>
 
                     </main>
 

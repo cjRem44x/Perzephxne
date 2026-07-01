@@ -35,10 +35,10 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-9e5a952b.js";
+            window.path_to_searchindex_js = "searchindex-45d9a87b.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-283af563.js"></script>
+        <script src="toc-7f1b7573.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -190,6 +190,30 @@ if x &gt; 100 {
 }
 </code></pre>
 <p>Braces are required. Conditions do not need parentheses.</p>
+<h2 id="if-as-an-expression"><a class="header" href="#if-as-an-expression"><code>if</code> as an Expression</a></h2>
+<p><code>if</code> can produce a value. The last expression in each block is the result:</p>
+<pre><code>x: i32 = 7
+
+label: str = if x &gt; 10 { "big" } else { "small" }
+
+# elif chains work too
+grade := if x &gt;= 90 {
+    "A"
+} else if x &gt;= 70 {
+    "B"
+} else {
+    "C"
+}
+
+# multi-statement blocks — last expression is the value
+n := if x &gt; 0 {
+    a: i32 = x * 2
+    a + 1        # result
+} else {
+    0
+}
+</code></pre>
+<p>The type is inferred from the <code>then</code> branch. Both branches must produce the same type.</p>
 <h2 id="loops"><a class="header" href="#loops">Loops</a></h2>
 <h3 id="loop"><a class="header" href="#loop"><code>loop</code></a></h3>
 <p>Infinite loop:</p>
@@ -276,6 +300,31 @@ when s {
     _ =&gt; "other",
 }
 </code></pre>
+<h2 id="labels-and-goto"><a class="header" href="#labels-and-goto">Labels and <code>goto</code></a></h2>
+<p>Labels mark a position within a function. <code>goto</code> jumps to a label. Both are <strong>function-internal</strong> — a label cannot be reached from outside the function it is declared in.</p>
+<pre><code>fn process(skip: bool) {
+    if skip { goto done }
+
+    @pf("doing work\n")
+    # ... more statements ...
+
+    done:
+    @pf("finished\n")
+}
+</code></pre>
+<p>Labels can appear before any statement, including in the middle of a block. Forward and backward jumps are both allowed:</p>
+<pre><code>fn retry_loop() {
+    attempts: i64 = 0
+
+    try_again:
+    attempts += 1
+    if attempts &lt; 3 { goto try_again }
+
+    @pf("gave up after {attempts} tries\n")
+}
+</code></pre>
+<p>Jumping over a variable declaration is allowed. Code between the <code>goto</code> and the label is simply skipped.</p>
+<p><code>goto</code> is intentionally restricted to the current function to avoid the classic C pitfall of jumping into another function’s stack frame.</p>
 <h2 id="ret"><a class="header" href="#ret"><code>ret</code></a></h2>
 <p>Return from the current function:</p>
 <pre><code>fn abs(x: i32) -&gt; i32 {

@@ -35,10 +35,10 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-9e5a952b.js";
+            window.path_to_searchindex_js = "searchindex-45d9a87b.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-283af563.js"></script>
+        <script src="toc-7f1b7573.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -249,6 +249,8 @@ b3: bool = @bool("yes")    # false
 <tr><td><code>@memcpy(dst, src, n)</code></td><td>copy <code>n</code> bytes from src to dst</td></tr>
 <tr><td><code>@memmove(dst, src, n)</code></td><td>copy <code>n</code> bytes, handles overlap</td></tr>
 <tr><td><code>@memset(dst, byte, n)</code></td><td>fill <code>n</code> bytes with <code>byte</code></td></tr>
+<tr><td><code>@addr(expr)</code></td><td>address of a variable, field, or index expression — like <code>&amp;</code> but usable in more contexts</td></tr>
+<tr><td><code>@str_raw(ptr, len)</code></td><td>construct a <code>str</code> fat pointer from a raw <code>*u8</code> and a <code>usize</code> length</td></tr>
 </tbody>
 </table>
 </div>
@@ -340,6 +342,31 @@ bits: u32 = @bitcast(u32, f)   # raw bit pattern — 0x3F800000
 </tbody>
 </table>
 </div>
+<h2 id="failable-values"><a class="header" href="#failable-values">Failable Values</a></h2>
+<p>Failable (<code>!T</code>) values carry a result and an error flag. These builtins inspect and extract them.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Builtin</th><th>Signature</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>@ok(val)</code></td><td><code>fn(!T) -&gt; T</code></td><td>extract the value; panics if the error flag is set</td></tr>
+<tr><td><code>@unwrap(val)</code></td><td><code>fn(!T) -&gt; T</code></td><td>alias for <code>@ok</code></td></tr>
+<tr><td><code>@err(val)</code></td><td><code>fn(!T) -&gt; i32</code></td><td>extract the error code (0 = success)</td></tr>
+<tr><td><code>@is_ok(val)</code></td><td><code>fn(!T) -&gt; bool</code></td><td>true if the error flag is not set</td></tr>
+</tbody>
+</table>
+</div>
+<pre><code>val, err: !i32 = @i32("42")
+if @is_ok(val) {
+    @pf("parsed: %d\n", @ok(val))
+} else {
+    @pf("error code: %d\n", @err(val))
+}
+</code></pre>
+<p>Plain assignment silently extracts the value (error flag discarded):</p>
+<pre><code>n: i32 = @i32("42")   # flag ignored
+</code></pre>
 <h2 id="checked-arithmetic"><a class="header" href="#checked-arithmetic">Checked Arithmetic</a></h2>
 <p>These return <code>!T</code> — use failable destructure to check for overflow:</p>
 <div class="table-wrapper">
@@ -359,6 +386,25 @@ if err != 0 { @panic("integer overflow") }
 </code></pre>
 <p>Plain assignment silently extracts the value (overflow still sets the flag, but it is discarded):</p>
 <pre><code>result: i32 = @checked_add(a, b)   # flag ignored
+</code></pre>
+<h2 id="random-numbers"><a class="header" href="#random-numbers">Random Numbers</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Builtin</th><th>Signature</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>@rng(T, min, max)</code></td><td><code>fn(type, T, T) -&gt; T</code></td><td>random integer or float in <code>[min, max]</code> inclusive</td></tr>
+<tr><td><code>@rng_seed(n)</code></td><td><code>fn(i32)</code></td><td>seed the RNG (default: unseeded / stdlib <code>rand</code>)</td></tr>
+</tbody>
+</table>
+</div>
+<p><code>T</code> must be an integer or float type. Pass the type name as the first argument:</p>
+<pre><code>x: i32  = @rng(i32, 1, 6)       # roll a die
+y: f64  = @rng(f64, 0.0, 1.0)   # uniform float
+z: u64  = @rng(u64, 0, 100)     # unsigned range
+
+@rng_seed(42)                    # reproducible sequence
 </code></pre>
 <h2 id="assembly"><a class="header" href="#assembly">Assembly</a></h2>
 <div class="table-wrapper">
