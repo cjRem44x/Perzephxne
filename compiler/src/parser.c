@@ -1229,7 +1229,7 @@ static Stmt *parse_stmt(Parser *p) {
                 init_stmt->let.name    = init_name;
                 init_stmt->let.ty      = NULL;
                 init_stmt->let.mutable = 1;
-                init_stmt->let.infer   = 1;
+                init_stmt->let.infer   = 0;
                 init_stmt->let.init    = init_val;
                 expect(p, TOK_COMMA);
                 Expr *cond_expr = parse_expr(p);
@@ -1449,7 +1449,7 @@ static Stmt *parse_stmt(Parser *p) {
             init_stmt->let.name    = init_name;
             init_stmt->let.ty      = NULL;
             init_stmt->let.mutable = 1;
-            init_stmt->let.infer   = 1;
+            init_stmt->let.infer   = 0; /* no widening: keep i32 for 0, i64 for explicit large lits */
             init_stmt->let.init    = init_val;
             expect(p, TOK_COMMA);
             Expr *cond_expr = parse_expr(p);
