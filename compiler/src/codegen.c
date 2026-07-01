@@ -2432,18 +2432,32 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                         if (sym) return val_str(sym->llvm_name);
                     }
                     if (e->unop.operand->kind == EXPR_FIELD) {
-                        /* &struct.field — compute field GEP without loading */
+                        /* &obj.field — compute GEP without loading the field value.
+                           Apply the same auto-deref as EXPR_FIELD: *T and ^T. */
                         Expr *fe = e->unop.operand;
                         Type *fobj_ty = NULL;
                         Val fobj = cg_expr(cg, fe->field.obj, &fobj_ty);
+                        /* auto-deref: *Struct.field */
+                        if (fobj_ty && fobj_ty->kind == TY_PTR && fobj_ty->ptr.inner
+                                && fobj_ty->ptr.inner->kind == TY_NAMED)
+                            fobj_ty = fobj_ty->ptr.inner;
+                        /* smart ptr: ^Struct.field */
+                        if (fobj_ty && fobj_ty->kind == TY_SMART_PTR && fobj_ty->ptr.inner
+                                && fobj_ty->ptr.inner->kind == TY_NAMED) {
+                            int dp = new_tmp(cg);
+                            emit(cg, "  %%t%d = getelementptr i8, ptr %s, i64 8\n", dp, fobj.buf);
+                            fobj = val_tmp(dp);
+                            fobj_ty = fobj_ty->ptr.inner;
+                        }
                         if (fobj_ty && fobj_ty->kind == TY_NAMED) {
                             StructInfo *fsi = find_struct(cg, fobj_ty->named.name);
                             if (fsi) {
                                 int fidx2 = struct_field_index(fsi, fe->field.field);
                                 if (fidx2 >= 0) {
+                                    int gep_fidx = is_plain_union(cg, fobj_ty->named.name) ? 0 : fidx2;
                                     int fp2 = new_tmp(cg);
                                     emit(cg, "  %%t%d = getelementptr %%%s, ptr %s, i32 0, i32 %d\n",
-                                         fp2, fobj_ty->named.name, fobj.buf, fidx2);
+                                         fp2, fobj_ty->named.name, fobj.buf, gep_fidx);
                                     return val_tmp(fp2);
                                 }
                             }
