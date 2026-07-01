@@ -1,0 +1,19 @@
+import(sync = "std/sync")
+
+fn main() -> i32 {
+    m: sync.Mutex = sync.mutex_new()
+    got_mutex: bool = sync.trylock(&m)
+    busy_mutex: bool = sync.trylock(&m)
+    sync.unlock(&m)
+    sync.mutex_destroy(&m)
+
+    rw: sync.RwLock = sync.rwlock_new()
+    got_read: bool = sync.tryrlock(&rw)
+    sync.rwunlock(&rw)
+    got_write: bool = sync.trywlock(&rw)
+    sync.rwunlock(&rw)
+    sync.rwlock_destroy(&rw)
+
+    @pf("{got_mutex} {busy_mutex} {got_read} {got_write}\n")
+    ret 0
+}

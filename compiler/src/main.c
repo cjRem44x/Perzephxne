@@ -622,7 +622,7 @@ static int compile_file(const char *src_path, const char *out_path, int release)
     /* invoke clang to produce the binary */
     char cmd[2048];
     const char *opt = release ? "-O2" : "-O0 -g";
-    snprintf(cmd, sizeof(cmd), "clang %s %s -o %s -lm", opt, ll_path, out_path);
+    snprintf(cmd, sizeof(cmd), "clang %s %s -o %s -lm -pthread", opt, ll_path, out_path);
     int ret = system(cmd);
     if (!getenv("PRZP_KEEP_IR")) remove(ll_path);
     return (ret == 0) ? 0 : 1;
@@ -692,7 +692,7 @@ static void cmd_sac(int argc, char **argv) {
     if (!ok) { remove(ll_path); exit(1); }
     char cmd2[2048];
     const char *opt2 = release ? "-O2" : "-O0 -g";
-    snprintf(cmd2, sizeof(cmd2), "clang %s %s -o %s -lm", opt2, ll_path, out_name);
+    snprintf(cmd2, sizeof(cmd2), "clang %s %s -o %s -lm -pthread", opt2, ll_path, out_name);
     int ret2 = system(cmd2);
     if (!getenv("PRZP_KEEP_IR")) remove(ll_path);
     exit((ret2 == 0) ? 0 : 1);

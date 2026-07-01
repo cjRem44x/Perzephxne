@@ -149,7 +149,7 @@ Atomic operations on `i64` values. Operations use sequentially consistent orderi
 
 ## `std/sync`
 
-Mutex and read-write lock wrappers over pthread types.
+Mutex and read-write lock wrappers over pthread types. The compiler links generated binaries with pthread support, so programs can import this module without extra linker flags.
 
 | Symbol | Description |
 |---|---|
