@@ -165,6 +165,54 @@ run_multifile_case() {
     fi
 }
 
+run_cli_fail() {
+    local name="$1"
+    local expected="$2"
+    shift 2
+    local stdout="$TMP/out/$name.cli.stdout"
+    local stderr="$TMP/err/$name.cli.stderr"
+
+    printf 'cli   %s\n' "$name"
+    if "$@" >"$stdout" 2>"$stderr"; then
+        printf 'FAIL  %s: expected command failure\n' "$name" >&2
+        failures=$((failures + 1))
+        return
+    fi
+
+    if ! grep -F "$expected" "$stderr" >/dev/null; then
+        printf 'FAIL  %s: stderr did not contain expected text\n' "$name" >&2
+        printf 'expected:\n%s\n' "$expected" >&2
+        printf 'actual:\n' >&2
+        sed -n '1,120p' "$stderr" >&2
+        failures=$((failures + 1))
+    fi
+}
+
+run_cli_fail_in_dir() {
+    local name="$1"
+    local expected="$2"
+    local dir="$3"
+    shift 3
+    local stdout="$TMP/out/$name.cli.stdout"
+    local stderr="$TMP/err/$name.cli.stderr"
+
+    printf 'cli   %s\n' "$name"
+    mkdir -p "$dir"
+    if (cd "$dir" && "$@" >"$stdout" 2>"$stderr"); then
+        printf 'FAIL  %s: expected command failure\n' "$name" >&2
+        failures=$((failures + 1))
+        return
+    fi
+
+    if ! grep -F "$expected" "$stderr" >/dev/null; then
+        printf 'FAIL  %s: stderr did not contain expected text\n' "$name" >&2
+        printf 'expected:\n%s\n' "$expected" >&2
+        printf 'actual:\n' >&2
+        sed -n '1,120p' "$stderr" >&2
+        failures=$((failures + 1))
+    fi
+}
+
 run_init_case() {
     local work="$TMP/init/current"
     local stdout="$TMP/out/init.stdout"
@@ -212,6 +260,11 @@ for dir in "$ROOT"/tests/multifile/*; do
 done
 
 run_init_case
+
+run_cli_fail unknown_command "unknown command 'nope'" "$PRZP" nope
+run_cli_fail sac_no_files "przp sac: no input files" "$PRZP" sac
+run_cli_fail_in_dir build_no_manifest "przp build: no przp.toml found" "$TMP/no_manifest_build" "$PRZP" build
+run_cli_fail_in_dir run_no_manifest "przp run: no przp.toml found" "$TMP/no_manifest_run" "$PRZP" run
 
 for src in "$ROOT"/tests/fail/*.przp; do
     [ -e "$src" ] || continue

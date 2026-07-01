@@ -357,11 +357,23 @@ library ships with the compiler; there is no external dependency resolver yet.
 ## Tests
 
 ```sh
-bash tests/run.sh
+make test
 ```
 
 The regression harness rebuilds the compiler, compiles and runs passing `.przp`
 fixtures, and checks expected compiler failures.
+
+## Contributor Workflow
+
+```sh
+make compiler   # build compiler/przp
+make test       # run compiler and CLI regressions
+make book       # rebuild the generated language reference
+make check      # compiler + tests + book
+```
+
+Generated artifacts are intentionally tracked today: commit `compiler/przp` after
+compiler changes and `book/book` after book source changes.
 
 ---
 
