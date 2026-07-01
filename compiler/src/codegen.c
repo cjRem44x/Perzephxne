@@ -3620,7 +3620,7 @@ static void cg_stmt(CG *cg, Stmt *s) {
                 if (!sym) fatal_at(s->span, "undefined '%s'", s->assign.target->ident.name);
                 Type *vty = NULL;
                 Val rhs = cg_expr(cg, s->assign.val, &vty);
-                const char *llt = sym->ty ? llvm_type(sym->ty) : "i32";
+                const char *llt = sym->ty ? effective_llvm_type(cg, sym->ty) : "i32";
                 int is_struct_assign = s->assign.op == ASSIGN_EQ && sym->ty
                                        && sym->ty->kind == TY_NAMED
                                        && !find_enum(cg, sym->ty->named.name);
