@@ -139,6 +139,14 @@ extern fn free(p: *u8)
 
 Variadic `...` is allowed in extern declarations only.
 
+C globals and opaque types can be declared the same way:
+
+```
+extern environ: **u8       # global defined in libc
+extern struct FILE_opaque  # opaque type — use via pointers only
+extern fn fopen(path: *u8, mode: *u8) -> *FILE_opaque
+```
+
 ## Inline
 
 Use `inline fn` to hint that a function should be inlined at call sites:

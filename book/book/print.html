@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-d8d820ca.js";
+            window.path_to_searchindex_js = "searchindex-e996ee23.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-b900b046.js"></script>
@@ -753,6 +753,11 @@ extern fn malloc(size: usize) -&gt; *u8
 extern fn free(p: *u8)
 </code></pre>
 <p>Variadic <code>...</code> is allowed in extern declarations only.</p>
+<p>C globals and opaque types can be declared the same way:</p>
+<pre><code>extern environ: **u8       # global defined in libc
+extern struct FILE_opaque  # opaque type — use via pointers only
+extern fn fopen(path: *u8, mode: *u8) -&gt; *FILE_opaque
+</code></pre>
 <h2 id="inline"><a class="header" href="#inline">Inline</a></h2>
 <p>Use <code>inline fn</code> to hint that a function should be inlined at call sites:</p>
 <pre><code>inline fn fast_path(x: i32) -&gt; i32 { ret x * 2 }
@@ -1274,8 +1279,10 @@ ok: bool = parse("42", &amp;n)
 }
 </code></pre>
 <p><strong>Opaque handle (C FFI):</strong></p>
-<pre><code>struct SDL_Window { _pad: u8 }   # forward declaration
+<pre><code>extern struct SDL_Window   # declared but not defined — use via pointers only
 type WindowHandle = *SDL_Window
+
+extern fn SDL_CreateWindow(title: *u8, x: i32, y: i32, w: i32, h: i32, flags: u32) -&gt; *SDL_Window
 </code></pre>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="smart-pointers"><a class="header" href="#smart-pointers">Smart Pointers</a></h1>
@@ -1623,6 +1630,13 @@ fn handle_request() {
 </code></pre>
 <h2 id="thread-safety"><a class="header" href="#thread-safety">Thread Safety</a></h2>
 <p>Global variables are <strong>not</strong> automatically thread-safe. Concurrent access to mutable globals requires external synchronization.</p>
+<h2 id="extern-globals"><a class="header" href="#extern-globals">Extern Globals</a></h2>
+<p>To reference a global defined in C or another object file:</p>
+<pre><code>extern environ: **u8    # char **environ from libc
+
+first: *u8 = environ.*
+</code></pre>
+<p>The symbol is declared but not defined — the linker resolves it. Extern globals are always mutable.</p>
 <h2 id="args"><a class="header" href="#args"><code>@args</code></a></h2>
 <p>The program’s command-line arguments are available via a builtin — no global declaration needed:</p>
 <pre><code>fn main() {

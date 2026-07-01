@@ -1,0 +1,24 @@
+extern fn strlen(s: *u8) -> i64
+
+# environ is a real libc global: char **environ
+extern environ: **u8
+
+# opaque FFI handle type — only usable through pointers
+extern struct FILE_opaque
+extern fn fopen(path: *u8, mode: *u8) -> *FILE_opaque
+extern fn fclose(f: *FILE_opaque) -> i32
+
+fn main() -> i32 {
+    first: *u8 = environ.*
+    if first != null {
+        n: i64 = strlen(first)
+        if n > 0 { @pf("environ ok\n") }
+    }
+
+    f: *FILE_opaque = fopen("/dev/null", "r")
+    if f != null {
+        @pf("opened\n")
+        fclose(f)
+    }
+    ret 0
+}

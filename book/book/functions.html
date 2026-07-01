@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-d8d820ca.js";
+            window.path_to_searchindex_js = "searchindex-e996ee23.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-b900b046.js"></script>
@@ -271,6 +271,11 @@ extern fn malloc(size: usize) -&gt; *u8
 extern fn free(p: *u8)
 </code></pre>
 <p>Variadic <code>...</code> is allowed in extern declarations only.</p>
+<p>C globals and opaque types can be declared the same way:</p>
+<pre><code>extern environ: **u8       # global defined in libc
+extern struct FILE_opaque  # opaque type — use via pointers only
+extern fn fopen(path: *u8, mode: *u8) -&gt; *FILE_opaque
+</code></pre>
 <h2 id="inline"><a class="header" href="#inline">Inline</a></h2>
 <p>Use <code>inline fn</code> to hint that a function should be inlined at call sites:</p>
 <pre><code>inline fn fast_path(x: i32) -&gt; i32 { ret x * 2 }

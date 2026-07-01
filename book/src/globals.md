@@ -54,6 +54,18 @@ fn handle_request() {
 
 Global variables are **not** automatically thread-safe. Concurrent access to mutable globals requires external synchronization.
 
+## Extern Globals
+
+To reference a global defined in C or another object file:
+
+```
+extern environ: **u8    # char **environ from libc
+
+first: *u8 = environ.*
+```
+
+The symbol is declared but not defined — the linker resolves it. Extern globals are always mutable.
+
 ## `@args`
 
 The program's command-line arguments are available via a builtin — no global declaration needed:

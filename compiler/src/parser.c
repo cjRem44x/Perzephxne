@@ -1750,6 +1750,31 @@ static Item *parse_item(Parser *p) {
     /* extern fn */
     if (check(p, TOK_EXTERN)) {
         advance(p);
+        /* extern struct Name — opaque FFI type (no body, used via pointers) */
+        if (check(p, TOK_STRUCT)) {
+            advance(p);
+            const char *name = expect(p, TOK_IDENT).sval;
+            Item *item = ARENA_NEW(p->arena, Item);
+            item->kind              = ITEM_STRUCT;
+            item->name              = name;
+            item->span              = span_merge(span, cur(p).span);
+            item->struct_.is_opaque = 1;
+            return item;
+        }
+        /* extern name: type — global symbol defined in C / another object */
+        if (check(p, TOK_IDENT) && check2(p, TOK_COLON)) {
+            const char *name = cur(p).sval;
+            advance(p); advance(p); /* name : */
+            Type *ty = parse_type(p);
+            Item *item = ARENA_NEW(p->arena, Item);
+            item->kind             = ITEM_GLOBAL;
+            item->name             = name;
+            item->span             = span_merge(span, cur(p).span);
+            item->global.ty        = ty;
+            item->global.mutable   = 1;
+            item->global.is_extern = 1;
+            return item;
+        }
         expect(p, TOK_FN);
         const char *name = expect(p, TOK_IDENT).sval;
         expect(p, TOK_LPAREN);

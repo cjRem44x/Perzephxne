@@ -4998,6 +4998,15 @@ static void cg_global(CG *cg, Item *item) {
     /* LLVM syntax: @name = [constant|global] type value */
     const char *linkage = item->global.mutable ? "global" : "constant";
 
+    /* extern global: declared here, defined in C / another object file */
+    if (item->global.is_extern) {
+        emit(cg, "@%s = external global %s\n", item->name, llt);
+        char llvm_name[128];
+        snprintf(llvm_name, sizeof(llvm_name), "@%s", item->name);
+        define_sym(cg, item->name, arena_strdup(cg->arena, llvm_name), 1, item->global.ty);
+        return;
+    }
+
     /* str globals: emit a { ptr, i64 } constant using a string literal */
     if (item->global.ty && item->global.ty->kind == TY_STR
             && item->global.init && item->global.init->kind == EXPR_STR) {
@@ -5153,6 +5162,10 @@ int codegen(Module *mod, FILE *out, int release) {
         si->next   = cg.structs;
         cg.structs = si;
         /* emit LLVM named type */
+        if (item->struct_.is_opaque) {
+            emit(&cg, "%%%s = type opaque\n", item->name);
+            continue;
+        }
         emit(&cg, "%%%s = type { ", item->name);
         for (size_t j = 0; j < item->struct_.fields.len; j++) {
             if (j) emit(&cg, ", ");

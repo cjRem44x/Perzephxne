@@ -275,6 +275,7 @@ struct Item {
             /* generic type params: stored as named strings */
             const char **type_params;
             size_t       n_type_params;
+            int          is_opaque;  /* extern struct Name — opaque FFI type */
         } struct_;
 
         struct {
@@ -300,6 +301,7 @@ struct Item {
             Type *ty;
             int   mutable;
             Expr *init;
+            int   is_extern;  /* extern name: T — symbol defined in C / another object */
         } global;
 
         ImportList imports;
