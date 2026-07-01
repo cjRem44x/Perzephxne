@@ -803,8 +803,9 @@ static Expr *parse_primary(Parser *p) {
             return e;
         }
 
-        /* unary not */
-        case TOK_NOT: {
+        /* unary not — both 'not' keyword and '!' are accepted */
+        case TOK_NOT:
+        case TOK_BANG: {
             advance(p);
             Expr *operand = parse_expr_bp(p, 30);
             Expr *e = mkexpr(p, EXPR_UNOP, span_merge(span, operand->span));
