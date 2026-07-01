@@ -3454,12 +3454,17 @@ static void cg_stmt(CG *cg, Stmt *s) {
                     int res_t = new_tmp(cg);
                     int is_flt_v = sym->ty && type_is_float(sym->ty);
                     switch (s->assign.op) {
-                        case ASSIGN_ADD: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res_t, is_flt_v?"fadd":"add", llt, cur_t, rhs.buf); break;
-                        case ASSIGN_SUB: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res_t, is_flt_v?"fsub":"sub", llt, cur_t, rhs.buf); break;
-                        case ASSIGN_MUL: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res_t, is_flt_v?"fmul":"mul", llt, cur_t, rhs.buf); break;
+                        case ASSIGN_ADD: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res_t, is_flt_v?"fadd":"add",  llt, cur_t, rhs.buf); break;
+                        case ASSIGN_SUB: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res_t, is_flt_v?"fsub":"sub",  llt, cur_t, rhs.buf); break;
+                        case ASSIGN_MUL: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res_t, is_flt_v?"fmul":"mul",  llt, cur_t, rhs.buf); break;
                         case ASSIGN_DIV: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res_t, is_flt_v?"fdiv":"sdiv", llt, cur_t, rhs.buf); break;
                         case ASSIGN_MOD: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res_t, is_flt_v?"frem":"srem", llt, cur_t, rhs.buf); break;
-                        default:         emit(cg, "  %%t%d = add %s %%t%d, 0\n",  res_t, llt, cur_t); break;
+                        case ASSIGN_AMP: emit(cg, "  %%t%d = and  %s %%t%d, %s\n", res_t, llt, cur_t, rhs.buf); break;
+                        case ASSIGN_PIPE:emit(cg, "  %%t%d = or   %s %%t%d, %s\n", res_t, llt, cur_t, rhs.buf); break;
+                        case ASSIGN_XOR: emit(cg, "  %%t%d = xor  %s %%t%d, %s\n", res_t, llt, cur_t, rhs.buf); break;
+                        case ASSIGN_SHL: emit(cg, "  %%t%d = shl  %s %%t%d, %s\n", res_t, llt, cur_t, rhs.buf); break;
+                        case ASSIGN_SHR: emit(cg, "  %%t%d = ashr %s %%t%d, %s\n", res_t, llt, cur_t, rhs.buf); break;
+                        default:         emit(cg, "  %%t%d = add  %s %%t%d, 0\n",  res_t, llt, cur_t); break;
                     }
                     emit(cg, "  store %s %%t%d, ptr %s\n", llt, res_t, sym->llvm_name);
                 }
@@ -3601,7 +3606,12 @@ static void cg_stmt(CG *cg, Stmt *s) {
                         case ASSIGN_MUL: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res, is_flt_e?"fmul":"mul",  elem_llt, cur, rhs.buf); break;
                         case ASSIGN_DIV: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res, is_flt_e?"fdiv":"sdiv", elem_llt, cur, rhs.buf); break;
                         case ASSIGN_MOD: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res, is_flt_e?"frem":"srem", elem_llt, cur, rhs.buf); break;
-                        default:         emit(cg, "  %%t%d = add %s %%t%d, 0\n",  res, elem_llt, cur); break;
+                        case ASSIGN_AMP: emit(cg, "  %%t%d = and  %s %%t%d, %s\n", res, elem_llt, cur, rhs.buf); break;
+                        case ASSIGN_PIPE:emit(cg, "  %%t%d = or   %s %%t%d, %s\n", res, elem_llt, cur, rhs.buf); break;
+                        case ASSIGN_XOR: emit(cg, "  %%t%d = xor  %s %%t%d, %s\n", res, elem_llt, cur, rhs.buf); break;
+                        case ASSIGN_SHL: emit(cg, "  %%t%d = shl  %s %%t%d, %s\n", res, elem_llt, cur, rhs.buf); break;
+                        case ASSIGN_SHR: emit(cg, "  %%t%d = ashr %s %%t%d, %s\n", res, elem_llt, cur, rhs.buf); break;
+                        default:         emit(cg, "  %%t%d = add  %s %%t%d, 0\n",  res, elem_llt, cur); break;
                     }
                     emit(cg, "  store %s %%t%d, ptr %%t%d\n", elem_llt, res, ep);
                 }
