@@ -89,16 +89,77 @@ for item => items { @pf("{item}\n") }
 ### Structs
 
 ```
-struct Vec2 { x: f32, y: f32 }
+struct Vec2 { x: f64, y: f64 }
 
 impl Vec2 {
-    fn len(self) -> f32 {
+    fn len(self: *Vec2) -> f64 {
         ret @sqrt(self.x * self.x + self.y * self.y)
     }
 }
 
 v: Vec2 = Vec2{.x = 3.0, .y = 4.0}
 @pf("len = {v.len()}\n")
+```
+
+### Generic Structs
+
+```
+struct Box[T] { value: T }
+
+impl Box[T] {
+    fn get(self: *Box[T]) -> T { ret self.value }
+    fn set(self: *Box[T], v: T) { self.value = v }
+}
+
+b: Box[i32] = Box[i32]{.value = 42}
+@pf("value = {b.get()}\n")
+```
+
+### Unions
+
+Plain (untagged) unions share memory across all fields:
+
+```
+unn Data { i: i32, f: f64 }
+
+d: Data = Data{.i = 42}
+d.f = 3.14    # reinterprets the same memory
+```
+
+Tagged unions carry a discriminant for safe pattern matching:
+
+```
+unn Shape => enum {
+    circle: f64,
+    rect: Vec2,
+    point,
+}
+
+s: Shape = Shape{.circle = 5.0}
+
+when s {
+    .circle r => @pf("circle r={r}\n")
+    .rect   v => @pf("rect {v.x}x{v.y}\n")
+    .point    => @pf("point\n")
+}
+```
+
+### Pointers and Heap Allocation
+
+```
+x: i32  = 12
+p: *i32 = &x           # pointer to stack variable
+p.* = 99               # write through pointer
+val: i32 = p.*         # read through pointer
+
+heap: *i32 = @alo(i32)     # allocate one i32 on the heap
+heap.* = 42
+@free(heap)
+
+arr: *i32 = @alo(i32, 10)  # allocate array of 10 i32
+arr[0] = 1
+arr[9] = 99
+@free(arr)
 ```
 
 ### Type Casts

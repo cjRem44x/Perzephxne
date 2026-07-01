@@ -261,6 +261,9 @@ static int ty_coerces(Type *from, Type *to) {
     if (from->kind == TY_PTR && to->kind == TY_PTR) return 1;
     /* str coerces to any raw pointer (*T) — C interop: callee receives .data field */
     if (from->kind == TY_STR && to->kind == TY_PTR) return 1;
+    /* char ↔ u8/i8: both are single-byte types with identical LLVM representation */
+    if ((from->kind == TY_CHAR && (to->kind == TY_U8 || to->kind == TY_I8)) ||
+        ((from->kind == TY_U8 || from->kind == TY_I8) && to->kind == TY_CHAR)) return 1;
     /* enum ↔ integer: integer types coerce into enum named types and vice versa */
     if (ty_is_int(from) && to->kind   == TY_NAMED) return 1;
     if (from->kind == TY_NAMED && ty_is_int(to))   return 1;
