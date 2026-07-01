@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-45d9a87b.js";
+            window.path_to_searchindex_js = "searchindex-b570b743.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-7f1b7573.js"></script>
@@ -1639,9 +1639,9 @@ b3: bool = @bool("yes")    # false
 <tr><td><code>@offsetof(T, field)</code></td><td>byte offset of a struct field</td></tr>
 <tr><td><code>@bitcast(T, val)</code></td><td>reinterpret bits — same size required</td></tr>
 <tr><td><code>@zeroed(T)</code></td><td>zero value of type <code>T</code></td></tr>
-<tr><td><code>@new(T)</code></td><td>heap-allocate one <code>T</code>, return <code>*T</code></td></tr>
-<tr><td><code>@clone(val)</code></td><td>heap-copy a value, return <code>*T</code></td></tr>
-<tr><td><code>@free(ptr)</code></td><td>free heap memory</td></tr>
+<tr><td><code>@new(T)</code></td><td>heap-allocate one <code>T</code>, return <code>^T</code> (RC-managed)</td></tr>
+<tr><td><code>@clone(val)</code></td><td>increment RC of a <code>^T</code>, return shared <code>^T</code></td></tr>
+<tr><td><code>@free(ptr)</code></td><td>free raw <code>*T</code> heap memory</td></tr>
 <tr><td><code>@memcpy(dst, src, n)</code></td><td>copy <code>n</code> bytes from src to dst</td></tr>
 <tr><td><code>@memmove(dst, src, n)</code></td><td>copy <code>n</code> bytes, handles overlap</td></tr>
 <tr><td><code>@memset(dst, byte, n)</code></td><td>fill <code>n</code> bytes with <code>byte</code></td></tr>

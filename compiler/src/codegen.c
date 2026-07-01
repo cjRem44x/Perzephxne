@@ -100,6 +100,8 @@ typedef struct {
     Type        *last_fail_ty;     /* TY_FAILABLE type (needed for extractvalue) */
     /* current function return type (for @ok/@err builtins in STMT_RET) */
     Type        *cur_fn_ret_ty;
+    /* when trailing STMT_WHEN is used as implicit return: alloca index, else -1 */
+    int          trailing_result_slot;
 } CG;
 
 /* ── Utilities ────────────────────────────────────────────────────────────── */
@@ -2130,7 +2132,9 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                can insert truncations when storing back to a narrower lhs variable */
             if (out_ty && op_ty && !(e->ty && e->ty->kind == TY_BOOL))
                 *out_ty = op_ty;
-            const char *llt = op_ty ? llvm_type(op_ty) : "i32";
+            /* Use effective_llvm_type so enums resolve to their backing integer
+               type (e.g. i32) rather than the opaque named type (%Color). */
+            const char *llt = op_ty ? effective_llvm_type(cg, op_ty) : "i32";
             int t = new_tmp(cg);
             int is_flt = type_is_float(op_ty);
             int is_sgn = type_is_signed(op_ty);
@@ -3533,16 +3537,40 @@ static void cg_stmt(CG *cg, Stmt *s) {
                         cond.buf, body_l, next_l);
                 emit_label(cg, body_l);
                 push_scope(cg);
-                for (size_t j = 0; j < br_item->body.len; j++)
-                    cg_stmt(cg, br_item->body.data[j]);
+                for (size_t j = 0; j < br_item->body.len; j++) {
+                    Stmt *bst = br_item->body.data[j];
+                    int is_last_b = (j == br_item->body.len - 1);
+                    if (is_last_b && cg->trailing_result_slot >= 0
+                            && bst->kind == STMT_EXPR && bst->expr) {
+                        Type *arm_ty = NULL;
+                        Val arm_val = cg_expr(cg, bst->expr, &arm_ty);
+                        const char *store_llt = arm_ty ? effective_llvm_type(cg, arm_ty) : "i64";
+                        emit(cg, "  store %s %s, ptr %%t%d\n",
+                             store_llt, arm_val.buf, cg->trailing_result_slot);
+                    } else {
+                        cg_stmt(cg, bst);
+                    }
+                }
                 pop_scope(cg);
                 emit_br(cg, "  br label %%l%d\n", end_l);
                 if (next_l != end_l) emit_label(cg, next_l);
             }
             if (s->if_.else_body.len) {
                 push_scope(cg);
-                for (size_t j = 0; j < s->if_.else_body.len; j++)
-                    cg_stmt(cg, s->if_.else_body.data[j]);
+                for (size_t j = 0; j < s->if_.else_body.len; j++) {
+                    Stmt *est = s->if_.else_body.data[j];
+                    int is_last_e = (j == s->if_.else_body.len - 1);
+                    if (is_last_e && cg->trailing_result_slot >= 0
+                            && est->kind == STMT_EXPR && est->expr) {
+                        Type *arm_ty = NULL;
+                        Val arm_val = cg_expr(cg, est->expr, &arm_ty);
+                        const char *store_llt = arm_ty ? effective_llvm_type(cg, arm_ty) : "i64";
+                        emit(cg, "  store %s %s, ptr %%t%d\n",
+                             store_llt, arm_val.buf, cg->trailing_result_slot);
+                    } else {
+                        cg_stmt(cg, est);
+                    }
+                }
                 pop_scope(cg);
                 emit_br(cg, "  br label %%l%d\n", end_l);
             }
@@ -3580,8 +3608,22 @@ static void cg_stmt(CG *cg, Stmt *s) {
         case STMT_FOR: {
             ForClause *fc = &s->for_.clause;
             if (fc->kind == FOR_RANGE) {
-                Val start = cg_expr(cg, fc->iter, NULL);
-                Val end   = cg_expr(cg, fc->range_end, NULL);
+                Type *start_ty = NULL, *end_ty = NULL;
+                Val start = cg_expr(cg, fc->iter,      &start_ty);
+                Val end   = cg_expr(cg, fc->range_end, &end_ty);
+                /* Range counter is always i64; extend narrower bounds. */
+                const char *start_llt = start_ty ? effective_llvm_type(cg, start_ty) : "i64";
+                const char *end_llt   = end_ty   ? effective_llvm_type(cg, end_ty)   : "i64";
+                if (strcmp(start_llt, "i64") != 0) {
+                    int ext = new_tmp(cg);
+                    emit(cg, "  %%t%d = sext %s %s to i64\n", ext, start_llt, start.buf);
+                    start = val_tmp(ext);
+                }
+                if (strcmp(end_llt, "i64") != 0) {
+                    int ext = new_tmp(cg);
+                    emit(cg, "  %%t%d = sext %s %s to i64\n", ext, end_llt, end.buf);
+                    end = val_tmp(ext);
+                }
                 int i_alloca = new_tmp(cg);
                 emit(cg, "  %%t%d = alloca i64\n", i_alloca);
                 emit(cg, "  store i64 %s, ptr %%t%d\n", start.buf, i_alloca);
@@ -3859,7 +3901,16 @@ static void cg_stmt(CG *cg, Stmt *s) {
                         define_sym(cg, arm->bind, bind_llvm, 0, matched_payload_ty);
                     }
 
-                    cg_stmt(cg, arm->body);
+                    if (cg->trailing_result_slot >= 0
+                            && arm->body && arm->body->kind == STMT_EXPR && arm->body->expr) {
+                        Type *arm_ty = NULL;
+                        Val arm_val = cg_expr(cg, arm->body->expr, &arm_ty);
+                        const char *store_llt = arm_ty ? effective_llvm_type(cg, arm_ty) : "i64";
+                        emit(cg, "  store %s %s, ptr %%t%d\n",
+                             store_llt, arm_val.buf, cg->trailing_result_slot);
+                    } else {
+                        cg_stmt(cg, arm->body);
+                    }
                     pop_scope(cg);
                     emit_br(cg, "  br label %%l%d\n", end_l);
                     if (next_l != end_l) emit_label(cg, next_l);
@@ -3917,7 +3968,16 @@ static void cg_stmt(CG *cg, Stmt *s) {
                             cond_t, body_l, next_l);
                     emit_label(cg, body_l);
                     push_scope(cg);
-                    cg_stmt(cg, arm->body);
+                    if (cg->trailing_result_slot >= 0
+                            && arm->body && arm->body->kind == STMT_EXPR && arm->body->expr) {
+                        Type *arm_ty = NULL;
+                        Val arm_val = cg_expr(cg, arm->body->expr, &arm_ty);
+                        const char *store_llt = arm_ty ? effective_llvm_type(cg, arm_ty) : "i64";
+                        emit(cg, "  store %s %s, ptr %%t%d\n",
+                             store_llt, arm_val.buf, cg->trailing_result_slot);
+                    } else {
+                        cg_stmt(cg, arm->body);
+                    }
                     pop_scope(cg);
                     emit_br(cg, "  br label %%l%d\n", end_l);
                     if (next_l != end_l) emit_label(cg, next_l);
@@ -4101,6 +4161,36 @@ static void cg_fn(CG *cg, Item *item) {
             pop_scope(cg);  /* flushes defers and RC drops */
             fn_scope_popped = 1;
             emit_br(cg, "  ret %s %s\n", ret_llt, ret_val.buf);
+            cg->terminated = 1;
+        } else if (is_last && !is_void && !cg->terminated
+                && st->kind == STMT_WHEN) {
+            /* Trailing when-statement: allocate result slot, let arm bodies store
+               into it, then load and ret after the when's end label. */
+            int res_slot = new_tmp(cg);
+            emit(cg, "  %%t%d = alloca %s\n", res_slot, ret_llt);
+            cg->trailing_result_slot = res_slot;
+            cg_stmt(cg, st);
+            cg->trailing_result_slot = -1;
+            pop_scope(cg);
+            fn_scope_popped = 1;
+            int loaded = new_tmp(cg);
+            emit(cg, "  %%t%d = load %s, ptr %%t%d\n", loaded, ret_llt, res_slot);
+            emit_br(cg, "  ret %s %%t%d\n", ret_llt, loaded);
+            cg->terminated = 1;
+        } else if (is_last && !is_void && !cg->terminated
+                && st->kind == STMT_IF && st->if_.else_body.len > 0) {
+            /* Trailing if-else: allocate result slot, let branch/else bodies store
+               into it, then load and ret after the end label. */
+            int res_slot = new_tmp(cg);
+            emit(cg, "  %%t%d = alloca %s\n", res_slot, ret_llt);
+            cg->trailing_result_slot = res_slot;
+            cg_stmt(cg, st);
+            cg->trailing_result_slot = -1;
+            pop_scope(cg);
+            fn_scope_popped = 1;
+            int loaded = new_tmp(cg);
+            emit(cg, "  %%t%d = load %s, ptr %%t%d\n", loaded, ret_llt, res_slot);
+            emit_br(cg, "  ret %s %%t%d\n", ret_llt, loaded);
             cg->terminated = 1;
         } else {
             cg_stmt(cg, st);
@@ -4305,6 +4395,7 @@ int codegen(Module *mod, FILE *out, int release) {
     cg.out     = out;
     cg.arena   = mod->arena;
     cg.release = release;
+    cg.trailing_result_slot = -1;
 
     /* global scope */
     Scope global_scope = {0};
