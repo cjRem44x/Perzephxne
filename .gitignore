@@ -8,3 +8,4 @@ compiler/przp.dSYM/
 
 # test run artifacts
 test_output.txt
+tests/tmp/

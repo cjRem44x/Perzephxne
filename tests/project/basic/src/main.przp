@@ -1,0 +1,4 @@
+fn main() -> i32 {
+    @pf("project\n")
+    ret 0
+}

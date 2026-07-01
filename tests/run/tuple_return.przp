@@ -1,0 +1,9 @@
+fn pair() -> (i32, i32) {
+    ret (3, 4)
+}
+
+fn main() -> i32 {
+    a, b: i32 = pair()
+    @pf("{a} {b}\n")
+    ret 0
+}

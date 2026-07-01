@@ -345,6 +345,15 @@ version = "0.1.0"
 | `przp run` | build and run |
 | `przp sac <files> -o=Name` | compile one or more files without a project |
 
+## Tests
+
+```sh
+bash tests/run.sh
+```
+
+The regression harness rebuilds the compiler, compiles and runs passing `.przp`
+fixtures, and checks expected compiler failures.
+
 ---
 
 ## Standard Library

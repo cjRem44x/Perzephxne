@@ -1,0 +1,6 @@
+import(io = "std/io")
+
+fn main() -> i32 {
+    io.println("stdlib")
+    ret 0
+}

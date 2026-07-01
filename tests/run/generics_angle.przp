@@ -1,0 +1,24 @@
+struct Box<T> {
+    value: T,
+}
+
+impl Box<T> {
+    fn new(v: T) -> Box<T> {
+        ret Box<T>{.value = v}
+    }
+
+    fn get(self: *Box<T>) -> T {
+        ret self.value
+    }
+}
+
+fn id<T>(x: T) -> T {
+    ret x
+}
+
+fn main() -> i32 {
+    b: Box<i32> = Box<i32>.new(42)
+    y: i32 = id<i32>(7)
+    @pf("{b.get()} {y}\n")
+    ret 0
+}
