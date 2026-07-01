@@ -168,6 +168,7 @@ arr[9] = 99
 ```
 n: i32  = @i32("42")          # str → int, 0 on failure
 s: str  = @str(99)            # int → "99"
+b: str  = @str(true)          # bool → "true" or "false"
 f: f32  = @f32(3.14)
 bits: u32 = @bitcast(u32, f)  # raw bit reinterpret
 ```

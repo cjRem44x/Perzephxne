@@ -23,6 +23,12 @@ extern fn atan2(y: f64, x: f64) -> f64
 PI: f64 = 3.141592653589793
 E: f64 = 2.718281828459045
 
+# abs: absolute value of f64
+fn abs(x: f64) -> f64 { ret fabs(x) }
+
+# absf: absolute value of f32
+fn absf(x: f32) -> f32 { ret fabsf(x) }
+
 # abs_i32: absolute value of i32
 fn abs_i32(x: i32) -> i32 {
     if x < 0 { ret -x }

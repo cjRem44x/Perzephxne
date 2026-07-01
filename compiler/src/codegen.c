@@ -1917,51 +1917,67 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
             int t = new_tmp(cg);
 
             if (!strcmp(dst, "str")) {
-                /* int/float → string via sprintf into a 32-byte stack buffer;
-                   returns a { ptr, i64 } str fat pointer. */
-                int buf = new_tmp(cg);
-                emit(cg, "  %%t%d = alloca [32 x i8]\n", buf);
-                int cptr = new_tmp(cg);
-                emit(cg, "  %%t%d = getelementptr [32 x i8], ptr %%t%d, i32 0, i32 0\n", cptr, buf);
-                int is_src_float = src_ty && (src_ty->kind == TY_F32 || src_ty->kind == TY_F64);
-                if (is_src_float) {
-                    Val sv = src;
-                    if (src_ty->kind == TY_F32) {
-                        int tp = new_tmp(cg);
-                        emit(cg, "  %%t%d = fpext float %s to double\n", tp, src.buf);
-                        sv = val_tmp(tp);
-                    }
-                    emit(cg, "  call i32 (ptr, ptr, ...) @sprintf("
-                             "ptr %%t%d, ptr @.fmt.f, double %s)\n", cptr, sv.buf);
+                /* any → str fat pointer { ptr, i64 } */
+                if (src_ty && src_ty->kind == TY_BOOL) {
+                    /* bool → "true" or "false" via select on static strings */
+                    int sid_t = intern_str(cg, "true");
+                    int sid_f = intern_str(cg, "false");
+                    int tp2 = new_tmp(cg), fp2 = new_tmp(cg);
+                    emit(cg, "  %%t%d = getelementptr inbounds [5 x i8], ptr @.str.%d, i32 0, i32 0\n", tp2, sid_t);
+                    emit(cg, "  %%t%d = getelementptr inbounds [6 x i8], ptr @.str.%d, i32 0, i32 0\n", fp2, sid_f);
+                    int selp = new_tmp(cg);
+                    emit(cg, "  %%t%d = select i1 %s, ptr %%t%d, ptr %%t%d\n", selp, src.buf, tp2, fp2);
+                    int slen2 = new_tmp(cg);
+                    emit(cg, "  %%t%d = call i64 @strlen(ptr %%t%d)\n", slen2, selp);
+                    int f1b = new_tmp(cg);
+                    emit(cg, "  %%t%d = insertvalue { ptr, i64 } undef, ptr %%t%d, 0\n", f1b, selp);
+                    emit(cg, "  %%t%d = insertvalue { ptr, i64 } %%t%d, i64 %%t%d, 1\n", t, f1b, slen2);
                 } else {
-                    int is_wide = src_ty && (src_ty->kind == TY_I64 || src_ty->kind == TY_U64 ||
-                                             src_ty->kind == TY_USIZE);
-                    if (is_wide) {
-                        emit(cg, "  call i32 (ptr, ptr, ...) @sprintf("
-                                 "ptr %%t%d, ptr @.fmt.lld, i64 %s)\n", cptr, src.buf);
-                    } else {
-                        /* narrow integers: sext/zext to i32 first */
-                        const char *src_llt = src_ty ? llvm_type(src_ty) : "i32";
+                    /* int/float → sprintf into a 32-byte stack buffer */
+                    int buf = new_tmp(cg);
+                    emit(cg, "  %%t%d = alloca [32 x i8]\n", buf);
+                    int cptr = new_tmp(cg);
+                    emit(cg, "  %%t%d = getelementptr [32 x i8], ptr %%t%d, i32 0, i32 0\n", cptr, buf);
+                    int is_src_float = src_ty && (src_ty->kind == TY_F32 || src_ty->kind == TY_F64);
+                    if (is_src_float) {
                         Val sv = src;
-                        if (strcmp(src_llt, "i32") != 0) {
+                        if (src_ty->kind == TY_F32) {
                             int tp = new_tmp(cg);
-                            int is_signed = src_ty && (src_ty->kind == TY_I8 || src_ty->kind == TY_I16 ||
-                                                       src_ty->kind == TY_I32 || src_ty->kind == TY_BOOL);
-                            if (is_signed)
-                                emit(cg, "  %%t%d = sext %s %s to i32\n", tp, src_llt, src.buf);
-                            else
-                                emit(cg, "  %%t%d = zext %s %s to i32\n", tp, src_llt, src.buf);
+                            emit(cg, "  %%t%d = fpext float %s to double\n", tp, src.buf);
                             sv = val_tmp(tp);
                         }
                         emit(cg, "  call i32 (ptr, ptr, ...) @sprintf("
-                                 "ptr %%t%d, ptr @.fmt.d, i32 %s)\n", cptr, sv.buf);
+                                 "ptr %%t%d, ptr @.fmt.f, double %s)\n", cptr, sv.buf);
+                    } else {
+                        int is_wide = src_ty && (src_ty->kind == TY_I64 || src_ty->kind == TY_U64 ||
+                                                 src_ty->kind == TY_USIZE);
+                        if (is_wide) {
+                            emit(cg, "  call i32 (ptr, ptr, ...) @sprintf("
+                                     "ptr %%t%d, ptr @.fmt.lld, i64 %s)\n", cptr, src.buf);
+                        } else {
+                            /* narrow integers: sext/zext to i32 first */
+                            const char *src_llt = src_ty ? llvm_type(src_ty) : "i32";
+                            Val sv = src;
+                            if (strcmp(src_llt, "i32") != 0) {
+                                int tp = new_tmp(cg);
+                                int is_signed = src_ty && (src_ty->kind == TY_I8 || src_ty->kind == TY_I16 ||
+                                                           src_ty->kind == TY_I32);
+                                if (is_signed)
+                                    emit(cg, "  %%t%d = sext %s %s to i32\n", tp, src_llt, src.buf);
+                                else
+                                    emit(cg, "  %%t%d = zext %s %s to i32\n", tp, src_llt, src.buf);
+                                sv = val_tmp(tp);
+                            }
+                            emit(cg, "  call i32 (ptr, ptr, ...) @sprintf("
+                                     "ptr %%t%d, ptr @.fmt.d, i32 %s)\n", cptr, sv.buf);
+                        }
                     }
+                    int slen = new_tmp(cg);
+                    emit(cg, "  %%t%d = call i64 @strlen(ptr %%t%d)\n", slen, cptr);
+                    int f1 = new_tmp(cg);
+                    emit(cg, "  %%t%d = insertvalue { ptr, i64 } undef, ptr %%t%d, 0\n", f1, cptr);
+                    emit(cg, "  %%t%d = insertvalue { ptr, i64 } %%t%d, i64 %%t%d, 1\n", t, f1, slen);
                 }
-                int slen = new_tmp(cg);
-                emit(cg, "  %%t%d = call i64 @strlen(ptr %%t%d)\n", slen, cptr);
-                int f1 = new_tmp(cg);
-                emit(cg, "  %%t%d = insertvalue { ptr, i64 } undef, ptr %%t%d, 0\n", f1, cptr);
-                emit(cg, "  %%t%d = insertvalue { ptr, i64 } %%t%d, i64 %%t%d, 1\n", t, f1, slen);
                 if (out_ty) { Type *st = ARENA_NEW(cg->arena, Type); st->kind = TY_STR; *out_ty = st; }
             } else if (src_ty && src_ty->kind == TY_STR && !strcmp(dst, "bool")) {
                 /* str → bool: "true" or "1" → true, anything else → false (no failable) */
