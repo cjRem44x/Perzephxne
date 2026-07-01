@@ -1,0 +1,5 @@
+import(missing = "no/such/module")
+
+fn main() -> i32 {
+    ret 0
+}

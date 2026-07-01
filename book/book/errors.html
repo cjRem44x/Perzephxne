@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-9c732957.js";
+            window.path_to_searchindex_js = "searchindex-d52f6c2d.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-7f1b7573.js"></script>
@@ -179,6 +179,8 @@
                     <main>
                         <h1 id="error-handling"><a class="header" href="#error-handling">Error Handling</a></h1>
 <p>Errors in Perzephxne are values — not exceptions. There are no <code>try/catch</code> blocks.</p>
+<h2 id="compiler-diagnostics"><a class="header" href="#compiler-diagnostics">Compiler Diagnostics</a></h2>
+<p>Compiler diagnostics include the source file, line, column, the offending source line, and a caret. Import failures are reported at the <code>import(...)</code> declaration and include the resolved path that the compiler attempted to load.</p>
 <h2 id="failable-return-type-t"><a class="header" href="#failable-return-type-t">Failable Return Type <code>!T</code></a></h2>
 <p>A function that can fail returns <code>!T</code>. The caller receives a struct of <code>{ value: T, err: i32 }</code>. A zero error code means success; non-zero means failure.</p>
 <pre><code>fn divide(a: i32, b: i32) -&gt; !i32 {

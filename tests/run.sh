@@ -263,6 +263,7 @@ run_init_case
 
 run_cli_fail unknown_command "unknown command 'nope'" "$PRZP" nope
 run_cli_fail sac_no_files "przp sac: no input files" "$PRZP" sac
+run_cli_fail sac_missing_file "przp: cannot open 'tests/no_such_file.przp'" "$PRZP" sac tests/no_such_file.przp
 run_cli_fail_in_dir build_no_manifest "przp build: no przp.toml found" "$TMP/no_manifest_build" "$PRZP" build
 run_cli_fail_in_dir run_no_manifest "przp run: no przp.toml found" "$TMP/no_manifest_run" "$PRZP" run
 

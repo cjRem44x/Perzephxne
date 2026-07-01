@@ -2,6 +2,10 @@
 
 Errors in Perzephxne are values — not exceptions. There are no `try/catch` blocks.
 
+## Compiler Diagnostics
+
+Compiler diagnostics include the source file, line, column, the offending source line, and a caret. Import failures are reported at the `import(...)` declaration and include the resolved path that the compiler attempted to load.
+
 ## Failable Return Type `!T`
 
 A function that can fail returns `!T`. The caller receives a struct of `{ value: T, err: i32 }`. A zero error code means success; non-zero means failure.

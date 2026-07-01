@@ -18,16 +18,38 @@ extern ssize_t readlink(const char *path, char *buf, size_t bufsiz);
 
 /* ── Utilities ────────────────────────────────────────────────────────────── */
 
-static char *read_file(const char *path) {
+static char *read_file_or_null(const char *path, char *err, size_t errsz) {
     FILE *f = fopen(path, "rb");
-    if (!f) { fprintf(stderr, "przp: cannot open '%s': %s\n", path, strerror(errno)); exit(1); }
-    fseek(f, 0, SEEK_END);
+    if (!f) {
+        snprintf(err, errsz, "%s", strerror(errno));
+        return NULL;
+    }
+    if (fseek(f, 0, SEEK_END) != 0) {
+        snprintf(err, errsz, "%s", strerror(errno));
+        fclose(f);
+        return NULL;
+    }
     long sz = ftell(f);
+    if (sz < 0) {
+        snprintf(err, errsz, "%s", strerror(errno));
+        fclose(f);
+        return NULL;
+    }
     rewind(f);
     char *buf = malloc((size_t)sz + 1);
-    if (!buf) { fprintf(stderr, "przp: out of memory\n"); exit(1); }
-    fread(buf, 1, (size_t)sz, f);
-    buf[sz] = '\0';
+    if (!buf) {
+        snprintf(err, errsz, "out of memory");
+        fclose(f);
+        return NULL;
+    }
+    size_t got = fread(buf, 1, (size_t)sz, f);
+    if (got != (size_t)sz && ferror(f)) {
+        snprintf(err, errsz, "%s", strerror(errno));
+        free(buf);
+        fclose(f);
+        return NULL;
+    }
+    buf[got] = '\0';
     fclose(f);
     return buf;
 }
@@ -512,8 +534,8 @@ static void merge_items(Module *mod, Module *imp) {
  * processed (for cycle detection).  The main file's error context is restored
  * by the caller after this returns.
  */
-static void load_imports(Module *mod, const char *src_path,
-                         Arena *arena, const char **loading, size_t n_loading) {
+static int load_imports(Module *mod, const char *src_path, const char *src,
+                        Arena *arena, const char **loading, size_t n_loading) {
     /* collect (alias, resolved-path) pairs from ITEM_IMPORT items */
     const char *aliases[64];
     size_t      n_aliases = 0;
@@ -547,12 +569,19 @@ static void load_imports(Module *mod, const char *src_path,
             for (size_t k = 0; k < n_loading; k++)
                 if (!strcmp(loading[k], full)) { cycle = 1; break; }
             if (cycle) {
-                fprintf(stderr, "przp: import cycle: '%s'\n", full);
-                continue;
+                error_init(src_path, src);
+                error_at(item->span, "import cycle involving '%s'", full);
+                return 0;
             }
 
             /* read + parse imported file */
-            char *imp_src = read_file(full);
+            char err[256];
+            char *imp_src = read_file_or_null(full, err, sizeof(err));
+            if (!imp_src) {
+                error_init(src_path, src);
+                error_at(item->span, "cannot import '%s' (resolved to '%s'): %s", imp_path, full, err);
+                return 0;
+            }
             error_init(full, imp_src);
             Module *imp = parse(imp_src, (uint32_t)(n_loading + 1), arena);
 
@@ -560,7 +589,8 @@ static void load_imports(Module *mod, const char *src_path,
             const char *new_loading[64];
             memcpy(new_loading, loading, n_loading * sizeof(char*));
             new_loading[n_loading] = full;
-            load_imports(imp, full, arena, new_loading, n_loading + 1);
+            if (!load_imports(imp, full, imp_src, arena, new_loading, n_loading + 1))
+                return 0;
 
             /* mangle imported items, merge into main module */
             mangle_items(imp, alias, arena);
@@ -575,6 +605,7 @@ static void load_imports(Module *mod, const char *src_path,
         for (size_t i = 0; i < n_orig_items; i++)
             rw_item(mod->items.data[i], aliases, n_aliases, arena);
     }
+    return 1;
 }
 
 /* strip extension, return basename without it */
@@ -590,7 +621,12 @@ static void basename_no_ext(const char *path, char *out, size_t outsz) {
 
 /* compile one .przp file → .ll → binary via clang */
 static int compile_file(const char *src_path, const char *out_path, int release) {
-    char *src = read_file(src_path);
+    char err[256];
+    char *src = read_file_or_null(src_path, err, sizeof(err));
+    if (!src) {
+        fprintf(stderr, "przp: cannot open '%s': %s\n", src_path, err);
+        return 1;
+    }
 
     Arena arena;
     arena_init(&arena);
@@ -600,7 +636,11 @@ static int compile_file(const char *src_path, const char *out_path, int release)
 
     /* load and merge imported modules before sema */
     const char *loading[1] = { src_path };
-    load_imports(mod, src_path, &arena, loading, 1);
+    if (!load_imports(mod, src_path, src, &arena, loading, 1)) {
+        arena_free(&arena);
+        free(src);
+        return 1;
+    }
     error_init(src_path, src); /* restore main file context for sema/codegen errors */
 
     if (!sema_check(mod)) { arena_free(&arena); free(src); return 1; }
@@ -656,18 +696,41 @@ static void cmd_sac(int argc, char **argv) {
     arena_init(&arena);
 
     char *srcs[256];
-    srcs[0] = read_file(files[0]);
+    char err[256];
+    srcs[0] = read_file_or_null(files[0], err, sizeof(err));
+    if (!srcs[0]) {
+        fprintf(stderr, "przp: cannot open '%s': %s\n", files[0], err);
+        free(files);
+        exit(1);
+    }
     error_init(files[0], srcs[0]);
     Module *mod = parse(srcs[0], 0, &arena);
     const char *loading[1] = { files[0] };
-    load_imports(mod, files[0], &arena, loading, 1);
+    if (!load_imports(mod, files[0], srcs[0], &arena, loading, 1)) {
+        arena_free(&arena);
+        free(srcs[0]);
+        free(files);
+        exit(1);
+    }
 
     for (int fi = 1; fi < nfiles && fi < 256; fi++) {
-        srcs[fi] = read_file(files[fi]);
+        srcs[fi] = read_file_or_null(files[fi], err, sizeof(err));
+        if (!srcs[fi]) {
+            fprintf(stderr, "przp: cannot open '%s': %s\n", files[fi], err);
+            arena_free(&arena);
+            for (int j = 0; j < fi; j++) free(srcs[j]);
+            free(files);
+            exit(1);
+        }
         error_init(files[fi], srcs[fi]);
         Module *extra = parse(srcs[fi], 0, &arena);
         const char *extra_loading[1] = { files[fi] };
-        load_imports(extra, files[fi], &arena, extra_loading, 1);
+        if (!load_imports(extra, files[fi], srcs[fi], &arena, extra_loading, 1)) {
+            arena_free(&arena);
+            for (int j = 0; j <= fi; j++) free(srcs[j]);
+            free(files);
+            exit(1);
+        }
         merge_items(mod, extra);
     }
     error_init(files[0], srcs[0]);
