@@ -1,55 +1,39 @@
 # Generics
 
-Generic functions and types are parameterized over one or more type variables written in `[T]` after the name.
+Generic functions and types are parameterized over one or more type variables written in `<T>` after the name.
 
 ## Generic Functions
 
 ```
-fn max[T](a: T, b: T) -> T {
+fn max<T>(a: T, b: T) -> T {
     if a > b { ret a }
     ret b
 }
 
-x: i32 = max[i32](10, 20)   # explicit
+x: i32 = max<i32>(10, 20)   # explicit
 y: f64 = max(1.5, 0.7)      # inferred from args
 ```
 
 Multiple type parameters:
 
 ```
-fn pair[A, B](a: A, b: B) -> (A, B) {
+fn pair<A, B>(a: A, b: B) -> (A, B) {
     ret (a, b)
 }
 
-first, second: i32 = pair[i32, i32](10, 20)
+first, second: i32 = pair<i32, i32>(10, 20)
 ```
 
 ## Generic Structs
 
 ```
-struct Pair[T, U] {
+struct Pair<T, U> {
     first:  T,
     second: U,
 }
 
-p: Pair[i32, str] = Pair[i32, str]{.first=1, .second="one"}
+p: Pair<i32, str> = Pair<i32, str>{.first=1, .second="one"}
 @pf("{p.second}\n")
-```
-
-## Generic Enums
-
-```
-enum Option[T] {
-    Some(T),
-    None,
-}
-
-fn find[T](s: []T, pred: fn(T) -> bool) -> Option[T] {
-    for v => s {
-        if pred(v) { ret Option[T].Some(v) }
-    }
-    ret Option[T].None
-}
 ```
 
 ## Monomorphization

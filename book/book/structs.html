@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-b570b743.js";
+            window.path_to_searchindex_js = "searchindex-e83dbd91.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-7f1b7573.js"></script>
@@ -236,22 +236,6 @@ v.scale(2.0)
 }
 
 sum: Vec2 = Vec2.add(v, Vec2{.x=1.0, .y=0.0})
-</code></pre>
-<h2 id="anonymous-structs-tuples"><a class="header" href="#anonymous-structs-tuples">Anonymous Structs (Tuples)</a></h2>
-<pre><code>pair: {i32, str} = {42, "hello"}
-n: i32  = pair.0
-s: str  = pair.1
-</code></pre>
-<h2 id="struct-embedding"><a class="header" href="#struct-embedding">Struct Embedding</a></h2>
-<pre><code>struct ColorVec {
-    using base: Vec2,    # embeds Vec2 fields and impls
-    r: u8,
-    g: u8,
-    b: u8,
-}
-
-cv: ColorVec = ColorVec{.x=1.0, .y=0.0, .r=255, .g=0, .b=0}
-d: f64 = cv.len()      # inherited from Vec2 impl
 </code></pre>
 <h2 id="packed-structs"><a class="header" href="#packed-structs">Packed Structs</a></h2>
 <pre><code>@packed

@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-b570b743.js";
+            window.path_to_searchindex_js = "searchindex-e83dbd91.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-7f1b7573.js"></script>
@@ -178,42 +178,31 @@
                 <div id="mdbook-content" class="content">
                     <main>
                         <h1 id="generics"><a class="header" href="#generics">Generics</a></h1>
-<p>Generic functions and types are parameterized over one or more type variables written in <code>[T]</code> after the name.</p>
+<p>Generic functions and types are parameterized over one or more type variables written in <code>&lt;T&gt;</code> after the name.</p>
 <h2 id="generic-functions"><a class="header" href="#generic-functions">Generic Functions</a></h2>
-<pre><code>fn max[T](a: T, b: T) -&gt; T {
+<pre><code>fn max&lt;T&gt;(a: T, b: T) -&gt; T {
     if a &gt; b { ret a }
     ret b
 }
 
-x: i32 = max[i32](10, 20)   # explicit
+x: i32 = max&lt;i32&gt;(10, 20)   # explicit
 y: f64 = max(1.5, 0.7)      # inferred from args
 </code></pre>
 <p>Multiple type parameters:</p>
-<pre><code>fn zip[A, B](a: A, b: B) -&gt; {A, B} {
-    ret {a, b}
+<pre><code>fn pair&lt;A, B&gt;(a: A, b: B) -&gt; (A, B) {
+    ret (a, b)
 }
+
+first, second: i32 = pair&lt;i32, i32&gt;(10, 20)
 </code></pre>
 <h2 id="generic-structs"><a class="header" href="#generic-structs">Generic Structs</a></h2>
-<pre><code>struct Pair[T, U] {
+<pre><code>struct Pair&lt;T, U&gt; {
     first:  T,
     second: U,
 }
 
-p: Pair[i32, str] = Pair[i32, str]{.first=1, .second="one"}
+p: Pair&lt;i32, str&gt; = Pair&lt;i32, str&gt;{.first=1, .second="one"}
 @pf("{p.second}\n")
-</code></pre>
-<h2 id="generic-enums"><a class="header" href="#generic-enums">Generic Enums</a></h2>
-<pre><code>enum Option[T] {
-    Some(T),
-    None,
-}
-
-fn find[T](s: []T, pred: fn(T) -&gt; bool) -&gt; Option[T] {
-    for v =&gt; s {
-        if pred(v) { ret Option[T].Some(v) }
-    }
-    ret Option[T].None
-}
 </code></pre>
 <h2 id="monomorphization"><a class="header" href="#monomorphization">Monomorphization</a></h2>
 <p>Generics are compiled to concrete, specialized versions at the call site — the same approach as C++ templates, with no runtime overhead.</p>

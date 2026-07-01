@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-b570b743.js";
+            window.path_to_searchindex_js = "searchindex-e83dbd91.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-7f1b7573.js"></script>
@@ -220,11 +220,16 @@ if p != null {
 }
 </code></pre>
 <h2 id="allocation"><a class="header" href="#allocation">Allocation</a></h2>
-<p>Use <code>@new(T)</code> to heap-allocate a single value:</p>
-<pre><code>p: *i32 = @new(i32)
+<p>Use <code>@alo(T)</code> to heap-allocate a single value (raw pointer, manual free):</p>
+<pre><code>p: *i32 = @alo(i32)
 p.* = 42
 # ...
 @free(p)
+</code></pre>
+<p>Use <code>@new(T)</code> for reference-counted smart pointer allocation:</p>
+<pre><code>p: ^i32 = @new(i32)
+p.* = 42
+@release(p)    # RC drop; frees when count reaches 0
 </code></pre>
 <p>For raw byte buffers use <code>@alo</code> (allocate) and <code>@free</code>:</p>
 <pre><code>buf: *u8 = @alo(1024)
@@ -274,7 +279,7 @@ ok: bool = parse("42", &amp;n)
 }
 </code></pre>
 <p><strong>Opaque handle (C FFI):</strong></p>
-<pre><code>extern struct SDL_Window   # declared but not defined
+<pre><code>struct SDL_Window { _pad: u8 }   # forward declaration
 type WindowHandle = *SDL_Window
 </code></pre>
 

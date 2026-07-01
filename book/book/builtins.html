@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-b570b743.js";
+            window.path_to_searchindex_js = "searchindex-e83dbd91.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-7f1b7573.js"></script>
@@ -243,6 +243,7 @@ b3: bool = @bool("yes")    # false
 <tr><td><code>@offsetof(T, field)</code></td><td>byte offset of a struct field</td></tr>
 <tr><td><code>@bitcast(T, val)</code></td><td>reinterpret bits — same size required</td></tr>
 <tr><td><code>@zeroed(T)</code></td><td>zero value of type <code>T</code></td></tr>
+<tr><td><code>@alo(T)</code></td><td>heap-allocate one <code>T</code>, return <code>*T</code> (raw pointer, manual <code>@free</code>)</td></tr>
 <tr><td><code>@new(T)</code></td><td>heap-allocate one <code>T</code>, return <code>^T</code> (RC-managed)</td></tr>
 <tr><td><code>@clone(val)</code></td><td>increment RC of a <code>^T</code>, return shared <code>^T</code></td></tr>
 <tr><td><code>@free(ptr)</code></td><td>free raw <code>*T</code> heap memory</td></tr>
@@ -357,12 +358,17 @@ bits: u32 = @bitcast(u32, f)   # raw bit pattern — 0x3F800000
 </tbody>
 </table>
 </div>
-<pre><code>val, err: !i32 = @i32("42")
-if @is_ok(val) {
-    @pf("parsed: %d\n", @ok(val))
+<pre><code>result: !i32 = @i32("42")
+if @is_ok(result) {
+    @pf("parsed: %d\n", @ok(result))
 } else {
-    @pf("error code: %d\n", @err(val))
+    @pf("error code: %d\n", @err(result))
 }
+</code></pre>
+<p>When you only need the error code, use failable destructuring instead:</p>
+<pre><code>val, err: !i32 = @i32("42")
+if err != 0 { @pf("parse failed\n") }
+else        { @pf("parsed: %d\n", val) }
 </code></pre>
 <p>Plain assignment silently extracts the value (error flag discarded):</p>
 <pre><code>n: i32 = @i32("42")   # flag ignored

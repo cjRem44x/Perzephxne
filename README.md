@@ -152,15 +152,15 @@ v: Vec2 = Vec2{.x = 3.0, .y = 4.0}
 ### Generic Structs
 
 ```
-struct Box[T] { value: T }
+struct Box<T> { value: T }
 
-impl Box[T] {
-    fn new(v: T) -> Box[T] { ret Box[T]{.value = v} }  # static constructor
-    fn get(self: *Box[T]) -> T { ret self.value }
-    fn set(self: *Box[T], v: T) { self.value = v }
+impl Box<T> {
+    fn new(v: T) -> Box<T> { ret Box<T>{.value = v} }  # static constructor
+    fn get(self: *Box<T>) -> T { ret self.value }
+    fn set(self: *Box<T>, v: T) { self.value = v }
 }
 
-b: Box[i32] = Box[i32].new(42)   # Generic[T].method() calls a static method
+b: Box<i32> = Box<i32>.new(42)   # Generic<T>.method() calls a static method
 @pf("value = {b.get()}\n")
 b.set(99)
 @pf("value = {b.get()}\n")
@@ -284,25 +284,25 @@ r: !i32 = @checked_add(a, b)  # overflow-checked arithmetic
 ### Generics with Heap Allocation
 
 ```
-struct Vec[T] {
+struct Vec<T> {
     data: *T,
     len: usize,
     cap: usize,
 }
 
-impl Vec[T] {
-    fn init(self: *Vec[T], cap: usize) {
+impl Vec<T> {
+    fn init(self: *Vec<T>, cap: usize) {
         self.data = @alo(T, cap)   # T resolves to concrete type
         self.len = 0
         self.cap = cap
     }
-    fn push(self: *Vec[T], val: T) {
+    fn push(self: *Vec<T>, val: T) {
         self.data[self.len] = val
         self.len = self.len + 1
     }
 }
 
-v: Vec[i32] = Vec[i32]{.data = null, .len = 0, .cap = 0}
+v: Vec<i32> = Vec<i32>{.data = null, .len = 0, .cap = 0}
 v.init(8)
 v.push(42)
 ```

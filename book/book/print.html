@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-b570b743.js";
+            window.path_to_searchindex_js = "searchindex-e83dbd91.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-7f1b7573.js"></script>
@@ -564,42 +564,31 @@ s: f64 = speed(d, t)   # 10.44
 <p>The built-in aliases <code>int</code>, <code>uint</code>, <code>byte</code>, and <code>cstr</code> are pre-defined and available in every file.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="generics"><a class="header" href="#generics">Generics</a></h1>
-<p>Generic functions and types are parameterized over one or more type variables written in <code>[T]</code> after the name.</p>
+<p>Generic functions and types are parameterized over one or more type variables written in <code>&lt;T&gt;</code> after the name.</p>
 <h2 id="generic-functions"><a class="header" href="#generic-functions">Generic Functions</a></h2>
-<pre><code>fn max[T](a: T, b: T) -&gt; T {
+<pre><code>fn max&lt;T&gt;(a: T, b: T) -&gt; T {
     if a &gt; b { ret a }
     ret b
 }
 
-x: i32 = max[i32](10, 20)   # explicit
+x: i32 = max&lt;i32&gt;(10, 20)   # explicit
 y: f64 = max(1.5, 0.7)      # inferred from args
 </code></pre>
 <p>Multiple type parameters:</p>
-<pre><code>fn zip[A, B](a: A, b: B) -&gt; {A, B} {
-    ret {a, b}
+<pre><code>fn pair&lt;A, B&gt;(a: A, b: B) -&gt; (A, B) {
+    ret (a, b)
 }
+
+first, second: i32 = pair&lt;i32, i32&gt;(10, 20)
 </code></pre>
 <h2 id="generic-structs"><a class="header" href="#generic-structs">Generic Structs</a></h2>
-<pre><code>struct Pair[T, U] {
+<pre><code>struct Pair&lt;T, U&gt; {
     first:  T,
     second: U,
 }
 
-p: Pair[i32, str] = Pair[i32, str]{.first=1, .second="one"}
+p: Pair&lt;i32, str&gt; = Pair&lt;i32, str&gt;{.first=1, .second="one"}
 @pf("{p.second}\n")
-</code></pre>
-<h2 id="generic-enums"><a class="header" href="#generic-enums">Generic Enums</a></h2>
-<pre><code>enum Option[T] {
-    Some(T),
-    None,
-}
-
-fn find[T](s: []T, pred: fn(T) -&gt; bool) -&gt; Option[T] {
-    for v =&gt; s {
-        if pred(v) { ret Option[T].Some(v) }
-    }
-    ret Option[T].None
-}
 </code></pre>
 <h2 id="monomorphization"><a class="header" href="#monomorphization">Monomorphization</a></h2>
 <p>Generics are compiled to concrete, specialized versions at the call site — the same approach as C++ templates, with no runtime overhead.</p>
@@ -692,9 +681,9 @@ extern fn malloc(size: usize) -&gt; *u8
 extern fn free(p: *u8)
 </code></pre>
 <p>Variadic <code>...</code> is allowed in extern declarations only.</p>
-<h2 id="inline-and-variadic"><a class="header" href="#inline-and-variadic">Inline and Variadic</a></h2>
-<pre><code>@inline fn fast_path(x: i32) -&gt; i32 { ret x * 2 }
-@noinline fn slow_path(x: i32) -&gt; i32 { ... }
+<h2 id="inline"><a class="header" href="#inline">Inline</a></h2>
+<p>Use <code>inline fn</code> to hint that a function should be inlined at call sites:</p>
+<pre><code>inline fn fast_path(x: i32) -&gt; i32 { ret x * 2 }
 </code></pre>
 <h2 id="recursion"><a class="header" href="#recursion">Recursion</a></h2>
 <p>Recursion works as expected:</p>
@@ -776,7 +765,7 @@ for v =&gt; nums {
 }
 </code></pre>
 <p>With index:</p>
-<pre><code>for i, v =&gt; nums {
+<pre><code>for v, i =&gt; nums {
     @pf("[{i}] = {v}\n")
 }
 </code></pre>
@@ -982,22 +971,6 @@ v.scale(2.0)
 
 sum: Vec2 = Vec2.add(v, Vec2{.x=1.0, .y=0.0})
 </code></pre>
-<h2 id="anonymous-structs-tuples"><a class="header" href="#anonymous-structs-tuples">Anonymous Structs (Tuples)</a></h2>
-<pre><code>pair: {i32, str} = {42, "hello"}
-n: i32  = pair.0
-s: str  = pair.1
-</code></pre>
-<h2 id="struct-embedding"><a class="header" href="#struct-embedding">Struct Embedding</a></h2>
-<pre><code>struct ColorVec {
-    using base: Vec2,    # embeds Vec2 fields and impls
-    r: u8,
-    g: u8,
-    b: u8,
-}
-
-cv: ColorVec = ColorVec{.x=1.0, .y=0.0, .r=255, .g=0, .b=0}
-d: f64 = cv.len()      # inherited from Vec2 impl
-</code></pre>
 <h2 id="packed-structs"><a class="header" href="#packed-structs">Packed Structs</a></h2>
 <pre><code>@packed
 struct Flags {
@@ -1033,54 +1006,9 @@ when d {
     Direction.West  =&gt; @pf("going west\n"),
 }
 </code></pre>
-<h2 id="tagged-unions"><a class="header" href="#tagged-unions">Tagged Unions</a></h2>
-<p>Each variant can carry a value:</p>
-<pre><code>enum Shape {
-    Circle(f64),
-    Rect(f64, f64),
-    Point,
-}
-
-s: Shape = Shape.Circle(5.0)
-
-area: f64 = when s {
-    Shape.Circle(r)  =&gt; 3.14159 * r * r,
-    Shape.Rect(w, h) =&gt; w * h,
-    Shape.Point      =&gt; 0.0,
-}
-</code></pre>
-<p>Multiple fields per variant use a struct-like syntax:</p>
-<pre><code>enum Event {
-    KeyPress  { key: u32, mods: u8 },
-    MouseMove { x: f32, y: f32 },
-    Quit,
-}
-
-e: Event = Event.MouseMove{.x=10.0, .y=20.0}
-
-when e {
-    Event.KeyPress{key, mods} =&gt; @pf("key {key} mods {mods}\n"),
-    Event.MouseMove{x, y}     =&gt; @pf("mouse {x},{y}\n"),
-    Event.Quit                =&gt; @pf("quit\n"),
-}
-</code></pre>
-<h2 id="impl-on-enums"><a class="header" href="#impl-on-enums"><code>impl</code> on Enums</a></h2>
-<pre><code>impl Shape {
-    fn area(self: Shape) -&gt; f64 {
-        ret when self {
-            Shape.Circle(r)  =&gt; 3.14159 * r * r,
-            Shape.Rect(w, h) =&gt; w * h,
-            Shape.Point      =&gt; 0.0,
-        }
-    }
-}
-
-s: Shape = Shape.Rect(3.0, 4.0)
-@pf("{s.area()}\n")   # 12.0
-</code></pre>
 <h2 id="integer-backed-enum"><a class="header" href="#integer-backed-enum">Integer-Backed Enum</a></h2>
-<p>Add <code>: TYPE</code> to specify a backing integer:</p>
-<pre><code>enum Color: u8 {
+<p>Add <code>=&gt; TYPE</code> after the name to specify a backing integer. Variants can have explicit values:</p>
+<pre><code>enum Color =&gt; u8 {
     Red   = 0,
     Green = 1,
     Blue  = 2,
@@ -1088,19 +1016,30 @@ s: Shape = Shape.Rect(3.0, 4.0)
 
 c: Color = Color.Red
 n: u8    = @u8(c)       # 0
-c2: Color = @Color(2)   # Color.Blue
 </code></pre>
-<h2 id="c-compatible-enum"><a class="header" href="#c-compatible-enum">C-Compatible Enum</a></h2>
-<p>For FFI, use <code>: c_int</code>:</p>
-<pre><code>extern enum errno_t: i32 {
-    EPERM  = 1,
-    ENOENT = 2,
-    EIO    = 5,
+<h2 id="impl-on-enums"><a class="header" href="#impl-on-enums"><code>impl</code> on Enums</a></h2>
+<pre><code>enum Status {
+    Ok,
+    Err,
+    Pending,
 }
+
+impl Status {
+    fn label(self: Status) -&gt; str {
+        ret when self {
+            Status.Ok      =&gt; "ok",
+            Status.Err     =&gt; "error",
+            Status.Pending =&gt; "pending",
+        }
+    }
+}
+
+s: Status = Status.Ok
+@pf("{s.label()}\n")
 </code></pre>
 <h2 id="unions"><a class="header" href="#unions">Unions</a></h2>
-<p><code>union</code> overlays all fields at the same memory address (unsafe):</p>
-<pre><code>union FloatBits {
+<p><code>unn</code> overlays all fields at the same memory address (unsafe):</p>
+<pre><code>unn FloatBits {
     f: f32,
     u: u32,
 }
@@ -1109,15 +1048,6 @@ x: FloatBits = FloatBits{.f=1.0}
 @pf("{x.u:#x}\n")   # 3f800000
 </code></pre>
 <p>Reading the field that wasn’t most recently written is defined bit-level behavior in Perzephxne.</p>
-<h2 id="option-and-result-patterns"><a class="header" href="#option-and-result-patterns">Option and Result Patterns</a></h2>
-<p>The standard library provides:</p>
-<pre><code># generic Option
-enum Option[T] { Some(T), None }
-
-# generic Result
-enum Result[T, E] { Ok(T), Err(E) }
-</code></pre>
-<p>These work alongside the <code>!T</code> failable return syntax.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="pointers--memory"><a class="header" href="#pointers--memory">Pointers &amp; Memory</a></h1>
 <p>Perzephxne has no garbage collector. Memory is managed manually or with smart pointers from the standard library.</p>
@@ -1162,11 +1092,16 @@ if p != null {
 }
 </code></pre>
 <h2 id="allocation"><a class="header" href="#allocation">Allocation</a></h2>
-<p>Use <code>@new(T)</code> to heap-allocate a single value:</p>
-<pre><code>p: *i32 = @new(i32)
+<p>Use <code>@alo(T)</code> to heap-allocate a single value (raw pointer, manual free):</p>
+<pre><code>p: *i32 = @alo(i32)
 p.* = 42
 # ...
 @free(p)
+</code></pre>
+<p>Use <code>@new(T)</code> for reference-counted smart pointer allocation:</p>
+<pre><code>p: ^i32 = @new(i32)
+p.* = 42
+@release(p)    # RC drop; frees when count reaches 0
 </code></pre>
 <p>For raw byte buffers use <code>@alo</code> (allocate) and <code>@free</code>:</p>
 <pre><code>buf: *u8 = @alo(1024)
@@ -1216,7 +1151,7 @@ ok: bool = parse("42", &amp;n)
 }
 </code></pre>
 <p><strong>Opaque handle (C FFI):</strong></p>
-<pre><code>extern struct SDL_Window   # declared but not defined
+<pre><code>struct SDL_Window { _pad: u8 }   # forward declaration
 type WindowHandle = *SDL_Window
 </code></pre>
 <div style="break-before: page; page-break-before: always;"></div>
@@ -1392,9 +1327,6 @@ fn main() {
 </code></pre>
 <h2 id="visibility"><a class="header" href="#visibility">Visibility</a></h2>
 <p>All top-level declarations are visible within a project by default.</p>
-<p>Mark a symbol <code>private</code> to restrict it to the declaring file:</p>
-<pre><code>private fn internal_helper() { ... }
-</code></pre>
 <h2 id="standard-library-modules"><a class="header" href="#standard-library-modules">Standard Library Modules</a></h2>
 <div class="table-wrapper">
 <table>
@@ -1560,11 +1492,6 @@ fn handle_request() {
 </code></pre>
 <h2 id="thread-safety"><a class="header" href="#thread-safety">Thread Safety</a></h2>
 <p>Global variables are <strong>not</strong> automatically thread-safe. Concurrent access to mutable globals requires external synchronization.</p>
-<h2 id="extern-globals"><a class="header" href="#extern-globals">Extern Globals</a></h2>
-<p>To reference a global defined in C or another object file:</p>
-<pre><code>extern count: i32
-extern name:  *u8
-</code></pre>
 <h2 id="args"><a class="header" href="#args"><code>@args</code></a></h2>
 <p>The program’s command-line arguments are available via a builtin — no global declaration needed:</p>
 <pre><code>fn main() {
@@ -1639,6 +1566,7 @@ b3: bool = @bool("yes")    # false
 <tr><td><code>@offsetof(T, field)</code></td><td>byte offset of a struct field</td></tr>
 <tr><td><code>@bitcast(T, val)</code></td><td>reinterpret bits — same size required</td></tr>
 <tr><td><code>@zeroed(T)</code></td><td>zero value of type <code>T</code></td></tr>
+<tr><td><code>@alo(T)</code></td><td>heap-allocate one <code>T</code>, return <code>*T</code> (raw pointer, manual <code>@free</code>)</td></tr>
 <tr><td><code>@new(T)</code></td><td>heap-allocate one <code>T</code>, return <code>^T</code> (RC-managed)</td></tr>
 <tr><td><code>@clone(val)</code></td><td>increment RC of a <code>^T</code>, return shared <code>^T</code></td></tr>
 <tr><td><code>@free(ptr)</code></td><td>free raw <code>*T</code> heap memory</td></tr>
@@ -1753,12 +1681,17 @@ bits: u32 = @bitcast(u32, f)   # raw bit pattern — 0x3F800000
 </tbody>
 </table>
 </div>
-<pre><code>val, err: !i32 = @i32("42")
-if @is_ok(val) {
-    @pf("parsed: %d\n", @ok(val))
+<pre><code>result: !i32 = @i32("42")
+if @is_ok(result) {
+    @pf("parsed: %d\n", @ok(result))
 } else {
-    @pf("error code: %d\n", @err(val))
+    @pf("error code: %d\n", @err(result))
 }
+</code></pre>
+<p>When you only need the error code, use failable destructuring instead:</p>
+<pre><code>val, err: !i32 = @i32("42")
+if err != 0 { @pf("parse failed\n") }
+else        { @pf("parsed: %d\n", val) }
 </code></pre>
 <p>Plain assignment silently extracts the value (error flag discarded):</p>
 <pre><code>n: i32 = @i32("42")   # flag ignored

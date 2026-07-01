@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-b570b743.js";
+            window.path_to_searchindex_js = "searchindex-e83dbd91.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-7f1b7573.js"></script>
@@ -265,9 +265,9 @@ extern fn malloc(size: usize) -&gt; *u8
 extern fn free(p: *u8)
 </code></pre>
 <p>Variadic <code>...</code> is allowed in extern declarations only.</p>
-<h2 id="inline-and-variadic"><a class="header" href="#inline-and-variadic">Inline and Variadic</a></h2>
-<pre><code>@inline fn fast_path(x: i32) -&gt; i32 { ret x * 2 }
-@noinline fn slow_path(x: i32) -&gt; i32 { ... }
+<h2 id="inline"><a class="header" href="#inline">Inline</a></h2>
+<p>Use <code>inline fn</code> to hint that a function should be inlined at call sites:</p>
+<pre><code>inline fn fast_path(x: i32) -&gt; i32 { ret x * 2 }
 </code></pre>
 <h2 id="recursion"><a class="header" href="#recursion">Recursion</a></h2>
 <p>Recursion works as expected:</p>

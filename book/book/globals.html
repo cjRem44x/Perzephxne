@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-b570b743.js";
+            window.path_to_searchindex_js = "searchindex-e83dbd91.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-7f1b7573.js"></script>
@@ -213,11 +213,6 @@ fn handle_request() {
 </code></pre>
 <h2 id="thread-safety"><a class="header" href="#thread-safety">Thread Safety</a></h2>
 <p>Global variables are <strong>not</strong> automatically thread-safe. Concurrent access to mutable globals requires external synchronization.</p>
-<h2 id="extern-globals"><a class="header" href="#extern-globals">Extern Globals</a></h2>
-<p>To reference a global defined in C or another object file:</p>
-<pre><code>extern count: i32
-extern name:  *u8
-</code></pre>
 <h2 id="args"><a class="header" href="#args"><code>@args</code></a></h2>
 <p>The program’s command-line arguments are available via a builtin — no global declaration needed:</p>
 <pre><code>fn main() {
