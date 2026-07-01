@@ -643,9 +643,20 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                             spec_buf[sl] = '\0';
                             pf_fmt[pff++] = '%';
                             if (sl > 0) {
-                                /* user-supplied spec */
+                                /* user-supplied spec: copy it, then append type letter if missing */
                                 for (size_t j = 0; j < sl; j++)
                                     pf_fmt[pff++] = spec_buf[j];
+                                /* if spec doesn't end with a conversion letter, add one */
+                                char last = spec_buf[sl - 1];
+                                int has_conv = (last=='d'||last=='i'||last=='u'||last=='o'||last=='x'
+                                               ||last=='X'||last=='f'||last=='F'||last=='e'||last=='E'
+                                               ||last=='g'||last=='G'||last=='s'||last=='c'||last=='p');
+                                if (!has_conv && ai < na && itys[ai]) {
+                                    const char *auto_spec = pf_specifier(itys[ai]);
+                                    /* append only the letter(s) — last char of auto_spec */
+                                    const char *sp = auto_spec + 1; /* skip '%' */
+                                    while (*sp) pf_fmt[pff++] = *sp++;
+                                }
                             } else {
                                 /* auto-detect: pf_specifier returns "%X", skip the % */
                                 const char *auto_spec = pf_specifier(itys[ai]);
@@ -889,8 +900,19 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                                 spec_buf2[sl2++] = *fs++;
                             spec_buf2[sl2] = '\0';
                             pf2[pf2n++] = '%';
-                            if (sl2 > 0) { for (size_t j=0;j<sl2;j++) pf2[pf2n++]=spec_buf2[j]; }
-                            else { const char *as=pf_specifier(fty[ai2]); for(const char*sp=as+1;*sp;sp++) pf2[pf2n++]=*sp; }
+                            if (sl2 > 0) {
+                                for (size_t j=0;j<sl2;j++) pf2[pf2n++]=spec_buf2[j];
+                                /* append type letter if spec doesn't end with a conversion char */
+                                char last2 = spec_buf2[sl2-1];
+                                int has_conv2 = (last2=='d'||last2=='i'||last2=='u'||last2=='o'
+                                               ||last2=='x'||last2=='X'||last2=='f'||last2=='F'
+                                               ||last2=='e'||last2=='E'||last2=='g'||last2=='G'
+                                               ||last2=='s'||last2=='c'||last2=='p');
+                                if (!has_conv2 && ai2 < na2 && fty[ai2]) {
+                                    const char *as2 = pf_specifier(fty[ai2]);
+                                    for (const char *sp=as2+1;*sp;sp++) pf2[pf2n++]=*sp;
+                                }
+                            } else { const char *as=pf_specifier(fty[ai2]); for(const char*sp=as+1;*sp;sp++) pf2[pf2n++]=*sp; }
                             ai2++;
                         } else { pf2[pf2n++] = *fs; }
                     }
