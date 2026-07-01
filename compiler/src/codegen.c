@@ -3360,11 +3360,34 @@ static void cg_stmt(CG *cg, Stmt *s) {
                     if (fidx >= 0) {
                         Type *vty = NULL;
                         Val rhs = cg_expr(cg, s->assign.val, &vty);
-                        const char *llt = fty ? llvm_type(fty) : (vty ? llvm_type(vty) : "i32");
+                        const char *llt = fty ? effective_llvm_type(cg, fty)
+                                              : (vty ? effective_llvm_type(cg, vty) : "i32");
                         int fp = new_tmp(cg);
                         emit(cg, "  %%t%d = getelementptr %%%s, ptr %s, i32 0, i32 %d\n",
                              fp, obj_ty->named.name, obj.buf, fidx);
-                        emit(cg, "  store %s %s, ptr %%t%d\n", llt, rhs.buf, fp);
+                        if (s->assign.op == ASSIGN_EQ) {
+                            emit(cg, "  store %s %s, ptr %%t%d\n", llt, rhs.buf, fp);
+                        } else {
+                            /* compound assignment: load, operate, store */
+                            int cur = new_tmp(cg);
+                            emit(cg, "  %%t%d = load %s, ptr %%t%d\n", cur, llt, fp);
+                            int res = new_tmp(cg);
+                            int is_flt_f = (llt[0] == 'f' || !strcmp(llt, "double") || !strcmp(llt, "half"));
+                            switch (s->assign.op) {
+                                case ASSIGN_ADD: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res, is_flt_f?"fadd":"add", llt, cur, rhs.buf); break;
+                                case ASSIGN_SUB: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res, is_flt_f?"fsub":"sub", llt, cur, rhs.buf); break;
+                                case ASSIGN_MUL: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res, is_flt_f?"fmul":"mul", llt, cur, rhs.buf); break;
+                                case ASSIGN_DIV: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res, is_flt_f?"fdiv":"sdiv", llt, cur, rhs.buf); break;
+                                case ASSIGN_MOD: emit(cg, "  %%t%d = srem %s %%t%d, %s\n", res, llt, cur, rhs.buf); break;
+                                case ASSIGN_AMP: emit(cg, "  %%t%d = and %s %%t%d, %s\n", res, llt, cur, rhs.buf); break;
+                                case ASSIGN_PIPE:emit(cg, "  %%t%d = or  %s %%t%d, %s\n", res, llt, cur, rhs.buf); break;
+                                case ASSIGN_XOR: emit(cg, "  %%t%d = xor %s %%t%d, %s\n", res, llt, cur, rhs.buf); break;
+                                case ASSIGN_SHL: emit(cg, "  %%t%d = shl %s %%t%d, %s\n", res, llt, cur, rhs.buf); break;
+                                case ASSIGN_SHR: emit(cg, "  %%t%d = ashr %s %%t%d, %s\n",res, llt, cur, rhs.buf); break;
+                                default:         emit(cg, "  %%t%d = add %s %%t%d, 0\n",  res, llt, cur); break;
+                            }
+                            emit(cg, "  store %s %%t%d, ptr %%t%d\n", llt, res, fp);
+                        }
                     }
                 }
             } else if (s->assign.target->kind == EXPR_INDEX) {
