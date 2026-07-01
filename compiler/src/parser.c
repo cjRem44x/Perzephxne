@@ -975,9 +975,13 @@ static Expr *parse_postfix(Parser *p, Expr *e) {
             d->deref.operand = e;
             e = d;
         } else if (check(p, TOK_DOT)) {
-            /* Don't consume .ident when it looks like the start of the next when-arm
-               pattern: .Variant => ... or .Variant bind => ... */
-            if (p->peek.kind == TOK_IDENT &&
+            /* Don't consume .ident as field access when it looks like the start
+               of the next when-arm pattern AND the current expression is not a
+               simple identifier (Name.Variant is a valid enum variant pattern).
+               Examples that should stop: @pf(...).NextVariant =>
+               Examples that should continue: Dir.North => */
+            if (e->kind != EXPR_IDENT &&
+                p->peek.kind == TOK_IDENT &&
                 (p->peek2.kind == TOK_FATARROW ||
                  ((p->peek2.kind == TOK_IDENT || p->peek2.kind == TOK_UNDER) &&
                   p->peek3.kind == TOK_FATARROW))) {
@@ -1234,6 +1238,8 @@ static Stmt *parse_stmt(Parser *p) {
              if (!is_decl && p3 == TOK_LT) is_decl = 1;
              /* immutable (p3==:) with any ident type — treat as var decl */
              if (!is_decl && p3 == TOK_COLON && n) is_decl = 1;
+             /* module-qualified type: v: mod.Type ... — peek3 is '.' */
+             if (!is_decl && p3 == TOK_DOT) is_decl = 1;
              !is_decl; /* true → treat as label */
          })))) {
         const char *lname = cur(p).sval;

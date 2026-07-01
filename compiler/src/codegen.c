@@ -1996,7 +1996,8 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                 /* numeric cast — choose trunc/sext/zext based on bit widths */
                 const char *src_llt = src_ty ? effective_llvm_type(cg, src_ty) : "i32";
                 int src_bits = 32; /* default */
-                if (!strcmp(src_llt,"i8"))  src_bits=8;
+                if (!strcmp(src_llt,"i1"))  src_bits=1;
+                else if (!strcmp(src_llt,"i8"))  src_bits=8;
                 else if (!strcmp(src_llt,"i16")) src_bits=16;
                 else if (!strcmp(src_llt,"i32")) src_bits=32;
                 else if (!strcmp(src_llt,"i64")) src_bits=64;
@@ -3265,10 +3266,16 @@ static void cg_stmt(CG *cg, Stmt *s) {
                                        && sym->ty->kind == TY_NAMED
                                        && !find_enum(cg, sym->ty->named.name);
                 if (is_struct_assign) {
-                    /* struct copy: rhs is a ptr, load then store */
-                    int loaded = new_tmp(cg);
-                    emit(cg, "  %%t%d = load %s, ptr %s\n", loaded, llt, rhs.buf);
-                    emit(cg, "  store %s %%t%d, ptr %s\n", llt, loaded, sym->llvm_name);
+                    /* struct copy: rhs is a value (call result) or a ptr (ident/struct-lit alloca) */
+                    ExprKind rk = s->assign.val->kind;
+                    int rhs_is_value = (rk == EXPR_CALL);
+                    if (rhs_is_value) {
+                        emit(cg, "  store %s %s, ptr %s\n", llt, rhs.buf, sym->llvm_name);
+                    } else {
+                        int loaded = new_tmp(cg);
+                        emit(cg, "  %%t%d = load %s, ptr %s\n", loaded, llt, rhs.buf);
+                        emit(cg, "  store %s %%t%d, ptr %s\n", llt, loaded, sym->llvm_name);
+                    }
                 } else if (s->assign.op == ASSIGN_EQ) {
                     /* coerce rhs integer width to match lhs type */
                     if (vty && strcmp(llvm_type(vty), llt) != 0) {
@@ -4068,10 +4075,39 @@ static void cg_fn(CG *cg, Item *item) {
     }
 
     cg->terminated = 0;
-    for (size_t i = 0; i < item->fn.body.len; i++)
-        cg_stmt(cg, item->fn.body.data[i]);
+    int fn_scope_popped = 0;
+    size_t body_len = item->fn.body.len;
+    for (size_t i = 0; i < body_len; i++) {
+        Stmt *st = item->fn.body.data[i];
+        int is_last = (i == body_len - 1);
+        /* For the last statement in a non-void function, if it is a bare
+           expression, evaluate it and use the result as the implicit return
+           rather than discarding it and emitting "ret <type> 0". */
+        if (is_last && !is_void && !cg->terminated
+                && st->kind == STMT_EXPR && st->expr) {
+            /* Evaluate the trailing expression first (while variables are in scope),
+               then pop_scope flushes defers/RC-drops, then emit ret. */
+            Type *trail_ty = NULL;
+            Val trail_val = cg_expr(cg, st->expr, &trail_ty);
+            /* If the return type is a struct (TY_NAMED), the expression may
+               yield a pointer (alloca); load the value before scope teardown. */
+            Val ret_val = trail_val;
+            if (item->fn.ret && item->fn.ret->kind == TY_NAMED
+                    && !find_enum(cg, item->fn.ret->named.name)) {
+                int loaded = new_tmp(cg);
+                emit(cg, "  %%t%d = load %s, ptr %s\n", loaded, ret_llt, trail_val.buf);
+                ret_val = val_tmp(loaded);
+            }
+            pop_scope(cg);  /* flushes defers and RC drops */
+            fn_scope_popped = 1;
+            emit_br(cg, "  ret %s %s\n", ret_llt, ret_val.buf);
+            cg->terminated = 1;
+        } else {
+            cg_stmt(cg, st);
+        }
+    }
 
-    pop_scope(cg);
+    if (!fn_scope_popped) pop_scope(cg);
 
     /* implicit return only if last block has no terminator */
     if (!cg->terminated) {
