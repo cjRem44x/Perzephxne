@@ -396,7 +396,9 @@ compiler changes and `book/book` after book source changes.
 
 ## Documentation
 
-The full language reference lives in [`book/`](book/). Build it with [mdBook](https://rust-lang.github.io/mdBook/):
+The full language reference lives in [`book/`](book/). It is intended to cover
+the complete current beta language surface and all standard library modules that
+ship with the compiler. Build it with [mdBook](https://rust-lang.github.io/mdBook/):
 
 ```sh
 mdbook serve book/
@@ -406,4 +408,14 @@ mdbook serve book/
 
 ## Status
 
-Early development. The compiler (`compiler/przp`) targets x86-64 Linux. Core language features are implemented; the standard library is minimal and growing.
+Beta. The compiler (`compiler/przp`) targets x86-64 Linux. Core language
+features and the shipped Core/Stdlib are documented and covered by regressions.
+There is no external dependency resolver yet; `[deps]` is reserved.
+
+Next product work:
+
+- improve parser diagnostics for malformed syntax
+- broaden edge-case regressions around generics, failable destructuring, and unsafe pointer operations
+- keep command/import/manifest diagnostics moving toward consistent source-located errors
+- audit runtime and linker assumptions before expanding platform support
+- add `przp version` later, when versioning matters for release flow

@@ -3,8 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>Page not found - The Perzephxne Programming Language</title>
-        <base href="/">
+        <title>Status &amp; Next Work - The Perzephxne Programming Language</title>
 
 
         <!-- Custom HTML head -->
@@ -178,13 +177,45 @@
 
                 <div id="mdbook-content" class="content">
                     <main>
-                        <h1 id="document-not-found-404"><a class="header" href="#document-not-found-404">Document not found (404)</a></h1>
-<p>This URL is invalid, sorry. Please use the navigation bar or search to continue.</p>
+                        <h1 id="status--next-work"><a class="header" href="#status--next-work">Status &amp; Next Work</a></h1>
+<p>Perzephxne is in beta. The book is intended to be the complete language reference for the current compiler and shipped standard library.</p>
+<p>The reference currently covers:</p>
+<ul>
+<li>source layout, project manifests, and <code>przp</code> commands</li>
+<li>literals, variables, primitive types, arrays, slices, strings, tuples, and failable types</li>
+<li>functions, first-class function pointers, extern declarations, inline functions, and return inference</li>
+<li>control flow, <code>when</code>, loops, labels, <code>break</code>, <code>continue</code>, <code>goto</code>, and <code>defer</code></li>
+<li>structs, <code>impl</code> methods, generic functions, generic structs, enums, plain unions, and tagged unions</li>
+<li>raw pointers, heap allocation, smart pointers, globals, platform constants, inline assembly, builtins, operators, and naming conventions</li>
+<li>all standard library modules shipped under <code>compiler/std</code></li>
+</ul>
+<h2 id="product-gaps"><a class="header" href="#product-gaps">Product Gaps</a></h2>
+<p>The core language surface is represented in the book and regression suite. The remaining work is mostly product hardening:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Area</th><th>Next Work</th></tr>
+</thead>
+<tbody>
+<tr><td>Parser diagnostics</td><td>Add focused malformed-syntax regressions and improve messages for missing braces, bad signatures, and invalid generic declarations.</td></tr>
+<tr><td>Diagnostic consistency</td><td>Continue moving command, manifest, import, semantic, and codegen failures toward source-located errors where possible.</td></tr>
+<tr><td>Regression breadth</td><td>Add more edge-case tests for parser recovery, generic instantiation, failable destructuring, and unsafe pointer operations.</td></tr>
+<tr><td>Build/runtime portability</td><td>Keep Linux x86-64 as the current target, then audit assumptions before broadening platform support.</td></tr>
+<tr><td>Package dependencies</td><td><code>[deps]</code> is reserved. There is no external resolver yet; Core/Stdlib ships with the language.</td></tr>
+<tr><td>Release UX</td><td>A future version command should be <code>przp version</code>, but versioning is intentionally deferred while beta work is moving quickly.</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="documentation-rule"><a class="header" href="#documentation-rule">Documentation Rule</a></h2>
+<p>Any compiler feature that is added or changed should update both the book source and the generated <code>book/book</code> output in the same change. The book should remain the user-facing source of truth for the current language.</p>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="naming.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                            </a>
 
 
                         <div style="clear: both"></div>
@@ -193,6 +224,9 @@
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="naming.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                    </a>
 
             </nav>
 
