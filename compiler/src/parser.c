@@ -179,9 +179,10 @@ static int looks_like_generic_bracket_args(Parser *p) {
             case TOK_RBRACKET:
                 depth--;
                 if (depth == 0) {
-                    /* Followed by '(' (call) or '{' (struct literal) */
+                    /* Followed by '(' (call), '{' (struct literal), or '.' (method) */
                     Token next = (bi < 3) ? buf[bi] : lexer_next(&probe);
-                    return next.kind == TOK_LPAREN || next.kind == TOK_LBRACE;
+                    return next.kind == TOK_LPAREN || next.kind == TOK_LBRACE
+                        || next.kind == TOK_DOT;
                 }
                 break;
             case TOK_IDENT: case TOK_COMMA: case TOK_STAR: case TOK_CARET:
