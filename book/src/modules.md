@@ -54,12 +54,6 @@ MyProject/
 
 All top-level declarations are visible within a project by default.
 
-Mark a symbol `private` to restrict it to the declaring file:
-
-```
-private fn internal_helper() { ... }
-```
-
 ## Standard Library Modules
 
 | Module | Contents |

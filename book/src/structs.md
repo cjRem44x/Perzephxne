@@ -83,28 +83,6 @@ impl Vec2 {
 sum: Vec2 = Vec2.add(v, Vec2{.x=1.0, .y=0.0})
 ```
 
-## Anonymous Structs (Tuples)
-
-```
-pair: {i32, str} = {42, "hello"}
-n: i32  = pair.0
-s: str  = pair.1
-```
-
-## Struct Embedding
-
-```
-struct ColorVec {
-    using base: Vec2,    # embeds Vec2 fields and impls
-    r: u8,
-    g: u8,
-    b: u8,
-}
-
-cv: ColorVec = ColorVec{.x=1.0, .y=0.0, .r=255, .g=0, .b=0}
-d: f64 = cv.len()      # inherited from Vec2 impl
-```
-
 ## Packed Structs
 
 ```

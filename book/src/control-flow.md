@@ -95,7 +95,7 @@ for v => nums {
 With index:
 
 ```
-for i, v => nums {
+for v, i => nums {
     @pf("[{i}] = {v}\n")
 }
 ```

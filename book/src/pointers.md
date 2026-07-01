@@ -145,6 +145,6 @@ struct Node {
 **Opaque handle (C FFI):**
 
 ```
-extern struct SDL_Window   # declared but not defined
+struct SDL_Window { _pad: u8 }   # forward declaration
 type WindowHandle = *SDL_Window
 ```

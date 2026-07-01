@@ -78,6 +78,7 @@ b3: bool = @bool("yes")    # false
 | `@offsetof(T, field)` | byte offset of a struct field |
 | `@bitcast(T, val)` | reinterpret bits — same size required |
 | `@zeroed(T)` | zero value of type `T` |
+| `@alo(T)` | heap-allocate one `T`, return `*T` (raw pointer, manual `@free`) |
 | `@new(T)` | heap-allocate one `T`, return `^T` (RC-managed) |
 | `@clone(val)` | increment RC of a `^T`, return shared `^T` |
 | `@free(ptr)` | free raw `*T` heap memory |

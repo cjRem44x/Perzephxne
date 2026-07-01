@@ -397,11 +397,16 @@ static Type *parse_type(Parser *p) {
         return ty;
     }
 
-    /* (T1, T2, ...) — tuple type */
+    /* (T1, T2) or (name: T1, name: T2) — tuple/named-return type */
     if (t.kind == TOK_LPAREN) {
         advance(p);
         TypeList elems = {0};
         while (!check(p, TOK_RPAREN) && !check(p, TOK_EOF)) {
+            /* named field: skip "ident :" prefix — names are documentation only */
+            if (check(p, TOK_IDENT) && check2(p, TOK_COLON)) {
+                advance(p); /* name */
+                advance(p); /* ':' */
+            }
             Type *elem = parse_type(p);
             LIST_PUSH(p->arena, &elems, Type, elem);
             if (!eat(p, TOK_COMMA)) break;
