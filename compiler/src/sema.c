@@ -299,6 +299,15 @@ static int ty_coerces(Type *from, Type *to) {
     return 0;
 }
 
+/* A bare f64 float literal adopts a narrower expected float type so codegen
+   emits a constant of the right width (f32-rounded hex / 0xH half form) and
+   stores match the alloca size. */
+static void adopt_float_lit(Expr *e, Type *want) {
+    if (e && want && e->kind == EXPR_FLOAT && e->ty && e->ty->kind == TY_F64
+            && (want->kind == TY_F32 || want->kind == TY_F16))
+        e->ty = want;
+}
+
 /* ── Tagged-union when-arm desugar ────────────────────────────────────────────
    Rewrites `Enum.Variant` and `Enum.Variant(b1, b2, ...)` arm patterns on a
    tagged-union subject into the canonical ".Variant" ident form the matcher
@@ -580,6 +589,16 @@ static Type *check_expr(Sema *s, Expr *e) {
         case EXPR_BINOP: {
             Type *lt = check_expr(s, e->binop.l);
             Type *rt = check_expr(s, e->binop.r);
+            /* a bare float literal adopts the other operand's float width
+               (a: f32; a * 0.7 — the constant becomes f32, not f64), so
+               codegen emits a constant valid for that type */
+            if (lt && rt && ty_is_float(lt) && ty_is_float(rt) && lt->kind != rt->kind) {
+                if (e->binop.r->kind == EXPR_FLOAT && rt->kind == TY_F64) {
+                    e->binop.r->ty = lt; rt = lt;
+                } else if (e->binop.l->kind == EXPR_FLOAT && lt->kind == TY_F64) {
+                    e->binop.l->ty = rt; lt = rt;
+                }
+            }
             /* pointer arithmetic: *T +/- integer → *T */
             int ptr_arith = 0;
             if ((e->binop.op == BINOP_ADD || e->binop.op == BINOP_SUB)) {
@@ -733,6 +752,7 @@ static Type *check_expr(Sema *s, Expr *e) {
                     size_t ncheck = callee_ty->fn.params.len;
                     for (size_t i = 0; i < ncheck; i++) {
                         Type *param_ty = callee_ty->fn.params.data[i];
+                        adopt_float_lit(e->call.args.data[i], param_ty);
                         Type *arg_ty   = e->call.args.data[i]->ty;
                         if (param_ty && arg_ty && !ty_coerces(arg_ty, param_ty))
                             sema_error(s, e->call.args.data[i]->span,
@@ -1018,6 +1038,10 @@ static Type *check_expr(Sema *s, Expr *e) {
                             break;
                         }
                     }
+                    if (field_ty) {
+                        adopt_float_lit(e->struct_lit.fields.data[i].val, field_ty);
+                        val_ty = e->struct_lit.fields.data[i].val->ty;
+                    }
                     if (!field_ty) {
                         sema_error(s, e->span, "struct '%s' has no field '%s'",
                                    e->struct_lit.ty_name, fname);
@@ -1156,8 +1180,36 @@ static void check_stmt(Sema *s, Stmt *st) {
                 Type *have = init_ty->array.inner;
                 if (want && have
                         && ((ty_is_int(want) && ty_is_int(have))
-                            || (ty_is_float(want) && ty_is_float(have))))
+                            || (ty_is_float(want) && ty_is_float(have)))) {
                     init_ty->array.inner = want;
+                    for (size_t ai = 0; ai < st->let.init->array_lit.len; ai++) {
+                        Expr *elem = st->let.init->array_lit.data[ai];
+                        if (elem && (elem->kind == EXPR_INT || elem->kind == EXPR_FLOAT))
+                            elem->ty = want;
+                    }
+                }
+            }
+
+            /* bare float literal adopts the declared f32/f16 type */
+            if (decl_ty) adopt_float_lit(st->let.init, decl_ty);
+
+            /* tuple literal elements adopt the declared tuple element types */
+            if (decl_ty && decl_ty->kind == TY_TUPLE && init_ty
+                    && init_ty->kind == TY_TUPLE
+                    && st->let.init && st->let.init->kind == EXPR_TUPLE
+                    && init_ty->tuple.elems.len == decl_ty->tuple.elems.len) {
+                for (size_t ti = 0; ti < decl_ty->tuple.elems.len; ti++) {
+                    Type *want = decl_ty->tuple.elems.data[ti];
+                    Type *have = init_ty->tuple.elems.data[ti];
+                    Expr *elem = st->let.init->array_lit.data[ti];
+                    if (want && have && elem
+                            && (elem->kind == EXPR_INT || elem->kind == EXPR_FLOAT)
+                            && ((ty_is_int(want) && ty_is_int(have))
+                                || (ty_is_float(want) && ty_is_float(have)))) {
+                        init_ty->tuple.elems.data[ti] = want;
+                        elem->ty = want;
+                    }
+                }
             }
 
             if (decl_ty && init_ty && !ty_coerces(init_ty, decl_ty)) {
@@ -1204,6 +1256,7 @@ static void check_stmt(Sema *s, Stmt *st) {
         case STMT_ASSIGN: {
             Type *lhs = check_expr(s, st->assign.target);
             Type *rhs = check_expr(s, st->assign.val);
+            adopt_float_lit(st->assign.val, lhs);
 
             /* trace lvalue root to check mutability */
             {
@@ -1232,6 +1285,10 @@ static void check_stmt(Sema *s, Stmt *st) {
 
         case STMT_RET: {
             Type *vt = st->ret.val ? check_expr(s, st->ret.val) : NULL;
+            if (s->cur_ret && st->ret.val) {
+                adopt_float_lit(st->ret.val, s->cur_ret);
+                if (st->ret.val->ty) vt = st->ret.val->ty;
+            }
             if (s->cur_ret) {
                 if (!vt && s->cur_ret->kind != TY_VOID)
                     sema_error(s, st->span, "missing return value: expected '%s'",

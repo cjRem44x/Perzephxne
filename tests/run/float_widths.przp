@@ -1,0 +1,47 @@
+fn scale<T>(a: T) -> T {
+    ret a * 0.7
+}
+
+fn half_of<T>(a: T) -> T {
+    ret a * 0.5
+}
+
+fn take_f32(x: f32) -> f32 { ret x * 2.0 }
+
+struct P { v: f32 }
+
+fn main() -> i32 {
+    # f32 generic with a literal not exactly representable as float
+    y: f32 = scale<f32>(@f32(1.5))
+    @pf("{y}\n")
+
+    # f16 generic + cast roundtrip
+    h: f16 = half_of<f16>(@f16(3.0))
+    @pf("{h}\n")
+
+    # f64 generic unchanged
+    z: f64 = scale<f64>(10.0)
+    @pf("{z}\n")
+
+    # literal adopts f32 at let, assignment, call arg, struct field, return
+    w: f32 = 0.1
+    w = 0.3
+    c: f32 = take_f32(0.7)
+    p: P = P{.v = 0.9}
+    @pf("{w} {c} {p.v}\n")
+
+    # f32 array literal with non-representable elements
+    arr: [3]f32 = [0.1, 0.2, 0.3]
+    @pf("{arr[1]}\n")
+
+    # f32 tuple literal elements
+    t: (f32, f32) = (0.7, 0.9)
+    @pf("{t.0} {t.1}\n")
+
+    # f16 arithmetic with literal
+    g: f16 = 2.0
+    g = g * 0.5
+    @pf("{g}\n")
+
+    ret 0
+}

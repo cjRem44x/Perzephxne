@@ -500,11 +500,24 @@ static void emit_str_constants(CG *cg) {
 static Val val_tmp(int id)  { Val v; snprintf(v.buf, sizeof(v.buf), "%%t%d", id); return v; }
 static Val val_str(const char *s) { Val v; snprintf(v.buf, sizeof(v.buf), "%s", s); return v; }
 
+/* Convert a double to IEEE 754 half (binary16) bits for LLVM 0xH constants. */
+static uint16_t double_to_half_bits(double d) {
+    union { float f; uint32_t u; } b;
+    b.f = (float)d;
+    uint32_t sign = (b.u >> 16) & 0x8000u;
+    int32_t  exp  = (int32_t)((b.u >> 23) & 0xFF) - 127 + 15;
+    uint32_t man  = b.u & 0x7FFFFFu;
+    if (exp <= 0)  return (uint16_t)sign;             /* underflow → signed zero */
+    if (exp >= 31) return (uint16_t)(sign | 0x7C00u); /* overflow → infinity */
+    return (uint16_t)(sign | ((uint32_t)exp << 10) | (man >> 13));
+}
+
 /* C ABI: small int/float args to variadic functions must be widened */
 static Val promote_vararg(CG *cg, Val v, Type *ty, const char **llt_out) {
-    if (ty && ty->kind == TY_F32) {
+    if (ty && (ty->kind == TY_F32 || ty->kind == TY_F16)) {
         int t = new_tmp(cg);
-        emit(cg, "  %%t%d = fpext float %s to double\n", t, v.buf);
+        emit(cg, "  %%t%d = fpext %s %s to double\n",
+             t, ty->kind == TY_F16 ? "half" : "float", v.buf);
         if (llt_out) *llt_out = "double";
         return val_tmp(t);
     }
@@ -589,10 +602,20 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
             return v;
         }
         case EXPR_FLOAT: {
-            /* LLVM IR requires IEEE 754 hex: 0x followed by 16 uppercase hex digits */
+            /* LLVM IR requires IEEE 754 hex: 0x followed by 16 uppercase hex
+               digits.  A constant used at float type must be exactly
+               representable as float, so round f32-typed literals first;
+               half constants use the 0xH<4 digits> form. */
+            Val v;
+            if (e->ty && e->ty->kind == TY_F16) {
+                snprintf(v.buf, sizeof(v.buf), "0xH%04X",
+                         (unsigned)double_to_half_bits(e->fval));
+                return v;
+            }
             union { double d; uint64_t u; } bits;
-            bits.d = e->fval;
-            Val v; snprintf(v.buf, sizeof(v.buf), "0x%016" PRIX64, bits.u);
+            bits.d = (e->ty && e->ty->kind == TY_F32)
+                     ? (double)(float)e->fval : e->fval;
+            snprintf(v.buf, sizeof(v.buf), "0x%016" PRIX64, bits.u);
             return v;
         }
         case EXPR_BOOL: {
@@ -2363,15 +2386,28 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                 else if (!strcmp(dst,"char"))  INT_CAST("i8",  8);
                 #undef INT_CAST
                 #undef FLOAT_TO_INT
-                else if (!strcmp(dst,"f32")) {
+                else if (!strcmp(dst,"f16")) {
+                    if (!strcmp(src_llt, "half")) { if (out_ty) *out_ty = e->ty; return src; }
                     if (type_is_float(src_ty))
-                        emit(cg, "  %%t%d = fptrunc %s %s to float\n", t, src_llt, src.buf);
+                        emit(cg, "  %%t%d = fptrunc %s %s to half\n", t, src_llt, src.buf);
+                    else if (type_is_signed(src_ty))
+                        emit(cg, "  %%t%d = sitofp %s %s to half\n", t, src_llt, src.buf);
+                    else
+                        emit(cg, "  %%t%d = uitofp %s %s to half\n", t, src_llt, src.buf);
+                }
+                else if (!strcmp(dst,"f32")) {
+                    if (!strcmp(src_llt, "float")) { if (out_ty) *out_ty = e->ty; return src; }
+                    if (type_is_float(src_ty))
+                        emit(cg, "  %%t%d = %s %s %s to float\n", t,
+                             !strcmp(src_llt,"half") ? "fpext" : "fptrunc",
+                             src_llt, src.buf);
                     else if (type_is_signed(src_ty))
                         emit(cg, "  %%t%d = sitofp %s %s to float\n", t, src_llt, src.buf);
                     else
                         emit(cg, "  %%t%d = uitofp %s %s to float\n", t, src_llt, src.buf);
                 }
                 else if (!strcmp(dst,"f64")) {
+                    if (!strcmp(src_llt, "double")) { if (out_ty) *out_ty = e->ty; return src; }
                     if (type_is_float(src_ty))
                         emit(cg, "  %%t%d = fpext %s %s to double\n", t, src_llt, src.buf);
                     else if (type_is_signed(src_ty))
