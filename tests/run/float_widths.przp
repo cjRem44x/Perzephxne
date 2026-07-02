@@ -43,5 +43,27 @@ fn main() -> i32 {
     g = g * 0.5
     @pf("{g}\n")
 
+    # literal type suffixes pin the inferred type
+    sx := 3.14f32
+    sn := 42u8
+    sh := 1.5f16
+    @pf("{@typeof(sx)} {@typeof(sn)} {@typeof(sh)}\n")
+
+    # float builtins: @abs, @min, @max at f32/f64
+    ab: f32 = @abs(@f32(-2.0))
+    mn: f32 = @min(@f32(1.0), @f32(2.0))
+    mx: f64 = @max(2.5, 7.5)
+    @pf("{ab} {mn} {mx}\n")
+
+    # @rng at f32 stays in range
+    @rng_seed(7)
+    r: f32 = @rng(f32, 0.0, 1.0)
+    in_range: bool = r >= @f32(0.0) && r <= @f32(1.0)
+    @pf("{in_range}\n")
+
+    # unary negation on floats
+    ng: f32 = -ab
+    @pf("{ng}\n")
+
     ret 0
 }

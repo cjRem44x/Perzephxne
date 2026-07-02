@@ -303,7 +303,8 @@ static int ty_coerces(Type *from, Type *to) {
    emits a constant of the right width (f32-rounded hex / 0xH half form) and
    stores match the alloca size. */
 static void adopt_float_lit(Expr *e, Type *want) {
-    if (e && want && e->kind == EXPR_FLOAT && e->ty && e->ty->kind == TY_F64
+    if (e && want && e->kind == EXPR_FLOAT && !e->lit_suffixed
+            && e->ty && e->ty->kind == TY_F64
             && (want->kind == TY_F32 || want->kind == TY_F16))
         e->ty = want;
 }
@@ -476,12 +477,17 @@ static Type *check_expr(Sema *s, Expr *e) {
 
     switch (e->kind) {
         case EXPR_INT:
+            /* explicit suffix (42u8) wins over defaults */
+            if (e->lit_suffixed && e->ty) break;
             /* Default to i64 when value exceeds i32 range, so that e.g.
                `big: i64 = 1000000000000` doesn't silently truncate to i32
                before being sign-extended into the i64 alloca. */
             e->ty = (e->ival > (uint64_t)2147483647ULL) ? s->ty_i64 : s->ty_i32;
             break;
-        case EXPR_FLOAT:  e->ty = s->ty_f64;  break;
+        case EXPR_FLOAT:
+            if (e->lit_suffixed && e->ty) break;
+            e->ty = s->ty_f64;
+            break;
         case EXPR_BOOL:   e->ty = s->ty_bool; break;
         case EXPR_CHAR:   e->ty = s->ty_char; break;
         case EXPR_STR:    e->ty = s->ty_str;  break;
@@ -593,9 +599,11 @@ static Type *check_expr(Sema *s, Expr *e) {
                (a: f32; a * 0.7 — the constant becomes f32, not f64), so
                codegen emits a constant valid for that type */
             if (lt && rt && ty_is_float(lt) && ty_is_float(rt) && lt->kind != rt->kind) {
-                if (e->binop.r->kind == EXPR_FLOAT && rt->kind == TY_F64) {
+                if (e->binop.r->kind == EXPR_FLOAT && !e->binop.r->lit_suffixed
+                        && rt->kind == TY_F64) {
                     e->binop.r->ty = lt; rt = lt;
-                } else if (e->binop.l->kind == EXPR_FLOAT && lt->kind == TY_F64) {
+                } else if (e->binop.l->kind == EXPR_FLOAT && !e->binop.l->lit_suffixed
+                        && lt->kind == TY_F64) {
                     e->binop.l->ty = rt; lt = rt;
                 }
             }
@@ -1086,7 +1094,7 @@ static Type *check_expr(Sema *s, Expr *e) {
                                     Type *want = vty->tuple.elems.data[ti];
                                     Type *have = pval->ty->tuple.elems.data[ti];
                                     Expr *elem = pval->array_lit.data[ti];
-                                    if (want && have && elem
+                                    if (want && have && elem && !elem->lit_suffixed
                                             && (elem->kind == EXPR_INT || elem->kind == EXPR_FLOAT)
                                             && ((ty_is_int(want) && ty_is_int(have))
                                                 || (ty_is_float(want) && ty_is_float(have)))) {
@@ -1184,7 +1192,8 @@ static void check_stmt(Sema *s, Stmt *st) {
                     init_ty->array.inner = want;
                     for (size_t ai = 0; ai < st->let.init->array_lit.len; ai++) {
                         Expr *elem = st->let.init->array_lit.data[ai];
-                        if (elem && (elem->kind == EXPR_INT || elem->kind == EXPR_FLOAT))
+                        if (elem && !elem->lit_suffixed
+                                && (elem->kind == EXPR_INT || elem->kind == EXPR_FLOAT))
                             elem->ty = want;
                     }
                 }
@@ -1202,7 +1211,7 @@ static void check_stmt(Sema *s, Stmt *st) {
                     Type *want = decl_ty->tuple.elems.data[ti];
                     Type *have = init_ty->tuple.elems.data[ti];
                     Expr *elem = st->let.init->array_lit.data[ti];
-                    if (want && have && elem
+                    if (want && have && elem && !elem->lit_suffixed
                             && (elem->kind == EXPR_INT || elem->kind == EXPR_FLOAT)
                             && ((ty_is_int(want) && ty_is_int(have))
                                 || (ty_is_float(want) && ty_is_float(have)))) {
@@ -1229,7 +1238,8 @@ static void check_stmt(Sema *s, Stmt *st) {
                     (st->let.init->kind == EXPR_INT   || st->let.init->kind == EXPR_FLOAT ||
                      st->let.init->kind == EXPR_BOOL  || st->let.init->kind == EXPR_CHAR  ||
                      st->let.init->kind == EXPR_STR);
-                if (is_bare_lit)
+                /* an explicit suffix (3.14f32, 42u8) pins the type — no widening */
+                if (is_bare_lit && !st->let.init->lit_suffixed)
                     ty = widen_inferred(s, ty);
             }
             /* write resolved type back so codegen gets the correct alloca type */

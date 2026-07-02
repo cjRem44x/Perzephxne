@@ -1345,11 +1345,17 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                 Val b = cg_expr(cg, e->builtin.args.data[1], &tb);
                 const char *llt = ta ? llvm_type(ta) : "i32";
                 int cmp = new_tmp(cg);
-                const char *pred = (!strcmp(name,"min"))
-                    ? (type_is_signed(ta) ? "slt" : "ult")
-                    : (type_is_signed(ta) ? "sgt" : "ugt");
-                emit(cg, "  %%t%d = icmp %s %s %s, %s\n",
-                     cmp, pred, llt, a.buf, b.buf);
+                if (type_is_float(ta)) {
+                    const char *pred = (!strcmp(name,"min")) ? "olt" : "ogt";
+                    emit(cg, "  %%t%d = fcmp %s %s %s, %s\n",
+                         cmp, pred, llt, a.buf, b.buf);
+                } else {
+                    const char *pred = (!strcmp(name,"min"))
+                        ? (type_is_signed(ta) ? "slt" : "ult")
+                        : (type_is_signed(ta) ? "sgt" : "ugt");
+                    emit(cg, "  %%t%d = icmp %s %s %s, %s\n",
+                         cmp, pred, llt, a.buf, b.buf);
+                }
                 int sel = new_tmp(cg);
                 emit(cg, "  %%t%d = select i1 %%t%d, %s %s, %s %s\n",
                      sel, cmp, llt, a.buf, llt, b.buf);
@@ -1362,9 +1368,14 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                 Val a = cg_expr(cg, e->builtin.args.data[0], &ta);
                 const char *llt = ta ? llvm_type(ta) : "i32";
                 int neg = new_tmp(cg);
-                emit(cg, "  %%t%d = sub %s 0, %s\n", neg, llt, a.buf);
                 int cmp = new_tmp(cg);
-                emit(cg, "  %%t%d = icmp slt %s %s, 0\n", cmp, llt, a.buf);
+                if (type_is_float(ta)) {
+                    emit(cg, "  %%t%d = fneg %s %s\n", neg, llt, a.buf);
+                    emit(cg, "  %%t%d = fcmp olt %s %s, 0.0\n", cmp, llt, a.buf);
+                } else {
+                    emit(cg, "  %%t%d = sub %s 0, %s\n", neg, llt, a.buf);
+                    emit(cg, "  %%t%d = icmp slt %s %s, 0\n", cmp, llt, a.buf);
+                }
                 int sel = new_tmp(cg);
                 emit(cg, "  %%t%d = select i1 %%t%d, %s %%t%d, %s %s\n",
                      sel, cmp, llt, neg, llt, a.buf);
@@ -1579,10 +1590,16 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                         const char *sl = max_ty ? llvm_type(max_ty) : "i64";
                         emit(cg, "  %%t%d = %s %s %s to %s\n", max_f, op, sl, maxv.buf, flt);
                     }
-                    /* normalize rand to [0.0, 1.0] */
+                    /* normalize rand to [0.0, 1.0] — RAND_MAX constant must be
+                       rounded to the target width (float constants in LLVM IR
+                       must be exactly representable) */
                     int rf = new_tmp(cg), rn = new_tmp(cg);
                     emit(cg, "  %%t%d = sitofp i32 %%t%d to %s\n", rf, rand_t, flt);
-                    emit(cg, "  %%t%d = fdiv %s %%t%d, 2.147483647e+09\n", rn, flt, rf);
+                    union { double d; uint64_t u; } rmax;
+                    rmax.d = (rng_ty->kind == TY_F32)
+                             ? (double)(float)2147483647.0 : 2147483647.0;
+                    emit(cg, "  %%t%d = fdiv %s %%t%d, 0x%016" PRIX64 "\n",
+                         rn, flt, rf, rmax.u);
                     /* range = max - min */
                     int rng_range = new_tmp(cg), scaled = new_tmp(cg);
                     emit(cg, "  %%t%d = fsub %s %%t%d, %%t%d\n", rng_range, flt, max_f, min_f);
@@ -1790,6 +1807,7 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                         case TY_I32: tname="i32"; break; case TY_I64: tname="i64"; break;
                         case TY_U8: tname="u8"; break; case TY_U16: tname="u16"; break;
                         case TY_U32: tname="u32"; break; case TY_U64: tname="u64"; break;
+                        case TY_F16: tname="f16"; break;
                         case TY_F32: tname="f32"; break; case TY_F64: tname="f64"; break;
                         case TY_BOOL: tname="bool"; break; case TY_CHAR: tname="char"; break;
                         case TY_STR: tname="str"; break; case TY_USIZE: tname="usize"; break;
@@ -1803,6 +1821,7 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                                     case TY_I32: inner="i32"; break; case TY_I64: inner="i64"; break;
                                     case TY_U8: inner="u8"; break; case TY_U16: inner="u16"; break;
                                     case TY_U32: inner="u32"; break; case TY_U64: inner="u64"; break;
+                                    case TY_F16: inner="f16"; break;
                                     case TY_F32: inner="f32"; break; case TY_F64: inner="f64"; break;
                                     case TY_BOOL: inner="bool"; break; case TY_USIZE: inner="usize"; break;
                                     case TY_STR: inner="str"; break; case TY_CHAR: inner="char"; break;
@@ -1827,6 +1846,7 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                                     case TY_I32: inner="i32"; break; case TY_I64: inner="i64"; break;
                                     case TY_U8: inner="u8"; break; case TY_U16: inner="u16"; break;
                                     case TY_U32: inner="u32"; break; case TY_U64: inner="u64"; break;
+                                    case TY_F16: inner="f16"; break;
                                     case TY_F32: inner="f32"; break; case TY_F64: inner="f64"; break;
                                     case TY_BOOL: inner="bool"; break; case TY_CHAR: inner="char"; break;
                                     case TY_STR: inner="str"; break; case TY_USIZE: inner="usize"; break;

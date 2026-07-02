@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-eda4c4a3.js";
+            window.path_to_searchindex_js = "searchindex-6b198641.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-b900b046.js"></script>
@@ -340,8 +340,9 @@ przp init
 1_000.0      # underscores allowed
 </code></pre>
 <p>Type suffixes:</p>
-<pre><code>3.14f32    3.14f64
+<pre><code>3.14f16    3.14f32    3.14f64
 </code></pre>
+<p>A suffix pins the literal’s type — <code>x := 3.14f32</code> infers <code>f32</code> instead of the default <code>f64</code>.</p>
 <h2 id="character-literals"><a class="header" href="#character-literals">Character Literals</a></h2>
 <pre><code>c: char = 'A'
 nl: char = '\n'

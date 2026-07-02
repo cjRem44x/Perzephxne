@@ -588,6 +588,25 @@ static ExprList desugar_pf_interp(Parser *p, ExprList orig) {
     return result;
 }
 
+/* Apply a numeric literal type suffix (42u8, 3.14f32): annotate the literal
+   with the named type so sema keeps it instead of applying defaults. */
+static void apply_lit_suffix(Parser *p, Expr *e, const char *sfx, Span span) {
+    static const struct { const char *n; TypeKind k; } sfx_map[] = {
+        {"i8",TY_I8},{"i16",TY_I16},{"i32",TY_I32},{"i64",TY_I64},
+        {"u8",TY_U8},{"u16",TY_U16},{"u32",TY_U32},{"u64",TY_U64},
+        {"usize",TY_USIZE},{"f16",TY_F16},{"f32",TY_F32},{"f64",TY_F64},
+        {NULL,0}
+    };
+    for (int i = 0; sfx_map[i].n; i++) {
+        if (!strcmp(sfx, sfx_map[i].n)) {
+            e->ty = mktype(p, sfx_map[i].k, span);
+            e->lit_suffixed = 1;
+            return;
+        }
+    }
+    fatal_at(span, "unknown numeric literal suffix '%s'", sfx);
+}
+
 /* parse primary expression */
 static Expr *parse_primary(Parser *p) {
     Token t = cur(p);
@@ -598,12 +617,14 @@ static Expr *parse_primary(Parser *p) {
             advance(p);
             Expr *e = mkexpr(p, EXPR_INT, span);
             e->ival = t.ival;
+            if (t.suffix) apply_lit_suffix(p, e, t.suffix, span);
             return e;
         }
         case TOK_FLOAT: {
             advance(p);
             Expr *e = mkexpr(p, EXPR_FLOAT, span);
             e->fval = t.fval;
+            if (t.suffix) apply_lit_suffix(p, e, t.suffix, span);
             return e;
         }
         case TOK_STR: {

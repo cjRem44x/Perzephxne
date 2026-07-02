@@ -109,6 +109,7 @@ struct Expr {
     ExprKind kind;
     Span     span;
     Type    *ty;         /* filled by sema */
+    int      lit_suffixed; /* literal carried an explicit type suffix (42u8, 3.14f32) */
     union {
         uint64_t       ival;
         double         fval;
