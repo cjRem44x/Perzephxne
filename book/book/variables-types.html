@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-eda4c4a3.js";
+            window.path_to_searchindex_js = "searchindex-630bb592.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-b900b046.js"></script>
@@ -305,18 +305,6 @@ inner: i32 = n.0.1       # chained access into nested tuples
 struct Labeled { pos: (f64, f64), name: str }
 </code></pre>
 <p>A tuple-returning call can also be destructured directly into two variables — see <a href="./functions.html#multiple-return-values">Multiple Return Values</a>.</p>
-<h2 id="any"><a class="header" href="#any"><code>any</code></a></h2>
-<p><code>any</code> holds a value of any type alongside a runtime type tag. Use <code>when</code> to inspect:</p>
-<pre><code>x: any = 42
-x = "hello"
-
-when x {
-    i32 n  =&gt; @pf("int: {n}\n"),
-    str s  =&gt; @pf("str: {s}\n"),
-    bool b =&gt; @pf("bool: {b}\n"),
-    _      =&gt; @pf("unknown\n"),
-}
-</code></pre>
 <h2 id="value-semantics"><a class="header" href="#value-semantics">Value Semantics</a></h2>
 <p>Structs and arrays are <strong>copied by value</strong> on assignment and when passed to functions — the same as C.</p>
 <pre><code>a: vec2 = vec2{.x=1.0, .y=2.0}

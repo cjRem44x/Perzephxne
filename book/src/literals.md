@@ -29,8 +29,10 @@ Type suffixes (when context can't infer):
 Type suffixes:
 
 ```
-3.14f32    3.14f64
+3.14f16    3.14f32    3.14f64
 ```
+
+A suffix pins the literal's type — `x := 3.14f32` infers `f32` instead of the default `f64`.
 
 ## Character Literals
 

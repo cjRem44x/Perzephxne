@@ -500,11 +500,24 @@ static void emit_str_constants(CG *cg) {
 static Val val_tmp(int id)  { Val v; snprintf(v.buf, sizeof(v.buf), "%%t%d", id); return v; }
 static Val val_str(const char *s) { Val v; snprintf(v.buf, sizeof(v.buf), "%s", s); return v; }
 
+/* Convert a double to IEEE 754 half (binary16) bits for LLVM 0xH constants. */
+static uint16_t double_to_half_bits(double d) {
+    union { float f; uint32_t u; } b;
+    b.f = (float)d;
+    uint32_t sign = (b.u >> 16) & 0x8000u;
+    int32_t  exp  = (int32_t)((b.u >> 23) & 0xFF) - 127 + 15;
+    uint32_t man  = b.u & 0x7FFFFFu;
+    if (exp <= 0)  return (uint16_t)sign;             /* underflow → signed zero */
+    if (exp >= 31) return (uint16_t)(sign | 0x7C00u); /* overflow → infinity */
+    return (uint16_t)(sign | ((uint32_t)exp << 10) | (man >> 13));
+}
+
 /* C ABI: small int/float args to variadic functions must be widened */
 static Val promote_vararg(CG *cg, Val v, Type *ty, const char **llt_out) {
-    if (ty && ty->kind == TY_F32) {
+    if (ty && (ty->kind == TY_F32 || ty->kind == TY_F16)) {
         int t = new_tmp(cg);
-        emit(cg, "  %%t%d = fpext float %s to double\n", t, v.buf);
+        emit(cg, "  %%t%d = fpext %s %s to double\n",
+             t, ty->kind == TY_F16 ? "half" : "float", v.buf);
         if (llt_out) *llt_out = "double";
         return val_tmp(t);
     }
@@ -589,10 +602,20 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
             return v;
         }
         case EXPR_FLOAT: {
-            /* LLVM IR requires IEEE 754 hex: 0x followed by 16 uppercase hex digits */
+            /* LLVM IR requires IEEE 754 hex: 0x followed by 16 uppercase hex
+               digits.  A constant used at float type must be exactly
+               representable as float, so round f32-typed literals first;
+               half constants use the 0xH<4 digits> form. */
+            Val v;
+            if (e->ty && e->ty->kind == TY_F16) {
+                snprintf(v.buf, sizeof(v.buf), "0xH%04X",
+                         (unsigned)double_to_half_bits(e->fval));
+                return v;
+            }
             union { double d; uint64_t u; } bits;
-            bits.d = e->fval;
-            Val v; snprintf(v.buf, sizeof(v.buf), "0x%016" PRIX64, bits.u);
+            bits.d = (e->ty && e->ty->kind == TY_F32)
+                     ? (double)(float)e->fval : e->fval;
+            snprintf(v.buf, sizeof(v.buf), "0x%016" PRIX64, bits.u);
             return v;
         }
         case EXPR_BOOL: {
@@ -1322,11 +1345,17 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                 Val b = cg_expr(cg, e->builtin.args.data[1], &tb);
                 const char *llt = ta ? llvm_type(ta) : "i32";
                 int cmp = new_tmp(cg);
-                const char *pred = (!strcmp(name,"min"))
-                    ? (type_is_signed(ta) ? "slt" : "ult")
-                    : (type_is_signed(ta) ? "sgt" : "ugt");
-                emit(cg, "  %%t%d = icmp %s %s %s, %s\n",
-                     cmp, pred, llt, a.buf, b.buf);
+                if (type_is_float(ta)) {
+                    const char *pred = (!strcmp(name,"min")) ? "olt" : "ogt";
+                    emit(cg, "  %%t%d = fcmp %s %s %s, %s\n",
+                         cmp, pred, llt, a.buf, b.buf);
+                } else {
+                    const char *pred = (!strcmp(name,"min"))
+                        ? (type_is_signed(ta) ? "slt" : "ult")
+                        : (type_is_signed(ta) ? "sgt" : "ugt");
+                    emit(cg, "  %%t%d = icmp %s %s %s, %s\n",
+                         cmp, pred, llt, a.buf, b.buf);
+                }
                 int sel = new_tmp(cg);
                 emit(cg, "  %%t%d = select i1 %%t%d, %s %s, %s %s\n",
                      sel, cmp, llt, a.buf, llt, b.buf);
@@ -1339,9 +1368,14 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                 Val a = cg_expr(cg, e->builtin.args.data[0], &ta);
                 const char *llt = ta ? llvm_type(ta) : "i32";
                 int neg = new_tmp(cg);
-                emit(cg, "  %%t%d = sub %s 0, %s\n", neg, llt, a.buf);
                 int cmp = new_tmp(cg);
-                emit(cg, "  %%t%d = icmp slt %s %s, 0\n", cmp, llt, a.buf);
+                if (type_is_float(ta)) {
+                    emit(cg, "  %%t%d = fneg %s %s\n", neg, llt, a.buf);
+                    emit(cg, "  %%t%d = fcmp olt %s %s, 0.0\n", cmp, llt, a.buf);
+                } else {
+                    emit(cg, "  %%t%d = sub %s 0, %s\n", neg, llt, a.buf);
+                    emit(cg, "  %%t%d = icmp slt %s %s, 0\n", cmp, llt, a.buf);
+                }
                 int sel = new_tmp(cg);
                 emit(cg, "  %%t%d = select i1 %%t%d, %s %%t%d, %s %s\n",
                      sel, cmp, llt, neg, llt, a.buf);
@@ -1556,10 +1590,16 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                         const char *sl = max_ty ? llvm_type(max_ty) : "i64";
                         emit(cg, "  %%t%d = %s %s %s to %s\n", max_f, op, sl, maxv.buf, flt);
                     }
-                    /* normalize rand to [0.0, 1.0] */
+                    /* normalize rand to [0.0, 1.0] — RAND_MAX constant must be
+                       rounded to the target width (float constants in LLVM IR
+                       must be exactly representable) */
                     int rf = new_tmp(cg), rn = new_tmp(cg);
                     emit(cg, "  %%t%d = sitofp i32 %%t%d to %s\n", rf, rand_t, flt);
-                    emit(cg, "  %%t%d = fdiv %s %%t%d, 2.147483647e+09\n", rn, flt, rf);
+                    union { double d; uint64_t u; } rmax;
+                    rmax.d = (rng_ty->kind == TY_F32)
+                             ? (double)(float)2147483647.0 : 2147483647.0;
+                    emit(cg, "  %%t%d = fdiv %s %%t%d, 0x%016" PRIX64 "\n",
+                         rn, flt, rf, rmax.u);
                     /* range = max - min */
                     int rng_range = new_tmp(cg), scaled = new_tmp(cg);
                     emit(cg, "  %%t%d = fsub %s %%t%d, %%t%d\n", rng_range, flt, max_f, min_f);
@@ -1767,6 +1807,7 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                         case TY_I32: tname="i32"; break; case TY_I64: tname="i64"; break;
                         case TY_U8: tname="u8"; break; case TY_U16: tname="u16"; break;
                         case TY_U32: tname="u32"; break; case TY_U64: tname="u64"; break;
+                        case TY_F16: tname="f16"; break;
                         case TY_F32: tname="f32"; break; case TY_F64: tname="f64"; break;
                         case TY_BOOL: tname="bool"; break; case TY_CHAR: tname="char"; break;
                         case TY_STR: tname="str"; break; case TY_USIZE: tname="usize"; break;
@@ -1780,6 +1821,7 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                                     case TY_I32: inner="i32"; break; case TY_I64: inner="i64"; break;
                                     case TY_U8: inner="u8"; break; case TY_U16: inner="u16"; break;
                                     case TY_U32: inner="u32"; break; case TY_U64: inner="u64"; break;
+                                    case TY_F16: inner="f16"; break;
                                     case TY_F32: inner="f32"; break; case TY_F64: inner="f64"; break;
                                     case TY_BOOL: inner="bool"; break; case TY_USIZE: inner="usize"; break;
                                     case TY_STR: inner="str"; break; case TY_CHAR: inner="char"; break;
@@ -1804,6 +1846,7 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                                     case TY_I32: inner="i32"; break; case TY_I64: inner="i64"; break;
                                     case TY_U8: inner="u8"; break; case TY_U16: inner="u16"; break;
                                     case TY_U32: inner="u32"; break; case TY_U64: inner="u64"; break;
+                                    case TY_F16: inner="f16"; break;
                                     case TY_F32: inner="f32"; break; case TY_F64: inner="f64"; break;
                                     case TY_BOOL: inner="bool"; break; case TY_CHAR: inner="char"; break;
                                     case TY_STR: inner="str"; break; case TY_USIZE: inner="usize"; break;
@@ -2363,15 +2406,28 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                 else if (!strcmp(dst,"char"))  INT_CAST("i8",  8);
                 #undef INT_CAST
                 #undef FLOAT_TO_INT
-                else if (!strcmp(dst,"f32")) {
+                else if (!strcmp(dst,"f16")) {
+                    if (!strcmp(src_llt, "half")) { if (out_ty) *out_ty = e->ty; return src; }
                     if (type_is_float(src_ty))
-                        emit(cg, "  %%t%d = fptrunc %s %s to float\n", t, src_llt, src.buf);
+                        emit(cg, "  %%t%d = fptrunc %s %s to half\n", t, src_llt, src.buf);
+                    else if (type_is_signed(src_ty))
+                        emit(cg, "  %%t%d = sitofp %s %s to half\n", t, src_llt, src.buf);
+                    else
+                        emit(cg, "  %%t%d = uitofp %s %s to half\n", t, src_llt, src.buf);
+                }
+                else if (!strcmp(dst,"f32")) {
+                    if (!strcmp(src_llt, "float")) { if (out_ty) *out_ty = e->ty; return src; }
+                    if (type_is_float(src_ty))
+                        emit(cg, "  %%t%d = %s %s %s to float\n", t,
+                             !strcmp(src_llt,"half") ? "fpext" : "fptrunc",
+                             src_llt, src.buf);
                     else if (type_is_signed(src_ty))
                         emit(cg, "  %%t%d = sitofp %s %s to float\n", t, src_llt, src.buf);
                     else
                         emit(cg, "  %%t%d = uitofp %s %s to float\n", t, src_llt, src.buf);
                 }
                 else if (!strcmp(dst,"f64")) {
+                    if (!strcmp(src_llt, "double")) { if (out_ty) *out_ty = e->ty; return src; }
                     if (type_is_float(src_ty))
                         emit(cg, "  %%t%d = fpext %s %s to double\n", t, src_llt, src.buf);
                     else if (type_is_signed(src_ty))
@@ -2462,6 +2518,25 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                     }
                 }
             }
+            /* float width reconciliation: extend the narrower operand (fpext)
+               so both sides match — result takes the wider type */
+            if (lt && rt && type_is_float(lt) && type_is_float(rt)
+                    && lt->kind != rt->kind) {
+                int lw2 = lt->kind == TY_F16 ? 16 : lt->kind == TY_F32 ? 32 : 64;
+                int rw2 = rt->kind == TY_F16 ? 16 : rt->kind == TY_F32 ? 32 : 64;
+                int ext = new_tmp(cg);
+                if (lw2 < rw2) {
+                    emit(cg, "  %%t%d = fpext %s %s to %s\n",
+                         ext, llvm_type(lt), l.buf, llvm_type(rt));
+                    l = val_tmp(ext);
+                    op_ty = rt;
+                } else {
+                    emit(cg, "  %%t%d = fpext %s %s to %s\n",
+                         ext, llvm_type(rt), r.buf, llvm_type(lt));
+                    r = val_tmp(ext);
+                    op_ty = lt;
+                }
+            }
             /* update out_ty to the actual post-promotion type so callers (e.g. STMT_ASSIGN)
                can insert truncations when storing back to a narrower lhs variable */
             if (out_ty && op_ty && !(e->ty && e->ty->kind == TY_BOOL))
@@ -2473,16 +2548,31 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
             int is_flt = type_is_float(op_ty);
             int is_sgn = type_is_signed(op_ty);
 
-            /* string equality/inequality: strcmp(a_ptr, b_ptr) == 0 */
+            /* string equality/inequality: length-aware — lengths equal AND
+               memcmp(data, data, len) == 0 (slices aren't NUL-terminated) */
             int is_str_cmp = (e->binop.op == BINOP_EQ || e->binop.op == BINOP_NE)
                              && lt && lt->kind == TY_STR;
             if (is_str_cmp) {
-                int lp = new_tmp(cg), rp = new_tmp(cg), cmp = new_tmp(cg);
+                int lp = new_tmp(cg), rp = new_tmp(cg);
+                int ll = new_tmp(cg), rl = new_tmp(cg);
                 emit(cg, "  %%t%d = extractvalue { ptr, i64 } %s, 0\n", lp, l.buf);
                 emit(cg, "  %%t%d = extractvalue { ptr, i64 } %s, 0\n", rp, r.buf);
-                emit(cg, "  %%t%d = call i32 @strcmp(ptr %%t%d, ptr %%t%d)\n", cmp, lp, rp);
-                const char *icmp_op = (e->binop.op == BINOP_EQ) ? "eq" : "ne";
-                emit(cg, "  %%t%d = icmp %s i32 %%t%d, 0\n", t, icmp_op, cmp);
+                emit(cg, "  %%t%d = extractvalue { ptr, i64 } %s, 1\n", ll, l.buf);
+                emit(cg, "  %%t%d = extractvalue { ptr, i64 } %s, 1\n", rl, r.buf);
+                int len_eq = new_tmp(cg);
+                emit(cg, "  %%t%d = icmp eq i64 %%t%d, %%t%d\n", len_eq, ll, rl);
+                int mc = new_tmp(cg);
+                emit(cg, "  %%t%d = call i32 @memcmp(ptr %%t%d, ptr %%t%d, i64 %%t%d)\n",
+                     mc, lp, rp, ll);
+                int mc_eq = new_tmp(cg);
+                emit(cg, "  %%t%d = icmp eq i32 %%t%d, 0\n", mc_eq, mc);
+                int both = new_tmp(cg);
+                emit(cg, "  %%t%d = and i1 %%t%d, %%t%d\n", both, len_eq, mc_eq);
+                if (e->binop.op == BINOP_EQ) {
+                    t = both;
+                } else {
+                    emit(cg, "  %%t%d = xor i1 %%t%d, true\n", t, both);
+                }
                 if (out_ty) *out_ty = e->ty;
                 return val_tmp(t);
             }
@@ -3022,7 +3112,8 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                     elem_ty  = at->array.inner;
                     elem_llt = elem_ty ? llvm_type(elem_ty) : "i8";
                 }
-                if (at && at->kind == TY_SLICE) {
+                if (at && (at->kind == TY_SLICE || at->kind == TY_STR)) {
+                    /* fat-pointer subject: extract the data pointer first */
                     int dp = new_tmp(cg);
                     emit(cg, "  %%t%d = extractvalue { ptr, i64 } %s, 0\n", dp, arr.buf);
                     char buf[32]; snprintf(buf, sizeof(buf), "%%t%d", dp);
@@ -3852,17 +3943,18 @@ static void cg_stmt(CG *cg, Stmt *s) {
                     emit(cg, "  %%t%d = load %s, ptr %s\n", cur_t, llt, sym->llvm_name);
                     int res_t = new_tmp(cg);
                     int is_flt_v = sym->ty && type_is_float(sym->ty);
+                    int is_sgn_v = type_is_signed(sym->ty);
                     switch (s->assign.op) {
                         case ASSIGN_ADD: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res_t, is_flt_v?"fadd":"add",  llt, cur_t, rhs.buf); break;
                         case ASSIGN_SUB: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res_t, is_flt_v?"fsub":"sub",  llt, cur_t, rhs.buf); break;
                         case ASSIGN_MUL: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res_t, is_flt_v?"fmul":"mul",  llt, cur_t, rhs.buf); break;
-                        case ASSIGN_DIV: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res_t, is_flt_v?"fdiv":"sdiv", llt, cur_t, rhs.buf); break;
-                        case ASSIGN_MOD: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res_t, is_flt_v?"frem":"srem", llt, cur_t, rhs.buf); break;
+                        case ASSIGN_DIV: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res_t, is_flt_v?"fdiv":(is_sgn_v?"sdiv":"udiv"), llt, cur_t, rhs.buf); break;
+                        case ASSIGN_MOD: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res_t, is_flt_v?"frem":(is_sgn_v?"srem":"urem"), llt, cur_t, rhs.buf); break;
                         case ASSIGN_AMP: emit(cg, "  %%t%d = and  %s %%t%d, %s\n", res_t, llt, cur_t, rhs.buf); break;
                         case ASSIGN_PIPE:emit(cg, "  %%t%d = or   %s %%t%d, %s\n", res_t, llt, cur_t, rhs.buf); break;
                         case ASSIGN_XOR: emit(cg, "  %%t%d = xor  %s %%t%d, %s\n", res_t, llt, cur_t, rhs.buf); break;
                         case ASSIGN_SHL: emit(cg, "  %%t%d = shl  %s %%t%d, %s\n", res_t, llt, cur_t, rhs.buf); break;
-                        case ASSIGN_SHR: emit(cg, "  %%t%d = ashr %s %%t%d, %s\n", res_t, llt, cur_t, rhs.buf); break;
+                        case ASSIGN_SHR: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res_t, is_sgn_v?"ashr":"lshr", llt, cur_t, rhs.buf); break;
                         default:         emit(cg, "  %%t%d = add  %s %%t%d, 0\n",  res_t, llt, cur_t); break;
                     }
                     emit(cg, "  store %s %%t%d, ptr %s\n", llt, res_t, sym->llvm_name);
@@ -3912,17 +4004,18 @@ static void cg_stmt(CG *cg, Stmt *s) {
                             emit(cg, "  %%t%d = load %s, ptr %%t%d\n", cur, ellt, fp);
                             int res = new_tmp(cg);
                             int is_flt_t = ety && type_is_float(ety);
+                            int is_sgn_t = type_is_signed(ety);
                             switch (s->assign.op) {
                                 case ASSIGN_ADD: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res, is_flt_t?"fadd":"add",  ellt, cur, rhs.buf); break;
                                 case ASSIGN_SUB: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res, is_flt_t?"fsub":"sub",  ellt, cur, rhs.buf); break;
                                 case ASSIGN_MUL: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res, is_flt_t?"fmul":"mul",  ellt, cur, rhs.buf); break;
-                                case ASSIGN_DIV: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res, is_flt_t?"fdiv":"sdiv", ellt, cur, rhs.buf); break;
-                                case ASSIGN_MOD: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res, is_flt_t?"frem":"srem", ellt, cur, rhs.buf); break;
+                                case ASSIGN_DIV: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res, is_flt_t?"fdiv":(is_sgn_t?"sdiv":"udiv"), ellt, cur, rhs.buf); break;
+                                case ASSIGN_MOD: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res, is_flt_t?"frem":(is_sgn_t?"srem":"urem"), ellt, cur, rhs.buf); break;
                                 case ASSIGN_AMP: emit(cg, "  %%t%d = and  %s %%t%d, %s\n", res, ellt, cur, rhs.buf); break;
                                 case ASSIGN_PIPE:emit(cg, "  %%t%d = or   %s %%t%d, %s\n", res, ellt, cur, rhs.buf); break;
                                 case ASSIGN_XOR: emit(cg, "  %%t%d = xor  %s %%t%d, %s\n", res, ellt, cur, rhs.buf); break;
                                 case ASSIGN_SHL: emit(cg, "  %%t%d = shl  %s %%t%d, %s\n", res, ellt, cur, rhs.buf); break;
-                                case ASSIGN_SHR: emit(cg, "  %%t%d = ashr %s %%t%d, %s\n", res, ellt, cur, rhs.buf); break;
+                                case ASSIGN_SHR: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res, is_sgn_t?"ashr":"lshr", ellt, cur, rhs.buf); break;
                                 default:         emit(cg, "  %%t%d = add  %s %%t%d, 0\n",  res, ellt, cur); break;
                             }
                             emit(cg, "  store %s %%t%d, ptr %%t%d\n", ellt, res, fp);
@@ -3951,17 +4044,18 @@ static void cg_stmt(CG *cg, Stmt *s) {
                             emit(cg, "  %%t%d = load %s, ptr %%t%d\n", cur, llt, fp);
                             int res = new_tmp(cg);
                             int is_flt_f = (llt[0] == 'f' || !strcmp(llt, "double") || !strcmp(llt, "half"));
+                            int is_sgn_f = type_is_signed(fty);
                             switch (s->assign.op) {
                                 case ASSIGN_ADD: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res, is_flt_f?"fadd":"add", llt, cur, rhs.buf); break;
                                 case ASSIGN_SUB: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res, is_flt_f?"fsub":"sub", llt, cur, rhs.buf); break;
                                 case ASSIGN_MUL: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res, is_flt_f?"fmul":"mul", llt, cur, rhs.buf); break;
-                                case ASSIGN_DIV: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res, is_flt_f?"fdiv":"sdiv", llt, cur, rhs.buf); break;
-                                case ASSIGN_MOD: emit(cg, "  %%t%d = srem %s %%t%d, %s\n", res, llt, cur, rhs.buf); break;
+                                case ASSIGN_DIV: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res, is_flt_f?"fdiv":(is_sgn_f?"sdiv":"udiv"), llt, cur, rhs.buf); break;
+                                case ASSIGN_MOD: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res, is_flt_f?"frem":(is_sgn_f?"srem":"urem"), llt, cur, rhs.buf); break;
                                 case ASSIGN_AMP: emit(cg, "  %%t%d = and %s %%t%d, %s\n", res, llt, cur, rhs.buf); break;
                                 case ASSIGN_PIPE:emit(cg, "  %%t%d = or  %s %%t%d, %s\n", res, llt, cur, rhs.buf); break;
                                 case ASSIGN_XOR: emit(cg, "  %%t%d = xor %s %%t%d, %s\n", res, llt, cur, rhs.buf); break;
                                 case ASSIGN_SHL: emit(cg, "  %%t%d = shl %s %%t%d, %s\n", res, llt, cur, rhs.buf); break;
-                                case ASSIGN_SHR: emit(cg, "  %%t%d = ashr %s %%t%d, %s\n",res, llt, cur, rhs.buf); break;
+                                case ASSIGN_SHR: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res, is_sgn_f?"ashr":"lshr", llt, cur, rhs.buf); break;
                                 default:         emit(cg, "  %%t%d = add %s %%t%d, 0\n",  res, llt, cur); break;
                             }
                             emit(cg, "  store %s %%t%d, ptr %%t%d\n", llt, res, fp);
@@ -4037,17 +4131,18 @@ static void cg_stmt(CG *cg, Stmt *s) {
                     emit(cg, "  %%t%d = load %s, ptr %%t%d\n", cur, elem_llt, ep);
                     int res = new_tmp(cg);
                     int is_flt_e = elem_ty && type_is_float(elem_ty);
+                    int is_sgn_e = type_is_signed(elem_ty);
                     switch (s->assign.op) {
                         case ASSIGN_ADD: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res, is_flt_e?"fadd":"add",  elem_llt, cur, rhs.buf); break;
                         case ASSIGN_SUB: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res, is_flt_e?"fsub":"sub",  elem_llt, cur, rhs.buf); break;
                         case ASSIGN_MUL: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res, is_flt_e?"fmul":"mul",  elem_llt, cur, rhs.buf); break;
-                        case ASSIGN_DIV: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res, is_flt_e?"fdiv":"sdiv", elem_llt, cur, rhs.buf); break;
-                        case ASSIGN_MOD: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res, is_flt_e?"frem":"srem", elem_llt, cur, rhs.buf); break;
+                        case ASSIGN_DIV: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res, is_flt_e?"fdiv":(is_sgn_e?"sdiv":"udiv"), elem_llt, cur, rhs.buf); break;
+                        case ASSIGN_MOD: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res, is_flt_e?"frem":(is_sgn_e?"srem":"urem"), elem_llt, cur, rhs.buf); break;
                         case ASSIGN_AMP: emit(cg, "  %%t%d = and  %s %%t%d, %s\n", res, elem_llt, cur, rhs.buf); break;
                         case ASSIGN_PIPE:emit(cg, "  %%t%d = or   %s %%t%d, %s\n", res, elem_llt, cur, rhs.buf); break;
                         case ASSIGN_XOR: emit(cg, "  %%t%d = xor  %s %%t%d, %s\n", res, elem_llt, cur, rhs.buf); break;
                         case ASSIGN_SHL: emit(cg, "  %%t%d = shl  %s %%t%d, %s\n", res, elem_llt, cur, rhs.buf); break;
-                        case ASSIGN_SHR: emit(cg, "  %%t%d = ashr %s %%t%d, %s\n", res, elem_llt, cur, rhs.buf); break;
+                        case ASSIGN_SHR: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res, is_sgn_e?"ashr":"lshr", elem_llt, cur, rhs.buf); break;
                         default:         emit(cg, "  %%t%d = add  %s %%t%d, 0\n",  res, elem_llt, cur); break;
                     }
                     emit(cg, "  store %s %%t%d, ptr %%t%d\n", elem_llt, res, ep);
@@ -5095,6 +5190,7 @@ int codegen(Module *mod, FILE *out, int release) {
     emit(&cg, "declare i64 @strtol(ptr, ptr, i32)\n");
     emit(&cg, "declare double @strtod(ptr, ptr)\n");
     emit(&cg, "declare i32 @strcmp(ptr, ptr)\n");
+    emit(&cg, "declare i32 @memcmp(ptr, ptr, i64)\n");
     emit(&cg, "declare i64 @strlen(ptr)\n");
     emit(&cg, "declare i32 @rand()\n");
     emit(&cg, "declare void @srand(i32)\n");

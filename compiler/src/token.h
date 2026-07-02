@@ -71,6 +71,7 @@ typedef struct {
         const char *sval;   /* interned / arena string */
         uint8_t     cval;
     };
+    const char *suffix;     /* numeric literal type suffix ("u8", "f32", ...) or NULL */
 } Token;
 
 const char *tok_kind_str(TokenKind k);

@@ -151,9 +151,12 @@ static Token lex_number(Lexer *l, Pos start) {
 
     /* record end of numeric portion before consuming the type suffix */
     const char *num_end = l->cur;
-    /* optional type suffix — just consume, type inference handles it */
+    /* optional type suffix (u8, i64, f32, usize, ...) — captured for the parser */
+    const char *suffix = NULL;
     if (peek(l) == 'u' || peek(l) == 'i' || peek(l) == 'f') {
+        const char *sfx_beg = l->cur;
         while (isalnum((unsigned char)peek(l))) advance(l);
+        suffix = arena_strndup(l->arena, sfx_beg, (size_t)(l->cur - sfx_beg));
     }
 
     Span span = make_span(l, start);
@@ -168,10 +171,12 @@ static Token lex_number(Lexer *l, Pos start) {
     clean[ci] = '\0';
 
     if (is_float) {
-        return (Token){ .kind = TOK_FLOAT, .span = span, .fval = strtod(clean, NULL) };
+        return (Token){ .kind = TOK_FLOAT, .span = span,
+                        .fval = strtod(clean, NULL), .suffix = suffix };
     } else {
         return (Token){ .kind = TOK_INT, .span = span,
-                        .ival = (uint64_t)strtoull(clean, NULL, base) };
+                        .ival = (uint64_t)strtoull(clean, NULL, base),
+                        .suffix = suffix };
     }
 }
 

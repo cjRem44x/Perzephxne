@@ -1,0 +1,49 @@
+fn add2(a: i32, b: i32) -> i32 { ret a + b }
+
+fn main() -> i32 {
+    # unsigned semantics: division, modulo, comparison, shifts
+    a: u32 = 4000000000u32
+    @pf("{a / 3u32} {a % 3u32}\n")
+    if a > 3u32 { @pf("ucmp ok\n") }
+    c: u32 = 0x80000000u32
+    @pf("{c >> 4}\n")
+    c >>= 4
+    @pf("{c}\n")
+
+    # u8 wrap, u64 large values
+    w: u8 = 255
+    w += 1
+    @pf("{w}\n")
+    big: u64 = 18000000000000000000u64
+    @pf("{big / 2u64}\n")
+
+    # char comparison and arithmetic
+    ch: char = 'A'
+    if ch >= 'A' && ch <= 'Z' { @pf("char ok\n") }
+    @pf("{@char(@u8(ch) + 1)}\n")
+
+    # str: slice keeps str type, equality is length-aware
+    s: str = "hello world"
+    sub: str = s[0..5]
+    @pf("{sub}\n")
+    if sub == "hello" { @pf("streq ok\n") }
+    if sub != "hello world" { @pf("strne ok\n") }
+
+    # failable with non-i32 inner types
+    fv, fe: !f64 = @f64("2.5")
+    uv, ue: !u64 = @u64("123")
+    @pf("{fv} {fe} {uv} {ue}\n")
+
+    # smart pointer clone
+    p: ^i64 = @new(42)
+    q: ^i64 = @clone(p)
+    @pf("{p.^} {q.^}\n")
+    @release(p)
+    @release(q)
+
+    # fn pointer
+    op: fn(i32, i32) -> i32 = add2
+    @pf("{op(3, 4)}\n")
+
+    ret 0
+}

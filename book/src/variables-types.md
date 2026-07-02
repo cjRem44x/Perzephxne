@@ -183,22 +183,6 @@ struct Labeled { pos: (f64, f64), name: str }
 
 A tuple-returning call can also be destructured directly into two variables — see [Multiple Return Values](./functions.md#multiple-return-values).
 
-## `any`
-
-`any` holds a value of any type alongside a runtime type tag. Use `when` to inspect:
-
-```
-x: any = 42
-x = "hello"
-
-when x {
-    i32 n  => @pf("int: {n}\n"),
-    str s  => @pf("str: {s}\n"),
-    bool b => @pf("bool: {b}\n"),
-    _      => @pf("unknown\n"),
-}
-```
-
 ## Value Semantics
 
 Structs and arrays are **copied by value** on assignment and when passed to functions — the same as C.
