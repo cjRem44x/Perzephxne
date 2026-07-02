@@ -5194,6 +5194,8 @@ int codegen(Module *mod, FILE *out, int release) {
     emit(&cg, "declare i64 @strlen(ptr)\n");
     emit(&cg, "declare i32 @rand()\n");
     emit(&cg, "declare void @srand(i32)\n");
+    emit(&cg, "declare i64 @time(ptr)\n");
+    emit(&cg, "declare i32 @getpid()\n");
     emit(&cg, "declare ptr @malloc(i64)\n");
     emit(&cg, "declare ptr @realloc(ptr, i64)\n");
     emit(&cg, "declare void @free(ptr)\n");
@@ -5425,26 +5427,36 @@ int codegen(Module *mod, FILE *out, int release) {
         }
     }
 
-    /* emit a real C main that stores argc/argv then calls __przp_main */
+    /* emit a real C main that stores argc/argv, auto-seeds the RNG, then
+       calls __przp_main. Seeding from time^pid means @rng varies per run;
+       an explicit @rng_seed(n) in user code runs later and overrides it. */
     if (has_main) {
+        const char *seed_rng =
+            "  %tsec = call i64 @time(ptr null)\n"
+            "  %pid  = call i32 @getpid()\n"
+            "  %tsec32 = trunc i64 %tsec to i32\n"
+            "  %seed = xor i32 %tsec32, %pid\n"
+            "  call void @srand(i32 %seed)\n";
         if (main_returns_i32) {
             emit(&cg,
                 "define i32 @main(i32 %%argc, ptr %%argv) {\n"
                 "entry:\n"
                 "  store i32 %%argc, ptr @__przp_argc\n"
                 "  store ptr %%argv, ptr @__przp_argv\n"
+                "%s"
                 "  %%r = call i32 @__przp_main()\n"
                 "  ret i32 %%r\n"
-                "}\n\n");
+                "}\n\n", seed_rng);
         } else {
             emit(&cg,
                 "define i32 @main(i32 %%argc, ptr %%argv) {\n"
                 "entry:\n"
                 "  store i32 %%argc, ptr @__przp_argc\n"
                 "  store ptr %%argv, ptr @__przp_argv\n"
+                "%s"
                 "  call void @__przp_main()\n"
                 "  ret i32 0\n"
-                "}\n\n");
+                "}\n\n", seed_rng);
         }
     }
 
