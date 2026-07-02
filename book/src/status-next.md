@@ -24,6 +24,8 @@ The core language surface is represented in the book and regression suite. The r
 | Build/runtime portability | Keep Linux x86-64 as the current target, then audit assumptions before broadening platform support. |
 | Package dependencies | `[deps]` is reserved. There is no external resolver yet; Core/Stdlib ships with the language. |
 | Release UX | A future version command should be `przp version`, but versioning is intentionally deferred while beta work is moving quickly. |
+| `any` type | Reserved keyword. Runtime-tagged values (boxing, type IDs, `when` dispatch on types) are designed but not implemented; removed from the reference until they exist. |
+| printf-style `%s` | `@pf("%s", s)` passes the fat pointer raw and crashes; use `{s}` interpolation. A fix should extract the data pointer (and handle non-NUL-terminated slices). |
 
 ## Documentation Rule
 

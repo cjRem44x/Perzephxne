@@ -2548,16 +2548,31 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
             int is_flt = type_is_float(op_ty);
             int is_sgn = type_is_signed(op_ty);
 
-            /* string equality/inequality: strcmp(a_ptr, b_ptr) == 0 */
+            /* string equality/inequality: length-aware — lengths equal AND
+               memcmp(data, data, len) == 0 (slices aren't NUL-terminated) */
             int is_str_cmp = (e->binop.op == BINOP_EQ || e->binop.op == BINOP_NE)
                              && lt && lt->kind == TY_STR;
             if (is_str_cmp) {
-                int lp = new_tmp(cg), rp = new_tmp(cg), cmp = new_tmp(cg);
+                int lp = new_tmp(cg), rp = new_tmp(cg);
+                int ll = new_tmp(cg), rl = new_tmp(cg);
                 emit(cg, "  %%t%d = extractvalue { ptr, i64 } %s, 0\n", lp, l.buf);
                 emit(cg, "  %%t%d = extractvalue { ptr, i64 } %s, 0\n", rp, r.buf);
-                emit(cg, "  %%t%d = call i32 @strcmp(ptr %%t%d, ptr %%t%d)\n", cmp, lp, rp);
-                const char *icmp_op = (e->binop.op == BINOP_EQ) ? "eq" : "ne";
-                emit(cg, "  %%t%d = icmp %s i32 %%t%d, 0\n", t, icmp_op, cmp);
+                emit(cg, "  %%t%d = extractvalue { ptr, i64 } %s, 1\n", ll, l.buf);
+                emit(cg, "  %%t%d = extractvalue { ptr, i64 } %s, 1\n", rl, r.buf);
+                int len_eq = new_tmp(cg);
+                emit(cg, "  %%t%d = icmp eq i64 %%t%d, %%t%d\n", len_eq, ll, rl);
+                int mc = new_tmp(cg);
+                emit(cg, "  %%t%d = call i32 @memcmp(ptr %%t%d, ptr %%t%d, i64 %%t%d)\n",
+                     mc, lp, rp, ll);
+                int mc_eq = new_tmp(cg);
+                emit(cg, "  %%t%d = icmp eq i32 %%t%d, 0\n", mc_eq, mc);
+                int both = new_tmp(cg);
+                emit(cg, "  %%t%d = and i1 %%t%d, %%t%d\n", both, len_eq, mc_eq);
+                if (e->binop.op == BINOP_EQ) {
+                    t = both;
+                } else {
+                    emit(cg, "  %%t%d = xor i1 %%t%d, true\n", t, both);
+                }
                 if (out_ty) *out_ty = e->ty;
                 return val_tmp(t);
             }
@@ -3097,7 +3112,8 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                     elem_ty  = at->array.inner;
                     elem_llt = elem_ty ? llvm_type(elem_ty) : "i8";
                 }
-                if (at && at->kind == TY_SLICE) {
+                if (at && (at->kind == TY_SLICE || at->kind == TY_STR)) {
+                    /* fat-pointer subject: extract the data pointer first */
                     int dp = new_tmp(cg);
                     emit(cg, "  %%t%d = extractvalue { ptr, i64 } %s, 0\n", dp, arr.buf);
                     char buf[32]; snprintf(buf, sizeof(buf), "%%t%d", dp);
@@ -3927,17 +3943,18 @@ static void cg_stmt(CG *cg, Stmt *s) {
                     emit(cg, "  %%t%d = load %s, ptr %s\n", cur_t, llt, sym->llvm_name);
                     int res_t = new_tmp(cg);
                     int is_flt_v = sym->ty && type_is_float(sym->ty);
+                    int is_sgn_v = type_is_signed(sym->ty);
                     switch (s->assign.op) {
                         case ASSIGN_ADD: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res_t, is_flt_v?"fadd":"add",  llt, cur_t, rhs.buf); break;
                         case ASSIGN_SUB: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res_t, is_flt_v?"fsub":"sub",  llt, cur_t, rhs.buf); break;
                         case ASSIGN_MUL: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res_t, is_flt_v?"fmul":"mul",  llt, cur_t, rhs.buf); break;
-                        case ASSIGN_DIV: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res_t, is_flt_v?"fdiv":"sdiv", llt, cur_t, rhs.buf); break;
-                        case ASSIGN_MOD: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res_t, is_flt_v?"frem":"srem", llt, cur_t, rhs.buf); break;
+                        case ASSIGN_DIV: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res_t, is_flt_v?"fdiv":(is_sgn_v?"sdiv":"udiv"), llt, cur_t, rhs.buf); break;
+                        case ASSIGN_MOD: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res_t, is_flt_v?"frem":(is_sgn_v?"srem":"urem"), llt, cur_t, rhs.buf); break;
                         case ASSIGN_AMP: emit(cg, "  %%t%d = and  %s %%t%d, %s\n", res_t, llt, cur_t, rhs.buf); break;
                         case ASSIGN_PIPE:emit(cg, "  %%t%d = or   %s %%t%d, %s\n", res_t, llt, cur_t, rhs.buf); break;
                         case ASSIGN_XOR: emit(cg, "  %%t%d = xor  %s %%t%d, %s\n", res_t, llt, cur_t, rhs.buf); break;
                         case ASSIGN_SHL: emit(cg, "  %%t%d = shl  %s %%t%d, %s\n", res_t, llt, cur_t, rhs.buf); break;
-                        case ASSIGN_SHR: emit(cg, "  %%t%d = ashr %s %%t%d, %s\n", res_t, llt, cur_t, rhs.buf); break;
+                        case ASSIGN_SHR: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res_t, is_sgn_v?"ashr":"lshr", llt, cur_t, rhs.buf); break;
                         default:         emit(cg, "  %%t%d = add  %s %%t%d, 0\n",  res_t, llt, cur_t); break;
                     }
                     emit(cg, "  store %s %%t%d, ptr %s\n", llt, res_t, sym->llvm_name);
@@ -3987,17 +4004,18 @@ static void cg_stmt(CG *cg, Stmt *s) {
                             emit(cg, "  %%t%d = load %s, ptr %%t%d\n", cur, ellt, fp);
                             int res = new_tmp(cg);
                             int is_flt_t = ety && type_is_float(ety);
+                            int is_sgn_t = type_is_signed(ety);
                             switch (s->assign.op) {
                                 case ASSIGN_ADD: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res, is_flt_t?"fadd":"add",  ellt, cur, rhs.buf); break;
                                 case ASSIGN_SUB: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res, is_flt_t?"fsub":"sub",  ellt, cur, rhs.buf); break;
                                 case ASSIGN_MUL: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res, is_flt_t?"fmul":"mul",  ellt, cur, rhs.buf); break;
-                                case ASSIGN_DIV: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res, is_flt_t?"fdiv":"sdiv", ellt, cur, rhs.buf); break;
-                                case ASSIGN_MOD: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res, is_flt_t?"frem":"srem", ellt, cur, rhs.buf); break;
+                                case ASSIGN_DIV: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res, is_flt_t?"fdiv":(is_sgn_t?"sdiv":"udiv"), ellt, cur, rhs.buf); break;
+                                case ASSIGN_MOD: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res, is_flt_t?"frem":(is_sgn_t?"srem":"urem"), ellt, cur, rhs.buf); break;
                                 case ASSIGN_AMP: emit(cg, "  %%t%d = and  %s %%t%d, %s\n", res, ellt, cur, rhs.buf); break;
                                 case ASSIGN_PIPE:emit(cg, "  %%t%d = or   %s %%t%d, %s\n", res, ellt, cur, rhs.buf); break;
                                 case ASSIGN_XOR: emit(cg, "  %%t%d = xor  %s %%t%d, %s\n", res, ellt, cur, rhs.buf); break;
                                 case ASSIGN_SHL: emit(cg, "  %%t%d = shl  %s %%t%d, %s\n", res, ellt, cur, rhs.buf); break;
-                                case ASSIGN_SHR: emit(cg, "  %%t%d = ashr %s %%t%d, %s\n", res, ellt, cur, rhs.buf); break;
+                                case ASSIGN_SHR: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res, is_sgn_t?"ashr":"lshr", ellt, cur, rhs.buf); break;
                                 default:         emit(cg, "  %%t%d = add  %s %%t%d, 0\n",  res, ellt, cur); break;
                             }
                             emit(cg, "  store %s %%t%d, ptr %%t%d\n", ellt, res, fp);
@@ -4026,17 +4044,18 @@ static void cg_stmt(CG *cg, Stmt *s) {
                             emit(cg, "  %%t%d = load %s, ptr %%t%d\n", cur, llt, fp);
                             int res = new_tmp(cg);
                             int is_flt_f = (llt[0] == 'f' || !strcmp(llt, "double") || !strcmp(llt, "half"));
+                            int is_sgn_f = type_is_signed(fty);
                             switch (s->assign.op) {
                                 case ASSIGN_ADD: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res, is_flt_f?"fadd":"add", llt, cur, rhs.buf); break;
                                 case ASSIGN_SUB: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res, is_flt_f?"fsub":"sub", llt, cur, rhs.buf); break;
                                 case ASSIGN_MUL: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res, is_flt_f?"fmul":"mul", llt, cur, rhs.buf); break;
-                                case ASSIGN_DIV: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res, is_flt_f?"fdiv":"sdiv", llt, cur, rhs.buf); break;
-                                case ASSIGN_MOD: emit(cg, "  %%t%d = srem %s %%t%d, %s\n", res, llt, cur, rhs.buf); break;
+                                case ASSIGN_DIV: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res, is_flt_f?"fdiv":(is_sgn_f?"sdiv":"udiv"), llt, cur, rhs.buf); break;
+                                case ASSIGN_MOD: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res, is_flt_f?"frem":(is_sgn_f?"srem":"urem"), llt, cur, rhs.buf); break;
                                 case ASSIGN_AMP: emit(cg, "  %%t%d = and %s %%t%d, %s\n", res, llt, cur, rhs.buf); break;
                                 case ASSIGN_PIPE:emit(cg, "  %%t%d = or  %s %%t%d, %s\n", res, llt, cur, rhs.buf); break;
                                 case ASSIGN_XOR: emit(cg, "  %%t%d = xor %s %%t%d, %s\n", res, llt, cur, rhs.buf); break;
                                 case ASSIGN_SHL: emit(cg, "  %%t%d = shl %s %%t%d, %s\n", res, llt, cur, rhs.buf); break;
-                                case ASSIGN_SHR: emit(cg, "  %%t%d = ashr %s %%t%d, %s\n",res, llt, cur, rhs.buf); break;
+                                case ASSIGN_SHR: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res, is_sgn_f?"ashr":"lshr", llt, cur, rhs.buf); break;
                                 default:         emit(cg, "  %%t%d = add %s %%t%d, 0\n",  res, llt, cur); break;
                             }
                             emit(cg, "  store %s %%t%d, ptr %%t%d\n", llt, res, fp);
@@ -4112,17 +4131,18 @@ static void cg_stmt(CG *cg, Stmt *s) {
                     emit(cg, "  %%t%d = load %s, ptr %%t%d\n", cur, elem_llt, ep);
                     int res = new_tmp(cg);
                     int is_flt_e = elem_ty && type_is_float(elem_ty);
+                    int is_sgn_e = type_is_signed(elem_ty);
                     switch (s->assign.op) {
                         case ASSIGN_ADD: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res, is_flt_e?"fadd":"add",  elem_llt, cur, rhs.buf); break;
                         case ASSIGN_SUB: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res, is_flt_e?"fsub":"sub",  elem_llt, cur, rhs.buf); break;
                         case ASSIGN_MUL: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res, is_flt_e?"fmul":"mul",  elem_llt, cur, rhs.buf); break;
-                        case ASSIGN_DIV: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res, is_flt_e?"fdiv":"sdiv", elem_llt, cur, rhs.buf); break;
-                        case ASSIGN_MOD: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res, is_flt_e?"frem":"srem", elem_llt, cur, rhs.buf); break;
+                        case ASSIGN_DIV: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res, is_flt_e?"fdiv":(is_sgn_e?"sdiv":"udiv"), elem_llt, cur, rhs.buf); break;
+                        case ASSIGN_MOD: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res, is_flt_e?"frem":(is_sgn_e?"srem":"urem"), elem_llt, cur, rhs.buf); break;
                         case ASSIGN_AMP: emit(cg, "  %%t%d = and  %s %%t%d, %s\n", res, elem_llt, cur, rhs.buf); break;
                         case ASSIGN_PIPE:emit(cg, "  %%t%d = or   %s %%t%d, %s\n", res, elem_llt, cur, rhs.buf); break;
                         case ASSIGN_XOR: emit(cg, "  %%t%d = xor  %s %%t%d, %s\n", res, elem_llt, cur, rhs.buf); break;
                         case ASSIGN_SHL: emit(cg, "  %%t%d = shl  %s %%t%d, %s\n", res, elem_llt, cur, rhs.buf); break;
-                        case ASSIGN_SHR: emit(cg, "  %%t%d = ashr %s %%t%d, %s\n", res, elem_llt, cur, rhs.buf); break;
+                        case ASSIGN_SHR: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res, is_sgn_e?"ashr":"lshr", elem_llt, cur, rhs.buf); break;
                         default:         emit(cg, "  %%t%d = add  %s %%t%d, 0\n",  res, elem_llt, cur); break;
                     }
                     emit(cg, "  store %s %%t%d, ptr %%t%d\n", elem_llt, res, ep);
@@ -5170,6 +5190,7 @@ int codegen(Module *mod, FILE *out, int release) {
     emit(&cg, "declare i64 @strtol(ptr, ptr, i32)\n");
     emit(&cg, "declare double @strtod(ptr, ptr)\n");
     emit(&cg, "declare i32 @strcmp(ptr, ptr)\n");
+    emit(&cg, "declare i32 @memcmp(ptr, ptr, i64)\n");
     emit(&cg, "declare i64 @strlen(ptr)\n");
     emit(&cg, "declare i32 @rand()\n");
     emit(&cg, "declare void @srand(i32)\n");

@@ -797,13 +797,16 @@ static Type *check_expr(Sema *s, Expr *e) {
                 sema_error(s, e->span, "array index must be integer, got '%s'", ty_str(idx_ty));
             if (arr_ty) {
                 if (is_range_idx) {
-                    /* arr[lo..hi] → slice of element type */
-                    Type *elem = NULL;
-                    if (arr_ty->kind == TY_ARRAY || arr_ty->kind == TY_SLICE)
-                        elem = arr_ty->array.inner;
-                    else if (arr_ty->kind == TY_STR)
-                        elem = s->ty_char;
-                    e->ty = elem ? make_ptr(s, TY_SLICE, elem) : NULL;
+                    /* arr[lo..hi] → slice of element type; str[lo..hi] → str
+                       (identical { ptr, i64 } layout, keeps string ops usable) */
+                    if (arr_ty->kind == TY_STR) {
+                        e->ty = s->ty_str;
+                    } else {
+                        Type *elem = NULL;
+                        if (arr_ty->kind == TY_ARRAY || arr_ty->kind == TY_SLICE)
+                            elem = arr_ty->array.inner;
+                        e->ty = elem ? make_ptr(s, TY_SLICE, elem) : NULL;
+                    }
                 } else if (arr_ty->kind == TY_ARRAY || arr_ty->kind == TY_SLICE)
                     e->ty = arr_ty->array.inner;
                 else if (arr_ty->kind == TY_STR)

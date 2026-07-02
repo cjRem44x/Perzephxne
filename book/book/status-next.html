@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-6b198641.js";
+            window.path_to_searchindex_js = "searchindex-630bb592.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-b900b046.js"></script>
@@ -203,6 +203,8 @@
 <tr><td>Build/runtime portability</td><td>Keep Linux x86-64 as the current target, then audit assumptions before broadening platform support.</td></tr>
 <tr><td>Package dependencies</td><td><code>[deps]</code> is reserved. There is no external resolver yet; Core/Stdlib ships with the language.</td></tr>
 <tr><td>Release UX</td><td>A future version command should be <code>przp version</code>, but versioning is intentionally deferred while beta work is moving quickly.</td></tr>
+<tr><td><code>any</code> type</td><td>Reserved keyword. Runtime-tagged values (boxing, type IDs, <code>when</code> dispatch on types) are designed but not implemented; removed from the reference until they exist.</td></tr>
+<tr><td>printf-style <code>%s</code></td><td><code>@pf("%s", s)</code> passes the fat pointer raw and crashes; use <code>{s}</code> interpolation. A fix should extract the data pointer (and handle non-NUL-terminated slices).</td></tr>
 </tbody>
 </table>
 </div>
