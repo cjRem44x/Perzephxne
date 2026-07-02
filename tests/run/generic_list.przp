@@ -1,0 +1,47 @@
+struct Node<T> {
+    value: T,
+    next:  *Node<T>,
+}
+
+struct List<T> {
+    head: *Node<T>,
+    len:  usize,
+}
+
+impl List<T> {
+    fn new() -> List<T> {
+        ret List<T>{.head = null, .len = 0}
+    }
+
+    fn push(self: *List<T>, v: T) {
+        n: *Node<T> = @alo(Node<T>)
+        n.value = v
+        n.next  = self.head
+        self.head = n
+        self.len += 1
+    }
+
+    fn sum(self: *List<T>) -> T {
+        total: T = self.head.value
+        cur: *Node<T> = self.head.next
+        while cur != null {
+            total = total + cur.value
+            cur = cur.next
+        }
+        ret total
+    }
+}
+
+fn main() -> i32 {
+    l: List<i32> = List<i32>.new()
+    l.push(10)
+    l.push(20)
+    l.push(30)
+    @pf("len={l.len} sum={l.sum()}\n")
+
+    f: List<f64> = List<f64>.new()
+    f.push(1.5)
+    f.push(2.5)
+    @pf("flen={f.len} fsum={f.sum()}\n")
+    ret 0
+}
