@@ -2518,6 +2518,25 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                     }
                 }
             }
+            /* float width reconciliation: extend the narrower operand (fpext)
+               so both sides match — result takes the wider type */
+            if (lt && rt && type_is_float(lt) && type_is_float(rt)
+                    && lt->kind != rt->kind) {
+                int lw2 = lt->kind == TY_F16 ? 16 : lt->kind == TY_F32 ? 32 : 64;
+                int rw2 = rt->kind == TY_F16 ? 16 : rt->kind == TY_F32 ? 32 : 64;
+                int ext = new_tmp(cg);
+                if (lw2 < rw2) {
+                    emit(cg, "  %%t%d = fpext %s %s to %s\n",
+                         ext, llvm_type(lt), l.buf, llvm_type(rt));
+                    l = val_tmp(ext);
+                    op_ty = rt;
+                } else {
+                    emit(cg, "  %%t%d = fpext %s %s to %s\n",
+                         ext, llvm_type(rt), r.buf, llvm_type(lt));
+                    r = val_tmp(ext);
+                    op_ty = lt;
+                }
+            }
             /* update out_ty to the actual post-promotion type so callers (e.g. STMT_ASSIGN)
                can insert truncations when storing back to a narrower lhs variable */
             if (out_ty && op_ty && !(e->ty && e->ty->kind == TY_BOOL))

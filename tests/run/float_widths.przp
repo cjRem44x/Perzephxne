@@ -65,5 +65,11 @@ fn main() -> i32 {
     ng: f32 = -ab
     @pf("{ng}\n")
 
+    # mixed-width float variables promote to the wider type
+    ma: f32 = 2.0
+    mb: f64 = 3.0
+    mc := ma * mb
+    @pf("{@typeof(mc)} {mc}\n")
+
     ret 0
 }

@@ -647,7 +647,18 @@ static Type *check_expr(Sema *s, Expr *e) {
                         case TY_I64: case TY_U64: case TY_USIZE: rw=64; break;
                         default: break;
                     }
-                    if (lw && rw) e->ty = (rw > lw) ? rt : lt;
+                    /* mixed float widths: result is the wider type */
+                    int lf = 0, rf = 0;
+                    if (lt) switch (lt->kind) {
+                        case TY_F16: lf=16; break; case TY_F32: lf=32; break;
+                        case TY_F64: lf=64; break; default: break;
+                    }
+                    if (rt) switch (rt->kind) {
+                        case TY_F16: rf=16; break; case TY_F32: rf=32; break;
+                        case TY_F64: rf=64; break; default: break;
+                    }
+                    if (lf && rf) e->ty = (rf > lf) ? rt : lt;
+                    else if (lw && rw) e->ty = (rw > lw) ? rt : lt;
                     else if (lt && ty_is_numeric(lt)) e->ty = lt;
                     else if (rt && ty_is_numeric(rt)) e->ty = rt;
                     else e->ty = s->ty_i32;
