@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-e996ee23.js";
+            window.path_to_searchindex_js = "searchindex-eda4c4a3.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-b900b046.js"></script>
@@ -656,6 +656,73 @@ first, second: i32 = pair&lt;i32, i32&gt;(10, 20)
 p: Pair&lt;i32, str&gt; = Pair&lt;i32, str&gt;{.first=1, .second="one"}
 @pf("{p.second}\n")
 </code></pre>
+<h2 id="impl-on-generic-structs"><a class="header" href="#impl-on-generic-structs"><code>impl</code> on Generic Structs</a></h2>
+<p><code>impl Name&lt;T&gt;</code> attaches methods to a generic struct. <code>T</code> is usable in every signature and body. Methods with no <code>self</code> are static and are called on the instantiated type:</p>
+<pre><code>struct Box&lt;T&gt; {
+    value: T,
+}
+
+impl Box&lt;T&gt; {
+    fn new(v: T) -&gt; Box&lt;T&gt; {           # static constructor
+        ret Box&lt;T&gt;{.value = v}
+    }
+
+    fn get(self: *Box&lt;T&gt;) -&gt; T {
+        ret self.value
+    }
+
+    fn set(self: *Box&lt;T&gt;, v: T) {
+        self.value = v
+    }
+}
+
+b: Box&lt;i32&gt; = Box&lt;i32&gt;.new(42)   # Type&lt;T&gt;.method() calls a static method
+@pf("{b.get()}\n")               # 42
+b.set(99)
+</code></pre>
+<h2 id="generic-data-structures"><a class="header" href="#generic-data-structures">Generic Data Structures</a></h2>
+<p>Generic structs can refer to themselves through pointers, which is all a linked data structure needs. <code>@alo(Node&lt;T&gt;)</code> heap-allocates a node of the concrete instantiation:</p>
+<pre><code>struct Node&lt;T&gt; {
+    value: T,
+    next:  *Node&lt;T&gt;,     # self-referential through a pointer
+}
+
+struct List&lt;T&gt; {
+    head: *Node&lt;T&gt;,
+    len:  usize,
+}
+
+impl List&lt;T&gt; {
+    fn new() -&gt; List&lt;T&gt; {
+        ret List&lt;T&gt;{.head = null, .len = 0}
+    }
+
+    fn push(self: *List&lt;T&gt;, v: T) {
+        n: *Node&lt;T&gt; = @alo(Node&lt;T&gt;)
+        n.value = v
+        n.next  = self.head
+        self.head = n
+        self.len += 1
+    }
+
+    fn sum(self: *List&lt;T&gt;) -&gt; T {
+        total: T = self.head.value
+        cur: *Node&lt;T&gt; = self.head.next
+        while cur != null {
+            total = total + cur.value
+            cur = cur.next
+        }
+        ret total
+    }
+}
+
+l: List&lt;i32&gt; = List&lt;i32&gt;.new()
+l.push(10)
+l.push(20)
+l.push(30)
+@pf("len={l.len} sum={l.sum()}\n")   # len=3 sum=60
+</code></pre>
+<p>The standard library’s <code>std/collections</code> dynamic array is built the same way.</p>
 <h2 id="monomorphization"><a class="header" href="#monomorphization">Monomorphization</a></h2>
 <p>Generics are compiled to concrete, specialized versions at the call site — the same approach as C++ templates, with no runtime overhead.</p>
 <div style="break-before: page; page-break-before: always;"></div>
