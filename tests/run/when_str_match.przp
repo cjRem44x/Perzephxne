@@ -1,0 +1,22 @@
+fn classify(s: str) -> str {
+    ret when s {
+        "a" => "got a",
+        "b" | "c" => "got b or c",
+        _ => "unknown",
+    }
+}
+
+fn main() {
+    @pf("{classify(\"a\")}\n")
+    @pf("{classify(\"c\")}\n")
+    @pf("{classify(\"z\")}\n")
+
+    when "a" {
+        "a" => @pf("stmt: a!\n"),
+        _ => @pf("stmt: invalid!\n"),
+    }
+    when "z" {
+        "a" => @pf("stmt: a!\n"),
+        _ => @pf("stmt: invalid!\n"),
+    }
+}

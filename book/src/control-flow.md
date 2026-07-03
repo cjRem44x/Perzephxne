@@ -125,12 +125,12 @@ when x {
 }
 ```
 
-Multi-value cases:
+Multi-value cases (`|` separates alternative patterns in one arm):
 
 ```
 when x {
-    1, 2, 3 => @pf("small\n"),
-    _        => @pf("large\n"),
+    1 | 2 | 3 => @pf("small\n"),
+    _         => @pf("large\n"),
 }
 ```
 
