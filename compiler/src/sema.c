@@ -214,7 +214,7 @@ static int ty_is_ptr(Type *t) {
     return t->kind == TY_PTR || t->kind == TY_SMART_PTR;
 }
 
-static const char *ty_str(Type *t) {
+const char *ty_str(Type *t) {
     if (!t) return "void";
     switch (t->kind) {
         case TY_VOID:      return "void";
@@ -998,6 +998,18 @@ static Type *check_expr(Sema *s, Expr *e) {
                                     "raw and smart pointers have different memory layouts "
                                     "and cannot be substituted for each other",
                                     e->field.field, tn, tn);
+                            } else if (self_ty && self_ty->kind == TY_SMART_PTR && recv_kind == TY_NAMED) {
+                                /* A plain value has no RC header at all, unlike the
+                                   memory a ^T points to. Unlike a raw-self method
+                                   (which can validly auto-address-of a plain value,
+                                   since *T needs no header), a ^T self param would
+                                   read/write 8 bytes past the value's storage. */
+                                sema_error(s, e->span,
+                                    "method '%s' expects a smart pointer receiver (^%s), "
+                                    "but was called on a plain value '%s' — a plain value "
+                                    "has no reference-count header; allocate it with @new "
+                                    "first or declare the method with 'self: %s' or 'self: *%s' instead",
+                                    e->field.field, tn, tn, tn, tn);
                             }
                         }
                         /* build reduced TY_FN: drop self param for instance calls */

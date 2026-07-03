@@ -1,4 +1,5 @@
 #include "codegen.h"
+#include "sema.h"
 #include "error.h"
 #include <string.h>
 #include <stdlib.h>
@@ -1990,91 +1991,11 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                     fatal_at(e->span, "@typeof requires one argument");
                 Type *ta = NULL;
                 cg_expr(cg, e->builtin.args.data[0], &ta); /* evaluate for side effects + type */
-                const char *tname = ta ? llvm_type(ta) : "unknown";
-                /* for named types, use the Perzephxne name */
-                if (ta && ta->kind == TY_NAMED) tname = ta->named.name;
-                else if (ta) {
-                    switch (ta->kind) {
-                        case TY_I8: tname="i8"; break; case TY_I16: tname="i16"; break;
-                        case TY_I32: tname="i32"; break; case TY_I64: tname="i64"; break;
-                        case TY_U8: tname="u8"; break; case TY_U16: tname="u16"; break;
-                        case TY_U32: tname="u32"; break; case TY_U64: tname="u64"; break;
-                        case TY_F16: tname="f16"; break;
-                        case TY_F32: tname="f32"; break; case TY_F64: tname="f64"; break;
-                        case TY_BOOL: tname="bool"; break; case TY_CHAR: tname="char"; break;
-                        case TY_STR: tname="str"; break; case TY_USIZE: tname="usize"; break;
-                        case TY_PTR: tname="ptr"; break;
-                        case TY_NAMED: tname=ta->named.name; break;
-                        case TY_SMART_PTR: {
-                            const char *inner = "?";
-                            if (ta->ptr.inner) {
-                                switch (ta->ptr.inner->kind) {
-                                    case TY_I8: inner="i8"; break; case TY_I16: inner="i16"; break;
-                                    case TY_I32: inner="i32"; break; case TY_I64: inner="i64"; break;
-                                    case TY_U8: inner="u8"; break; case TY_U16: inner="u16"; break;
-                                    case TY_U32: inner="u32"; break; case TY_U64: inner="u64"; break;
-                                    case TY_F16: inner="f16"; break;
-                                    case TY_F32: inner="f32"; break; case TY_F64: inner="f64"; break;
-                                    case TY_BOOL: inner="bool"; break; case TY_USIZE: inner="usize"; break;
-                                    case TY_STR: inner="str"; break; case TY_CHAR: inner="char"; break;
-                                    case TY_NAMED: inner=ta->ptr.inner->named.name; break;
-                                    default: inner="?"; break;
-                                }
-                            }
-                            char *sbuf = arena_alloc(cg->arena, strlen(inner) + 2);
-                            sbuf[0] = '^'; strcpy(sbuf + 1, inner);
-                            tname = sbuf;
-                            break;
-                        }
-                        case TY_ARRAY: {
-                            /* "[N]T" */
-                            int64_t n = 0;
-                            if (ta->array.size && ta->array.size->kind == EXPR_INT)
-                                n = (int64_t)ta->array.size->ival;
-                            const char *inner = ta->array.inner ? "?" : "?";
-                            if (ta->array.inner) {
-                                switch (ta->array.inner->kind) {
-                                    case TY_I8: inner="i8"; break; case TY_I16: inner="i16"; break;
-                                    case TY_I32: inner="i32"; break; case TY_I64: inner="i64"; break;
-                                    case TY_U8: inner="u8"; break; case TY_U16: inner="u16"; break;
-                                    case TY_U32: inner="u32"; break; case TY_U64: inner="u64"; break;
-                                    case TY_F16: inner="f16"; break;
-                                    case TY_F32: inner="f32"; break; case TY_F64: inner="f64"; break;
-                                    case TY_BOOL: inner="bool"; break; case TY_CHAR: inner="char"; break;
-                                    case TY_STR: inner="str"; break; case TY_USIZE: inner="usize"; break;
-                                    case TY_NAMED: inner=ta->array.inner->named.name; break;
-                                    default: inner="?"; break;
-                                }
-                            }
-                            char *abuf = arena_alloc(cg->arena, 32 + strlen(inner));
-                            snprintf(abuf, 32 + strlen(inner), "[%lld]%s", (long long)n, inner);
-                            tname = abuf;
-                            break;
-                        }
-                        case TY_SLICE: {
-                            /* "[]T" */
-                            const char *inner2 = ta->ptr.inner ? "?" : "?";
-                            if (ta->ptr.inner) {
-                                switch (ta->ptr.inner->kind) {
-                                    case TY_I8: inner2="i8"; break; case TY_I16: inner2="i16"; break;
-                                    case TY_I32: inner2="i32"; break; case TY_I64: inner2="i64"; break;
-                                    case TY_U8: inner2="u8"; break; case TY_U16: inner2="u16"; break;
-                                    case TY_U32: inner2="u32"; break; case TY_U64: inner2="u64"; break;
-                                    case TY_F32: inner2="f32"; break; case TY_F64: inner2="f64"; break;
-                                    case TY_BOOL: inner2="bool"; break; case TY_CHAR: inner2="char"; break;
-                                    case TY_STR: inner2="str"; break; case TY_USIZE: inner2="usize"; break;
-                                    case TY_NAMED: inner2=ta->ptr.inner->named.name; break;
-                                    default: inner2="?"; break;
-                                }
-                            }
-                            char *sbuf2 = arena_alloc(cg->arena, 4 + strlen(inner2));
-                            snprintf(sbuf2, 4 + strlen(inner2), "[]%s", inner2);
-                            tname = sbuf2;
-                            break;
-                        }
-                        default: tname="unknown"; break;
-                    }
-                }
+                /* ty_str (sema.c) recursively renders composite types
+                   (^vec2, []i32, [3]f64, !f64, (i32, str)) — reuse it instead
+                   of a second, independently-maintained type-name renderer
+                   that only ever covered a subset of kinds. */
+                const char *tname = ta ? ty_str(ta) : "unknown";
                 int sid = intern_str(cg, arena_strdup(cg->arena, tname));
                 size_t slen = strlen(tname);
                 int ft = new_tmp(cg);

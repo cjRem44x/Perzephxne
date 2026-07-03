@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-e97ede83.js";
+            window.path_to_searchindex_js = "searchindex-20c8b61d.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-e488213a.js"></script>
@@ -263,6 +263,15 @@ increment(counter)
 q: ^vec2 = @new(vec2)
 q.print()   # ERROR: method 'print' expects a raw pointer receiver (*vec2),
             #        but was called through a smart pointer (^vec2)
+</code></pre>
+<p>A plain value (not a pointer at all) has no RC header either, so it can’t be passed to a <code>^T</code>-self method — unlike a <code>*T</code>-self method, which can validly take the plain value’s address on the fly:</p>
+<pre><code>impl vec2 {
+    fn print(self: ^vec2) { ... }
+}
+
+v := vec2.new(4, 12)
+v.print()   # ERROR: method 'print' expects a smart pointer receiver (^vec2),
+            #        but was called on a plain value 'vec2'
 </code></pre>
 <p>And the same distinction applies to the dereference operators themselves — <code>.^</code> requires a <code>^T</code> operand, <code>.*</code> requires a <code>*T</code> operand:</p>
 <pre><code>p: ^i32 = @new(i32)

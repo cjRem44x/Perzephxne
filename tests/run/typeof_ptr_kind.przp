@@ -1,0 +1,15 @@
+fn main() -> i32 {
+    x: *i32 = @alo(i32)
+    y := @alo(i32)
+    @pf("{@typeof(x)} {@typeof(y)}\n")
+
+    z: ^i32 = @new(i32)
+    w := @new(i32)
+    @pf("{@typeof(z)} {@typeof(w)}\n")
+
+    a :: @alo(i32)
+    b :: @new(i32)
+    @pf("{@typeof(a)} {@typeof(b)}\n")
+
+    ret 0
+}
