@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-20c8b61d.js";
+            window.path_to_searchindex_js = "searchindex-7d3054a3.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-e488213a.js"></script>
@@ -1445,6 +1445,14 @@ q.print()   # ERROR: method 'print' expects a raw pointer receiver (*vec2),
 v := vec2.new(4, 12)
 v.print()   # ERROR: method 'print' expects a smart pointer receiver (^vec2),
             #        but was called on a plain value 'vec2'
+</code></pre>
+<p>A <code>^T</code> receiver calling a by-value <code>self: T</code> method is fine, though — the compiler auto-derefs past the RC header and copies the value, the same way a <code>*T</code> receiver can call a by-value method:</p>
+<pre><code>impl vec2 {
+    fn print_val(self: vec2) { @pf("{self.x}, {self.y}\n") }
+}
+
+q: ^vec2 = @new(vec2.new(1, 2))
+q.print_val()   # OK — dereferences q, copies the struct into self
 </code></pre>
 <p>And the same distinction applies to the dereference operators themselves — <code>.^</code> requires a <code>^T</code> operand, <code>.*</code> requires a <code>*T</code> operand:</p>
 <pre><code>p: ^i32 = @new(i32)

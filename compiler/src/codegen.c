@@ -1224,8 +1224,15 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                 emit(cg, "  %%t%d = call ptr @malloc(i64 %%t%d)\n", blk, sz);
                 emit(cg, "  store i64 1, ptr %%t%d\n", blk);  /* RC = 1 */
                 emit(cg, "  %%t%d = getelementptr i8, ptr %%t%d, i64 8\n", dp, blk);
-                /* for struct inner types: val is a ptr to the struct — copy it */
-                if (vty && vty->kind == TY_NAMED && find_struct(cg, vty->named.name)) {
+                /* for struct inner types from EXPR_IDENT/EXPR_STRUCT_LIT/EXPR_SMARTDEREF,
+                   val is a ptr to the struct (see the "struct value = ptr convention"
+                   comment on EXPR_SMARTDEREF) — load it before storing. A call expression
+                   (e.g. @new(vec2.new(...))) already returns the struct by value, so it
+                   must be stored directly instead. */
+                int val_is_struct_ptr = vty && vty->kind == TY_NAMED && find_struct(cg, vty->named.name)
+                    && (arg0->kind == EXPR_IDENT || arg0->kind == EXPR_STRUCT_LIT
+                        || arg0->kind == EXPR_SMARTDEREF);
+                if (val_is_struct_ptr) {
                     int loaded = new_tmp(cg);
                     emit(cg, "  %%t%d = load %s, ptr %s\n", loaded, inner_llt, val.buf);
                     emit(cg, "  store %s %%t%d, ptr %%t%d\n", inner_llt, loaded, dp);
@@ -2849,6 +2856,16 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                         if (self_param_ty && self_param_ty->kind == TY_NAMED
                                 && find_struct(cg, self_param_ty->named.name)) {
                             self_llt = "ptr";
+                            if (obj_ty && obj_ty->kind == TY_SMART_PTR) {
+                                /* receiver is ^T but self is by-value T: skip the
+                                   8-byte refcount header before treating the
+                                   pointer as the struct's data, same offset
+                                   EXPR_SMARTDEREF applies for struct inner types. */
+                                int dp = new_tmp(cg);
+                                emit(cg, "  %%t%d = getelementptr i8, ptr %s, i64 8\n",
+                                     dp, self_val.buf);
+                                self_val = val_tmp(dp);
+                            }
                             /* self_val.buf is already the alloca ptr — pass as-is */
                         } else if (self_param_ty && self_param_ty->kind != TY_PTR
                                 && self_param_ty->kind != TY_SMART_PTR) {
@@ -3857,10 +3874,13 @@ static void cg_stmt(CG *cg, Stmt *s) {
                     /* is_struct: TY_NAMED that is NOT an enum */
                     int is_struct = init_ty && init_ty->kind == TY_NAMED
                                     && !find_enum(cg, init_ty->named.name);
-                    /* init_is_ptr: expressions that return a ptr to the struct (not the value) */
+                    /* init_is_ptr: expressions that return a ptr to the struct (not the value).
+                       EXPR_SMARTDEREF on a ^Struct also returns a ptr (past the RC header) —
+                       see the "struct value = ptr convention" comment in its EXPR_SMARTDEREF case. */
                     int init_is_ptr = is_struct &&
                                       (s->let.init->kind == EXPR_IDENT
-                                       || s->let.init->kind == EXPR_STRUCT_LIT);
+                                       || s->let.init->kind == EXPR_STRUCT_LIT
+                                       || s->let.init->kind == EXPR_SMARTDEREF);
                     /* ^T copy: auto-increment RC when source is an identifier */
                     int is_rc_copy = init_ty && init_ty->kind == TY_SMART_PTR
                                      && s->let.init->kind == EXPR_IDENT;
@@ -4308,6 +4328,18 @@ static void cg_stmt(CG *cg, Stmt *s) {
                 Type *vty = NULL;
                 Val rhs = cg_expr(cg, s->assign.val, &vty);
                 const char *llt = (vty ? vty : inner_ty) ? llvm_type(vty ? vty : inner_ty) : "i32";
+                /* struct rhs from EXPR_IDENT/EXPR_STRUCT_LIT/EXPR_SMARTDEREF comes back
+                   as a ptr to the struct (see the "struct value = ptr convention" comment
+                   in the EXPR_SMARTDEREF case above) — load it before storing the value. */
+                int rhs_is_ptr = vty && vty->kind == TY_NAMED && find_struct(cg, vty->named.name)
+                    && (s->assign.val->kind == EXPR_IDENT
+                        || s->assign.val->kind == EXPR_STRUCT_LIT
+                        || s->assign.val->kind == EXPR_SMARTDEREF);
+                if (rhs_is_ptr) {
+                    int loaded = new_tmp(cg);
+                    emit(cg, "  %%t%d = load %s, ptr %s\n", loaded, llt, rhs.buf);
+                    rhs = val_tmp(loaded);
+                }
                 emit(cg, "  store %s %s, ptr %%t%d\n", llt, rhs.buf, dp);
             } else {
                 /* generic lvalue — emit rhs at least */

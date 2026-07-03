@@ -1,0 +1,28 @@
+struct vec2 { x: i32, y: i32 }
+
+impl vec2 {
+    fn new(x: i32, y: i32) -> vec2 { ret vec2{.x=x, .y=y} }
+    fn print_val(self: vec2) { @pf("val: {self.x} {self.y}\n") }
+}
+
+fn main() -> i32 {
+    # ^T receiver calling a by-value (self: T) method
+    q: ^vec2 = @new(vec2)
+    q.^ = vec2.new(401, 456)
+    q.print_val()
+
+    # ^T receiver, by-value self method, straight from @new(call())
+    r: ^vec2 = @new(vec2.new(7, 8))
+    r.print_val()
+
+    # dereferencing a ^Struct into a plain local copy
+    w := r.^
+    @pf("copy: {w.x} {w.y}\n")
+
+    # assigning a plain struct value through .^
+    v := vec2.new(9, 10)
+    q.^ = v
+    q.print_val()
+
+    ret 0
+}
