@@ -4,9 +4,25 @@
 # hash_fnv1a   — fast non-crypto hash (better distribution)
 # xor_encrypt  — XOR stream cipher (in-place; call twice to decrypt)
 # sha256       — SHA-256 cryptographic hash (returns 32-byte digest)
+#
+# High-level helpers (choose an algorithm with the HashKind / CipherKind enums):
+#   hash_pk(kind, plain)           — hash a password/key → lowercase hex string
+#   auth_hash(kind, plain, hashed) — check plain against a stored digest
+#   enc_file(kind, path, key)      — encrypt a file in place
+#   dec_file(kind, path, key)      — decrypt a file in place (symmetric)
 
 extern fn malloc(n: usize) -> *u8
+extern fn free(p: *u8)
 extern fn memcpy(dst: *u8, src: *u8, n: usize) -> *u8
+
+# libc file I/O (declared here so the module stays dependency-free)
+extern fn fopen(path: *u8, mode: *u8) -> *u8
+extern fn fclose(f: *u8) -> i32
+extern fn fread(buf: *u8, size: usize, n: usize, f: *u8) -> usize
+extern fn fwrite(buf: *u8, size: usize, n: usize, f: *u8) -> usize
+extern fn fseek(f: *u8, off: i64, whence: i32) -> i32
+extern fn ftell(f: *u8) -> i64
+extern fn rewind(f: *u8)
 
 # ── Non-cryptographic hashes ──────────────────────────────────────────────────
 
@@ -260,4 +276,104 @@ fn sha256_hex(data: *u8, len: usize) -> str {
     term: *u8 = hex + 64
     term.* = 0u8
     ret @str_raw(hex, 64)
+}
+
+# ── High-level helpers ────────────────────────────────────────────────────────
+
+# Algorithm selectors. Only one option today; the enums leave room to grow
+# (e.g. HashKind.Blake3, CipherKind.ChaCha20) without changing call sites.
+enum HashKind {
+    Sha256,
+}
+
+enum CipherKind {
+    XorSha,   # SHA-256 keystream XOR (hash-based CTR-style stream cipher)
+}
+
+# hash_pk: hash a password or key, returning a lowercase hex digest string.
+fn hash_pk(kind: HashKind, plain: str) -> str {
+    ret when kind {
+        HashKind.Sha256 => sha256_hex(plain.data, plain.len),
+    }
+}
+
+# auth_hash: true when hashing `plain` with `kind` reproduces `hashed`.
+fn auth_hash(kind: HashKind, plain: str, hashed: str) -> bool {
+    computed: str = hash_pk(kind, plain)
+    ret computed == hashed
+}
+
+# keystream_block: write sha256(key || counter_be64) into dst[0..32).
+# Each 32-byte output block depends on both the key and the block index, so
+# unlike a repeating-key XOR the keystream never repeats within a file.
+fn keystream_block(key: str, counter: u64, dst: *u8) {
+    n: usize = key.len + 8
+    buf: *u8 = malloc(n)
+    memcpy(buf, key.data, key.len)
+    j: usize = 0
+    while j < 8 {
+        p: *u8 = buf + key.len + j
+        p.* = @u8(counter >> @u64((7 - j) * 8))
+        j = j + 1
+    }
+    digest: *u8 = sha256(buf, n)
+    memcpy(dst, digest, 32)
+    free(buf)
+    free(digest)
+}
+
+# crypt_buffer: XOR data in place with the SHA-256 keystream derived from key.
+# Symmetric: applying it twice with the same key restores the original bytes.
+fn crypt_buffer(data: *u8, len: usize, key: str) {
+    block: [32]u8 = undef
+    counter: u64 = 0
+    i: usize = 0
+    while i < len {
+        keystream_block(key, counter, &block[0])
+        j: usize = 0
+        while j < 32 && i + j < len {
+            p: *u8 = data + i + j
+            p.* = p.* ^ block[j]
+            j = j + 1
+        }
+        i = i + 32
+        counter = counter + 1
+    }
+}
+
+# crypt_file: read path, transform its bytes with `kind`, write them back.
+# Returns false if the file can't be opened for reading or writing.
+fn crypt_file(kind: CipherKind, path: str, key: str) -> bool {
+    fr: *u8 = fopen(path.data, "rb")
+    if fr == null { ret false }
+    fseek(fr, 0, 2)          # SEEK_END
+    sz: i64 = ftell(fr)
+    rewind(fr)
+    if sz < 0 { fclose(fr) ret false }
+    n: usize = @usize(sz)
+    buf: *u8 = malloc(n)
+    got: usize = fread(buf, 1, n, fr)
+    fclose(fr)
+
+    when kind {
+        CipherKind.XorSha => crypt_buffer(buf, got, key),
+    }
+
+    fw: *u8 = fopen(path.data, "wb")
+    if fw == null { free(buf) ret false }
+    fwrite(buf, 1, got, fw)
+    fclose(fw)
+    free(buf)
+    ret true
+}
+
+# enc_file: encrypt the file at `path` in place using `key`.
+fn enc_file(kind: CipherKind, path: str, key: str) -> bool {
+    ret crypt_file(kind, path, key)
+}
+
+# dec_file: decrypt the file at `path` in place using `key`.
+# The XorSha cipher is symmetric, so this is the same transform as enc_file.
+fn dec_file(kind: CipherKind, path: str, key: str) -> bool {
+    ret crypt_file(kind, path, key)
 }

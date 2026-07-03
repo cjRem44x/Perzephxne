@@ -1,0 +1,8 @@
+import(m = "helpers/import_enum_when")
+
+fn main() -> i32 {
+    @pf("{m.apply(m.Op.Add, 3, 4)}\n")
+    @pf("{m.apply(m.Op.Sub, 10, 4)}\n")
+    @pf("{m.apply(m.Op.Mul, 3, 4)}\n")
+    ret 0
+}
