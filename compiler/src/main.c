@@ -573,13 +573,19 @@ static int load_imports(Module *mod, const char *src_path, const char *src,
 
             /* resolve path: append .przp */
             char full[1024];
+            int full_n;
             if (imp_path[0] == '/') {
-                snprintf(full, sizeof(full), "%s.przp", imp_path);
+                full_n = snprintf(full, sizeof(full), "%s.przp", imp_path);
             } else if (!strncmp(imp_path, "std/", 4) && g_stdlib_root[0]) {
                 /* stdlib path: resolve against stdlib root */
-                snprintf(full, sizeof(full), "%s/%s.przp", g_stdlib_root, imp_path + 4);
+                full_n = snprintf(full, sizeof(full), "%s/%s.przp", g_stdlib_root, imp_path + 4);
             } else {
-                snprintf(full, sizeof(full), "%s/%s.przp", src_dir, imp_path);
+                full_n = snprintf(full, sizeof(full), "%s/%s.przp", src_dir, imp_path);
+            }
+            if (full_n < 0 || (size_t)full_n >= sizeof(full)) {
+                error_init(src_path, src);
+                error_at(item->span, "import path too long: '%s'", imp_path);
+                return 0;
             }
 
             /* cycle detection */
