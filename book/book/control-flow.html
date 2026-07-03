@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-7d3054a3.js";
+            window.path_to_searchindex_js = "searchindex-de2ee01d.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-e488213a.js"></script>
@@ -270,10 +270,10 @@ when x {
     _ =&gt; @pf("other\n"),
 }
 </code></pre>
-<p>Multi-value cases:</p>
+<p>Multi-value cases (<code>|</code> separates alternative patterns in one arm):</p>
 <pre><code>when x {
-    1, 2, 3 =&gt; @pf("small\n"),
-    _        =&gt; @pf("large\n"),
+    1 | 2 | 3 =&gt; @pf("small\n"),
+    _         =&gt; @pf("large\n"),
 }
 </code></pre>
 <p>Range cases:</p>

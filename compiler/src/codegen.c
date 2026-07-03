@@ -746,6 +746,28 @@ static Val array_to_slice(CG *cg, Val arr, Type *arr_ty) {
     return val_tmp(t1);
 }
 
+/* str equality: length-aware — lengths equal AND memcmp(data, data, len) == 0
+   (slices aren't NUL-terminated, so this can't be a plain icmp on the fat
+   pointer aggregate, which icmp doesn't accept anyway). Returns an i1 Val. */
+static Val emit_str_eq(CG *cg, Val l, Val r) {
+    int lp = new_tmp(cg), rp = new_tmp(cg);
+    int ll = new_tmp(cg), rl = new_tmp(cg);
+    emit(cg, "  %%t%d = extractvalue { ptr, i64 } %s, 0\n", lp, l.buf);
+    emit(cg, "  %%t%d = extractvalue { ptr, i64 } %s, 0\n", rp, r.buf);
+    emit(cg, "  %%t%d = extractvalue { ptr, i64 } %s, 1\n", ll, l.buf);
+    emit(cg, "  %%t%d = extractvalue { ptr, i64 } %s, 1\n", rl, r.buf);
+    int len_eq = new_tmp(cg);
+    emit(cg, "  %%t%d = icmp eq i64 %%t%d, %%t%d\n", len_eq, ll, rl);
+    int mc = new_tmp(cg);
+    emit(cg, "  %%t%d = call i32 @memcmp(ptr %%t%d, ptr %%t%d, i64 %%t%d)\n",
+         mc, lp, rp, ll);
+    int mc_eq = new_tmp(cg);
+    emit(cg, "  %%t%d = icmp eq i32 %%t%d, 0\n", mc_eq, mc);
+    int both = new_tmp(cg);
+    emit(cg, "  %%t%d = and i1 %%t%d, %%t%d\n", both, len_eq, mc_eq);
+    return val_tmp(both);
+}
+
 /* Increment RC given the smart ptr value buf (e.g. "%t5"). */
 static void emit_rc_inc(CG *cg, const char *smart_ptr_buf) {
     int rc  = new_tmp(cg);
@@ -2680,32 +2702,14 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
             int is_flt = type_is_float(op_ty);
             int is_sgn = type_is_signed(op_ty);
 
-            /* string equality/inequality: length-aware — lengths equal AND
-               memcmp(data, data, len) == 0 (slices aren't NUL-terminated) */
+            /* string equality/inequality: not a plain icmp — see emit_str_eq */
             int is_str_cmp = (e->binop.op == BINOP_EQ || e->binop.op == BINOP_NE)
                              && lt && lt->kind == TY_STR;
             if (is_str_cmp) {
-                int lp = new_tmp(cg), rp = new_tmp(cg);
-                int ll = new_tmp(cg), rl = new_tmp(cg);
-                emit(cg, "  %%t%d = extractvalue { ptr, i64 } %s, 0\n", lp, l.buf);
-                emit(cg, "  %%t%d = extractvalue { ptr, i64 } %s, 0\n", rp, r.buf);
-                emit(cg, "  %%t%d = extractvalue { ptr, i64 } %s, 1\n", ll, l.buf);
-                emit(cg, "  %%t%d = extractvalue { ptr, i64 } %s, 1\n", rl, r.buf);
-                int len_eq = new_tmp(cg);
-                emit(cg, "  %%t%d = icmp eq i64 %%t%d, %%t%d\n", len_eq, ll, rl);
-                int mc = new_tmp(cg);
-                emit(cg, "  %%t%d = call i32 @memcmp(ptr %%t%d, ptr %%t%d, i64 %%t%d)\n",
-                     mc, lp, rp, ll);
-                int mc_eq = new_tmp(cg);
-                emit(cg, "  %%t%d = icmp eq i32 %%t%d, 0\n", mc_eq, mc);
-                int both = new_tmp(cg);
-                emit(cg, "  %%t%d = and i1 %%t%d, %%t%d\n", both, len_eq, mc_eq);
-                if (e->binop.op == BINOP_EQ) {
-                    t = both;
-                } else {
-                    emit(cg, "  %%t%d = xor i1 %%t%d, true\n", t, both);
-                }
+                Val both = emit_str_eq(cg, l, r);
                 if (out_ty) *out_ty = e->ty;
+                if (e->binop.op == BINOP_EQ) return both;
+                emit(cg, "  %%t%d = xor i1 %s, true\n", t, both.buf);
                 return val_tmp(t);
             }
 
@@ -3534,8 +3538,13 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                             emit(cg, "  %%t%d = and i1 %%t%d, %%t%d\n", cmp, c_lo, c_hi);
                         } else {
                             Val pv = cg_expr(cg, pat, NULL);
-                            cmp = new_tmp(cg);
-                            emit(cg, "  %%t%d = icmp eq %s %s, %s\n", cmp, llt, val.buf, pv.buf);
+                            if (val_ty && val_ty->kind == TY_STR) {
+                                Val eq = emit_str_eq(cg, val, pv);
+                                cmp = atoi(eq.buf + 2);
+                            } else {
+                                cmp = new_tmp(cg);
+                                emit(cg, "  %%t%d = icmp eq %s %s, %s\n", cmp, llt, val.buf, pv.buf);
+                            }
                         }
                         if (cond_t < 0) { cond_t = cmp; } else {
                             int or_t = new_tmp(cg);
@@ -4856,8 +4865,13 @@ static void cg_stmt(CG *cg, Stmt *s) {
                             emit(cg, "  %%t%d = and i1 %%t%d, %%t%d\n", cmp, c_lo, c_hi);
                         } else {
                             Val pv = cg_expr(cg, pat, NULL);
-                            cmp = new_tmp(cg);
-                            emit(cg, "  %%t%d = icmp eq %s %s, %s\n", cmp, llt, val.buf, pv.buf);
+                            if (val_ty && val_ty->kind == TY_STR) {
+                                Val eq = emit_str_eq(cg, val, pv);
+                                cmp = atoi(eq.buf + 2);
+                            } else {
+                                cmp = new_tmp(cg);
+                                emit(cg, "  %%t%d = icmp eq %s %s, %s\n", cmp, llt, val.buf, pv.buf);
+                            }
                         }
                         if (cond_t < 0) {
                             cond_t = cmp;
