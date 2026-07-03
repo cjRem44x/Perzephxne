@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-0358f6c2.js";
+            window.path_to_searchindex_js = "searchindex-e97ede83.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-e488213a.js"></script>
@@ -1319,9 +1319,11 @@ p: *u8 = &amp;buf[0]
 </table>
 </div>
 <h2 id="pointer-casts"><a class="header" href="#pointer-casts">Pointer Casts</a></h2>
+<p>A raw pointer coerces to any other raw pointer type directly — no cast builtin needed (this is the same C-style unsafe pointer aliasing C itself allows):</p>
 <pre><code>p: *i32 = &amp;x
-pb: *u8 = @bitcast(*u8, p)   # reinterpret pointer type
+pb: *u8 = p   # reinterpret pointer type, plain assignment
 </code></pre>
+<p><code>@bitcast(T, val)</code> (see <a href="#builtins">Builtins</a>) is for reinterpreting the bits of a <em>value</em> type (e.g. <code>f32</code> ↔ <code>u32</code>) — its type argument only accepts a bare type name, not a pointer type expression like <code>*u8</code>.</p>
 <h2 id="size-and-align"><a class="header" href="#size-and-align"><code>@size</code> and <code>@align</code></a></h2>
 <pre><code>sz: usize  = @size(i32)    # 4
 al: usize  = @align(f64)   # 8
@@ -1364,7 +1366,7 @@ s: ^vec2 = @new(vec2{.x = 1.0, .y = 2.0})
 </code></pre>
 <p>Integer and float literals inside <code>@new</code> widen the same way <code>:=</code> does (<code>i64</code> / <code>f64</code>), so <code>@new(42)</code> returns <code>^i64</code>.</p>
 <h2 id="dereference"><a class="header" href="#dereference">Dereference</a></h2>
-<p>Use <code>.^</code> to read or write through the pointer:</p>
+<p>Use <code>.^</code> to read or write through the pointer — not <code>.*</code>, which is for raw <code>*T</code> pointers only. The two are not interchangeable: <code>.^</code> skips past the 8-byte reference-count header before touching the value, while <code>.*</code> doesn’t, so using the wrong one on the wrong pointer kind is a compile error rather than a silent wrong-offset read or write.</p>
 <pre><code>p: ^i64 = @new(10)
 p.^ = 20            # write through
 val: i64 = p.^      # read through
@@ -1389,11 +1391,13 @@ b: ^i64 = @clone(a)   # a and b share the allocation; RC = 2
 @pf("{@typeof(p)}\n")   # "^i32"
 </code></pre>
 <h2 id="field-access-on-struct"><a class="header" href="#field-access-on-struct">Field Access on <code>^Struct</code></a></h2>
-<p>For smart pointers to structs, use <code>.^.field</code> or dereference first:</p>
+<p><code>.field</code> and <code>-&gt;field</code> both auto-deref through a <code>^Struct</code>, same as they do for <code>*Struct</code> — no need to write <code>.^.field</code> unless you want the whole pointee value:</p>
 <pre><code>struct Point { x: i32, y: i32 }
 
 p: ^Point = @new(Point{.x=1, .y=2})
-x: i32 = p.^.x
+x: i32 = p.x        # auto-deref
+y: i32 = p-&gt;y        # identical
+z: i32 = p.^.x       # equivalent, more explicit
 </code></pre>
 <h2 id="mutating-through-a-pointer"><a class="header" href="#mutating-through-a-pointer">Mutating Through a Pointer</a></h2>
 <pre><code>fn increment(p: ^i64) {
@@ -1420,6 +1424,27 @@ increment(counter)
 </tbody>
 </table>
 </div>
+<p>Raw and smart pointers are <strong>not interchangeable</strong> — a <code>^T</code> allocation has an 8-byte reference-count header before the data that a <code>*T</code> allocation doesn’t, so mixing the two doesn’t just give a type error, it reads and writes at the wrong memory offset. The compiler catches both directions of this mistake:</p>
+<pre><code>p: ^vec2 = @alo(vec2)   # ERROR: cannot initialize '^vec2' with value of type '*vec2'
+                         # — @alo gives a raw *T with no RC header; use @new(vec2) for ^T
+</code></pre>
+<p>The same check applies to method calls: a method’s <code>self</code>/first-parameter kind (<code>T</code>, <code>*T</code>, or <code>^T</code>) must match how it’s actually called:</p>
+<pre><code>impl vec2 {
+    fn print(slf: *vec2) { ... }
+}
+
+q: ^vec2 = @new(vec2)
+q.print()   # ERROR: method 'print' expects a raw pointer receiver (*vec2),
+            #        but was called through a smart pointer (^vec2)
+</code></pre>
+<p>And the same distinction applies to the dereference operators themselves — <code>.^</code> requires a <code>^T</code> operand, <code>.*</code> requires a <code>*T</code> operand:</p>
+<pre><code>p: ^i32 = @new(i32)
+p.* = 5     # ERROR: cannot use '.*' on smart pointer '^i32' — use '.^' instead
+
+q: *i32 = @alo(i32)
+q.^ = 5     # ERROR: cannot use '.^' on raw pointer '*i32' — use '.*' instead
+</code></pre>
+<p>Match the allocator to the declared type (<code>@alo</code> with <code>*T</code>, <code>@new</code> with <code>^T</code>), match the dereference operator to the pointer kind (<code>.*</code> with <code>*T</code>, <code>.^</code> with <code>^T</code>), and match each method’s receiver parameter to how you intend to call it.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="error-handling"><a class="header" href="#error-handling">Error Handling</a></h1>
 <p>Errors in Perzephxne are values — not exceptions. There are no <code>try/catch</code> blocks.</p>
@@ -2364,6 +2389,7 @@ r: f64 = m.sqrt(2.0)
 <tr><td><code>any</code> type</td><td>Reserved keyword. Runtime-tagged values (boxing, type IDs, <code>when</code> dispatch on types) are designed but not implemented; removed from the reference until they exist.</td></tr>
 <tr><td>printf-style <code>%s</code></td><td><code>@pf("%s", s)</code> passes the fat pointer raw and crashes; use <code>{s}</code> interpolation. A fix should extract the data pointer (and handle non-NUL-terminated slices).</td></tr>
 <tr><td>Struct-by-value FFI, non-imported <code>extern fn</code></td><td><code>extern fn foo(v: Vector2) -&gt; Vector2</code> declared directly in a file (not reached via <code>import()</code>) fails to compile if it needs struct-by-value ABI handling — the wrapper mechanism needs an import alias to redirect call sites to (see <a href="#standard-library">Standard Library</a>). Move the declaration into its own module and <code>import()</code> it, which is fully supported.</td></tr>
+<tr><td><code>@bitcast</code> pointer type arguments</td><td><code>@bitcast(T, val)</code>’s type argument only accepts a bare type name (<code>u32</code>, <code>vec2</code>) — a compound type expression like <code>*u8</code> doesn’t parse. Not a practical limitation for pointer reinterpretation specifically, since a raw pointer already coerces to any other raw pointer type via plain assignment (see <a href="#pointers--memory">Pointers &amp; Memory</a>), but the parser gap is real for anyone trying to <code>@bitcast</code> to e.g. a slice or smart-pointer type.</td></tr>
 </tbody>
 </table>
 </div>

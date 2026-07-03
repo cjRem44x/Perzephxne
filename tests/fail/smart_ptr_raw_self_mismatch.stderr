@@ -1,0 +1,1 @@
+method 'print' expects a raw pointer receiver (*vec2), but was called through a smart pointer (^vec2)

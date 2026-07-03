@@ -234,12 +234,43 @@ static const char *ty_str(Type *t) {
         case TY_F16:       return "f16";
         case TY_F32:       return "f32";
         case TY_F64:       return "f64";
-        case TY_PTR:       return "*<T>";
-        case TY_SMART_PTR: return "^<T>";
-        case TY_SLICE:     return "[]<T>";
-        case TY_ARRAY:     return "[N]<T>";
-        case TY_FAILABLE:  return "!<T>";
-        case TY_TUPLE:     return "(<T,...>)";
+        case TY_PTR: case TY_SMART_PTR: case TY_SLICE: case TY_ARRAY:
+        case TY_FAILABLE: case TY_TUPLE: {
+            /* render the actual inner type recursively (e.g. "^vec2", "*i32",
+               "[3]f64") instead of a generic placeholder — makes type-mismatch
+               diagnostics actually name the type involved. Round-robin static
+               buffers, shared across these composite kinds; safe for the
+               handful of nested calls within a single error message. */
+            static char bufs[8][256];
+            static int bi = 0;
+            bi = (bi + 1) % 8;
+            char *buf = bufs[bi];
+            switch (t->kind) {
+                case TY_PTR:       snprintf(buf, 256, "*%s",  ty_str(t->ptr.inner)); break;
+                case TY_SMART_PTR: snprintf(buf, 256, "^%s",  ty_str(t->ptr.inner)); break;
+                case TY_SLICE:     snprintf(buf, 256, "[]%s", ty_str(t->ptr.inner)); break;
+                case TY_FAILABLE:  snprintf(buf, 256, "!%s",  ty_str(t->ptr.inner)); break;
+                case TY_ARRAY: {
+                    int64_t n = 0;
+                    if (t->array.size && t->array.size->kind == EXPR_INT)
+                        n = (int64_t)t->array.size->ival;
+                    snprintf(buf, 256, "[%lld]%s", (long long)n, ty_str(t->array.inner));
+                    break;
+                }
+                case TY_TUPLE: {
+                    int pos = snprintf(buf, 256, "(");
+                    for (size_t i = 0; i < t->tuple.elems.len; i++) {
+                        if (i) pos += snprintf(buf + pos, 256 - (size_t)pos, ", ");
+                        pos += snprintf(buf + pos, 256 - (size_t)pos, "%s",
+                                        ty_str(t->tuple.elems.data[i]));
+                    }
+                    snprintf(buf + pos, 256 - (size_t)pos, ")");
+                    break;
+                }
+                default: break;
+            }
+            return buf;
+        }
         case TY_NAMED:
         case TY_GENERIC:   return t->named.name;
         default:           return "?";
@@ -425,6 +456,22 @@ static Type *check_type(Sema *s, Type *ty) {
     return ty;
 }
 
+/* True if `a` is an EXPR_IDENT naming a type (primitive or user-defined
+   struct/enum/alias), as opposed to an identifier referring to a value —
+   used to tell `@alo(SomeType)` (typed allocation) apart from `@alo(some_var)`
+   (raw byte-count allocation, where some_var holds a size, not a type). */
+static int is_type_name_arg(Sema *s, Expr *a) {
+    if (!a || a->kind != EXPR_IDENT) return 0;
+    static const char *prims[] = {
+        "i8","i16","i32","i64","u8","u16","u32","u64",
+        "f16","f32","f64","usize","bool","char","str",NULL
+    };
+    for (int i = 0; prims[i]; i++)
+        if (!strcmp(a->ident.name, prims[i])) return 1;
+    Sym *sym = lookup(s, a->ident.name);
+    return sym && sym->is_type;
+}
+
 /* ── Built-in type of @builtin expressions ──────────────────────────────── */
 
 static Type *builtin_ret_ty(Sema *s, const char *name) {
@@ -537,6 +584,20 @@ static Type *check_expr(Sema *s, Expr *e) {
                 /* @new(val: T) → ^T; keep the literal's natural type (i32 for 42, etc.) */
                 Type *inner = e->builtin.args.data[0]->ty;
                 ret = make_ptr(s, TY_SMART_PTR, inner);
+            } else if (!strcmp(e->builtin.name, "alo") && e->builtin.args.len > 0
+                       && is_type_name_arg(s, e->builtin.args.data[0])) {
+                /* @alo(T): typed allocation — resolve to a concrete *T (instead
+                   of the generic untyped *T{inner=NULL} shared with `null`) so
+                   assigning the result to a ^T smart-pointer variable is a type
+                   error rather than a silent raw/smart aliasing bug: a *T
+                   buffer from @alo has no RC header, but ^T's codegen assumes
+                   one is there (offset +8 for the data), so mixing the two
+                   corrupts memory rather than failing loudly.
+                   @alo(N) with a plain byte-count argument (a numeric literal
+                   or a size variable) keeps the untyped *T return — that form
+                   is deliberately generic and coerces to whatever raw pointer
+                   type the caller declares. */
+                ret = make_ptr(s, TY_PTR, e->builtin.args.data[0]->ty);
             } else if (!strcmp(e->builtin.name, "clone") && e->builtin.args.len > 0) {
                 /* @clone(ptr: ^T) → ^T */
                 ret = e->builtin.args.data[0]->ty;
@@ -849,6 +910,10 @@ static Type *check_expr(Sema *s, Expr *e) {
             }
             Type *obj_ty = check_expr(s, e->field.obj);
             obj_ty = resolve_named(s, obj_ty);
+            /* remember the receiver's pointer kind before auto-deref below
+               erases it — needed to catch a raw/smart self-param mismatch
+               on the method call resolved further down */
+            TypeKind recv_kind = obj_ty ? obj_ty->kind : TY_VOID;
             /* auto-deref: *Struct.field and ^Struct.method transparently access the struct */
             if (obj_ty && (obj_ty->kind == TY_PTR || obj_ty->kind == TY_SMART_PTR)
                     && obj_ty->ptr.inner && obj_ty->ptr.inner->kind == TY_NAMED)
@@ -908,6 +973,33 @@ static Type *check_expr(Sema *s, Expr *e) {
                             Sym *obj_sym = lookup(s, e->field.obj->ident.name);
                             is_static = obj_sym && obj_sym->is_type;
                         }
+                        /* A raw pointer (*T, no RC header) and a smart pointer
+                           (^T, 8-byte RC header before the data) have different
+                           runtime layouts. The auto-deref above already erased
+                           which one the receiver was, so without this check a
+                           method declared `self: *T` silently accepts a `^T`
+                           receiver (and vice versa) — reading fields 8 bytes off
+                           from where they actually are instead of failing. */
+                        if (!is_static && np > 0) {
+                            Type *self_ty = full->fn.params.data[0];
+                            const char *tn = obj_ty->named.name;
+                            if (self_ty && self_ty->kind == TY_PTR && recv_kind == TY_SMART_PTR) {
+                                sema_error(s, e->span,
+                                    "method '%s' expects a raw pointer receiver (*%s), "
+                                    "but was called through a smart pointer (^%s) — "
+                                    "raw and smart pointers have different memory layouts; "
+                                    "dereference first (e.g. '(&obj.^).%s()') or declare "
+                                    "the method with 'self: ^%s' instead",
+                                    e->field.field, tn, tn, e->field.field, tn);
+                            } else if (self_ty && self_ty->kind == TY_SMART_PTR && recv_kind == TY_PTR) {
+                                sema_error(s, e->span,
+                                    "method '%s' expects a smart pointer receiver (^%s), "
+                                    "but was called through a raw pointer (*%s) — "
+                                    "raw and smart pointers have different memory layouts "
+                                    "and cannot be substituted for each other",
+                                    e->field.field, tn, tn);
+                            }
+                        }
                         /* build reduced TY_FN: drop self param for instance calls */
                         Type *reduced = make_ty(s, TY_FN);
                         reduced->fn.ret = full->fn.ret;
@@ -947,10 +1039,39 @@ static Type *check_expr(Sema *s, Expr *e) {
             break;
         }
 
-        case EXPR_DEREF:
-        case EXPR_SMARTDEREF: {
+        case EXPR_DEREF: {
+            /* '.*' is the raw-pointer deref. A ^T smart pointer has an 8-byte
+               RC header before its data that '.*' doesn't know to skip, so
+               allowing it here would silently read/write the refcount instead
+               of the value — require '.^' for smart pointers instead. */
             Type *pt = check_expr(s, e->deref.operand);
-            if (pt && (pt->kind == TY_PTR || pt->kind == TY_SMART_PTR)) {
+            if (pt && pt->kind == TY_PTR) {
+                e->ty = pt->ptr.inner;
+            } else if (pt && pt->kind == TY_SMART_PTR) {
+                sema_error(s, e->span,
+                    "cannot use '.*' on smart pointer '%s' — it has a reference-count "
+                    "header that '.*' doesn't account for; use '.^' instead",
+                    ty_str(pt));
+                e->ty = pt->ptr.inner;
+            } else if (pt) {
+                sema_error(s, e->span, "cannot dereference non-pointer type '%s'", ty_str(pt));
+                e->ty = NULL;
+            }
+            break;
+        }
+        case EXPR_SMARTDEREF: {
+            /* '.^' is the smart-pointer deref, offsetting past the RC header.
+               A raw *T allocation has no such header, so applying '.^' to one
+               reads/writes past the buffer instead of failing — require '.*'
+               for raw pointers instead. */
+            Type *pt = check_expr(s, e->deref.operand);
+            if (pt && pt->kind == TY_SMART_PTR) {
+                e->ty = pt->ptr.inner;
+            } else if (pt && pt->kind == TY_PTR) {
+                sema_error(s, e->span,
+                    "cannot use '.^' on raw pointer '%s' — it has no reference-count "
+                    "header; use '.*' instead",
+                    ty_str(pt));
                 e->ty = pt->ptr.inner;
             } else if (pt) {
                 sema_error(s, e->span, "cannot dereference non-pointer type '%s'", ty_str(pt));

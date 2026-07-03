@@ -1,0 +1,6 @@
+struct vec2 { x: i32, y: i32 }
+
+fn main() -> i32 {
+    v2: ^vec2 = @alo(vec2)
+    ret 0
+}

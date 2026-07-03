@@ -22,7 +22,7 @@ Integer and float literals inside `@new` widen the same way `:=` does (`i64` / `
 
 ## Dereference
 
-Use `.^` to read or write through the pointer:
+Use `.^` to read or write through the pointer — not `.*`, which is for raw `*T` pointers only. The two are not interchangeable: `.^` skips past the 8-byte reference-count header before touching the value, while `.*` doesn't, so using the wrong one on the wrong pointer kind is a compile error rather than a silent wrong-offset read or write.
 
 ```
 p: ^i64 = @new(10)
@@ -62,13 +62,15 @@ p: ^i32 = @new(i32)
 
 ## Field Access on `^Struct`
 
-For smart pointers to structs, use `.^.field` or dereference first:
+`.field` and `->field` both auto-deref through a `^Struct`, same as they do for `*Struct` — no need to write `.^.field` unless you want the whole pointee value:
 
 ```
 struct Point { x: i32, y: i32 }
 
 p: ^Point = @new(Point{.x=1, .y=2})
-x: i32 = p.^.x
+x: i32 = p.x        # auto-deref
+y: i32 = p->y        # identical
+z: i32 = p.^.x       # equivalent, more explicit
 ```
 
 ## Mutating Through a Pointer
@@ -93,3 +95,34 @@ increment(counter)
 | Null | `null` | never null after `@new` |
 | Sharing | unsafe aliasing | reference-counted |
 | Overhead | none | 8-byte RC header per allocation |
+
+Raw and smart pointers are **not interchangeable** — a `^T` allocation has an 8-byte reference-count header before the data that a `*T` allocation doesn't, so mixing the two doesn't just give a type error, it reads and writes at the wrong memory offset. The compiler catches both directions of this mistake:
+
+```
+p: ^vec2 = @alo(vec2)   # ERROR: cannot initialize '^vec2' with value of type '*vec2'
+                         # — @alo gives a raw *T with no RC header; use @new(vec2) for ^T
+```
+
+The same check applies to method calls: a method's `self`/first-parameter kind (`T`, `*T`, or `^T`) must match how it's actually called:
+
+```
+impl vec2 {
+    fn print(slf: *vec2) { ... }
+}
+
+q: ^vec2 = @new(vec2)
+q.print()   # ERROR: method 'print' expects a raw pointer receiver (*vec2),
+            #        but was called through a smart pointer (^vec2)
+```
+
+And the same distinction applies to the dereference operators themselves — `.^` requires a `^T` operand, `.*` requires a `*T` operand:
+
+```
+p: ^i32 = @new(i32)
+p.* = 5     # ERROR: cannot use '.*' on smart pointer '^i32' — use '.^' instead
+
+q: *i32 = @alo(i32)
+q.^ = 5     # ERROR: cannot use '.^' on raw pointer '*i32' — use '.*' instead
+```
+
+Match the allocator to the declared type (`@alo` with `*T`, `@new` with `^T`), match the dereference operator to the pointer kind (`.*` with `*T`, `.^` with `^T`), and match each method's receiver parameter to how you intend to call it.

@@ -27,6 +27,7 @@ The core language surface is represented in the book and regression suite. The r
 | `any` type | Reserved keyword. Runtime-tagged values (boxing, type IDs, `when` dispatch on types) are designed but not implemented; removed from the reference until they exist. |
 | printf-style `%s` | `@pf("%s", s)` passes the fat pointer raw and crashes; use `{s}` interpolation. A fix should extract the data pointer (and handle non-NUL-terminated slices). |
 | Struct-by-value FFI, non-imported `extern fn` | `extern fn foo(v: Vector2) -> Vector2` declared directly in a file (not reached via `import()`) fails to compile if it needs struct-by-value ABI handling — the wrapper mechanism needs an import alias to redirect call sites to (see [Standard Library](./stdlib.md)). Move the declaration into its own module and `import()` it, which is fully supported. |
+| `@bitcast` pointer type arguments | `@bitcast(T, val)`'s type argument only accepts a bare type name (`u32`, `vec2`) — a compound type expression like `*u8` doesn't parse. Not a practical limitation for pointer reinterpretation specifically, since a raw pointer already coerces to any other raw pointer type via plain assignment (see [Pointers & Memory](./pointers.md)), but the parser gap is real for anyone trying to `@bitcast` to e.g. a slice or smart-pointer type. |
 
 ## Documentation Rule
 
