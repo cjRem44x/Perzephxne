@@ -211,7 +211,7 @@ result: i32 = @checked_add(a, b)   # flag ignored
 | Builtin | Signature | Description |
 |---|---|---|
 | `@rng(T, min, max)` | `fn(type, T, T) -> T` | random integer or float in `[min, max]` inclusive |
-| `@rng_seed(n)` | `fn(i32)` | seed the RNG (default: unseeded / stdlib `rand`) |
+| `@rng_seed(n)` | `fn(i32)` | seed the RNG for a reproducible sequence |
 
 `T` must be an integer or float type. Pass the type name as the first argument:
 
@@ -219,8 +219,14 @@ result: i32 = @checked_add(a, b)   # flag ignored
 x: i32  = @rng(i32, 1, 6)       # roll a die
 y: f64  = @rng(f64, 0.0, 1.0)   # uniform float
 z: u64  = @rng(u64, 0, 100)     # unsigned range
+```
 
-@rng_seed(42)                    # reproducible sequence
+The RNG is auto-seeded once at process start (from the clock and process ID), so `@rng` produces a different sequence on every run by default. Call `@rng_seed(n)` to pin the sequence for reproducible output — useful for tests and deterministic simulations:
+
+```
+@rng_seed(42)                    # same sequence every run
+a: i32 = @rng(i32, 1, 100)
+b: i32 = @rng(i32, 1, 100)
 ```
 
 ## Assembly

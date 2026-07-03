@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>Introduction - The Perzephxne Programming Language</title>
+        <title>Graphics - The Perzephxne Programming Language</title>
 
 
         <!-- Custom HTML head -->
@@ -177,42 +177,160 @@
 
                 <div id="mdbook-content" class="content">
                     <main>
-                        <h1 id="introduction"><a class="header" href="#introduction">Introduction</a></h1>
-<p>Perzephxne is a compiled, statically typed, systems programming language with a C-flavored syntax.</p>
-<p><strong>Core design goals:</strong></p>
+                        <h1 id="graphics--design-sketch-unimplemented"><a class="header" href="#graphics--design-sketch-unimplemented">Graphics — Design Sketch (Unimplemented)</a></h1>
+<blockquote>
+<p><strong>Nothing in this chapter exists yet.</strong> <code>std/graphics</code> is not built, not shipped, and not tested. This is an architecture sketch — written to guide implementation — for a future media library in the spirit of <a href="https://www.raylib.com/">raylib</a>: simple enough for a weekend game, capable enough for a native GUI app. Every other chapter in this book documents the compiler as it is; this one documents a plan.</p>
+</blockquote>
+<h2 id="goals"><a class="header" href="#goals">Goals</a></h2>
 <ul>
-<li>No garbage collector — memory is manual or scope-tracked via smart pointers</li>
-<li>No OOP — data and behavior are separated; <code>impl</code> blocks are namespace organization, not inheritance</li>
-<li>No header files — modules are source files, all declarations are visible across files in a project</li>
-<li>LLVM backend — compiles to LLVM IR for portable, optimized code generation</li>
-<li>Explicit is better than implicit — errors are values, casts are explicit, lifetimes are visible</li>
+<li><strong>Fast.</strong> A thin binding layer with no hidden allocation or indirection in the hot path — draw calls should compile down to near-C-speed FFI calls.</li>
+<li><strong>Versatile.</strong> The same primitives should support 2D and 3D games, and — layered with a small immediate-mode widget set — native GUI applications, editor tools, and visualizers.</li>
+<li><strong>Idiomatic.</strong> <code>snake_case</code> functions, <code>struct</code> + <code>impl</code> for resources, enums for key/button constants, tuples for multi-value returns (<code>get_mouse_position() -&gt; (f32, f32)</code>), and <code>!T</code> failable returns for anything that can fail to load (a missing texture file should be a caught error, not a null-pointer crash).</li>
 </ul>
-<pre><code>fn main() {
-    @pf("Hello, World!\n")
+<h2 id="why-bind-an-existing-library-instead-of-writing-a-renderer-from-scratch"><a class="header" href="#why-bind-an-existing-library-instead-of-writing-a-renderer-from-scratch">Why bind an existing library instead of writing a renderer from scratch</a></h2>
+<p>Perzephxne has no windowing, no GPU access, and no image/audio codecs of its own — building all of that from zero is a multi-year project, not a stdlib module. raylib already solves it: a flat, dependency-light C API with no macros, no templates, and no OOP — which happens to be an unusually good match for Perzephxne’s <code>extern fn</code> FFI, since there’s no C++ name mangling or preprocessor magic to work around. The plan is to <strong>bind raylib</strong>, then build idiomatic Perzephxne conventions on top of the binding.</p>
+<h2 id="layered-architecture"><a class="header" href="#layered-architecture">Layered architecture</a></h2>
+<pre><code>┌─────────────────────────────────────────────┐
+│ std/gui        immediate-mode widgets        │  ← pure Perzephxne, built on std/graphics
+│                (button, slider, textbox)     │
+├─────────────────────────────────────────────┤
+│ std/graphics   idiomatic wrapper             │  ← snake_case fns, impl methods, enums,
+│                                               │     failable loads, tuple returns
+├─────────────────────────────────────────────┤
+│ std/graphics/raylib   raw binding layer      │  ← extern fn declarations, 1:1 with the
+│                                               │     C API, plus POD struct definitions
+├─────────────────────────────────────────────┤
+│ libraylib.so / .a    (C, not shipped)        │  ← the actual renderer, window, audio mixer
+└─────────────────────────────────────────────┘
+</code></pre>
+<h3 id="layer-1--the-binding-layer"><a class="header" href="#layer-1--the-binding-layer">Layer 1 — the binding layer</a></h3>
+<p>Most of raylib’s public types are <strong>plain-old-data structs</strong> (not opaque handles) — <code>Vector2</code>, <code>Vector3</code>, <code>Color</code>, <code>Rectangle</code>, <code>Camera2D</code>, <code>Camera3D</code>, and even <code>Texture2D</code> are just fields, no internal state hidden behind a pointer. These map directly onto ordinary Perzephxne <code>struct</code> declarations, field-for-field, since Perzephxne structs already follow C ABI layout:</p>
+<pre><code>struct Vector2  { x: f32, y: f32 }
+struct Vector3  { x: f32, y: f32, z: f32 }
+struct Color    { r: u8, g: u8, b: u8, a: u8 }
+struct Rectangle { x: f32, y: f32, width: f32, height: f32 }
+
+struct Texture2D {
+    id:      u32,
+    width:   i32,
+    height:  i32,
+    mipmaps: i32,
+    format:  i32,
 }
 </code></pre>
-<h2 id="what-perzephxne-is"><a class="header" href="#what-perzephxne-is">What Perzephxne Is</a></h2>
-<p>A language for people who want the directness of C with a saner type system: proper enums, slices, failable return types, and generic functions without templates.</p>
-<p>If you’ve written C, Odin, or Zig you’ll feel at home. If you’re coming from Rust, the main difference is that Perzephxne has no borrow checker — memory safety is the programmer’s responsibility, aided by smart pointers and <code>defer</code>.</p>
-<h2 id="what-perzephxne-is-not"><a class="header" href="#what-perzephxne-is-not">What Perzephxne Is Not</a></h2>
-<ul>
-<li>A safe language — there is no borrow checker, and raw pointers are fully exposed</li>
-<li>An object-oriented language — there is no inheritance, no virtual dispatch, no <code>self</code> keyword</li>
-<li>A scripting language — every program is compiled to a native binary</li>
-</ul>
-<h2 id="source-file-extension"><a class="header" href="#source-file-extension">Source File Extension</a></h2>
-<p>Perzephxne source files use the <code>.przp</code> extension.</p>
-<h2 id="compiler"><a class="header" href="#compiler">Compiler</a></h2>
-<p>The compiler (<code>przp</code>) emits LLVM IR text (<code>.ll</code> files) and invokes <code>clang</code> to produce the final native binary. You need <code>clang</code> on your <code>PATH</code>.</p>
+<p>Functions are declared with <code>extern fn</code>, matching raylib’s C signatures one-to-one:</p>
+<pre><code>extern fn InitWindow(width: i32, height: i32, title: *u8)
+extern fn WindowShouldClose() -&gt; bool
+extern fn CloseWindow()
+extern fn BeginDrawing()
+extern fn EndDrawing()
+extern fn ClearBackground(color: Color)
+extern fn DrawRectangle(x: i32, y: i32, w: i32, h: i32, color: Color)
+extern fn DrawCircleV(center: Vector2, radius: f32, color: Color)
+extern fn GetMousePosition() -&gt; Vector2
+extern fn LoadTexture(path: *u8) -&gt; Texture2D
+extern fn IsKeyPressed(key: i32) -&gt; bool
+</code></pre>
+<p>This layer is deliberately dumb — it exists so the idiomatic layer above it has something honest to build on, and so advanced users can always drop to the raw C names when the wrapper doesn’t cover something yet.</p>
+<h3 id="layer-2--the-idiomatic-wrapper"><a class="header" href="#layer-2--the-idiomatic-wrapper">Layer 2 — the idiomatic wrapper</a></h3>
+<p><code>std/graphics</code> turns the raw bindings into something that reads like the rest of the standard library: <code>snake_case</code> names, <code>enum</code> constants instead of bare integers, tuples instead of output parameters, and <code>!T</code> for anything that can fail.</p>
+<pre><code>enum Key {
+    Space, Enter, Escape, Up, Down, Left, Right,
+    A, B, C, # ... rest of the alphabet
+}
+
+enum MouseButton { Left, Right, Middle }
+
+struct Window { title: str, w: i32, h: i32 }
+
+impl Window {
+    fn open(title: str, w: i32, h: i32) -&gt; Window {
+        InitWindow(w, h, title.data)
+        SetTargetFPS(60)
+        ret Window{.title=title, .w=w, .h=h}
+    }
+    fn should_close(self: Window) -&gt; bool { ret WindowShouldClose() }
+    fn close(self: Window) { CloseWindow() }
+}
+
+fn is_key_pressed(k: Key) -&gt; bool { ret IsKeyPressed(key_code(k)) }
+fn mouse_position() -&gt; (f32, f32) {
+    v: Vector2 = GetMousePosition()
+    ret (v.x, v.y)
+}
+
+struct Texture { native: Texture2D }
+impl Texture {
+    fn load(path: str) -&gt; !Texture {
+        t: Texture2D = LoadTexture(path.data)
+        if t.id == 0 { ret @err(1) }          # raylib sets id=0 on failed load
+        ret @ok(Texture{.native=t})
+    }
+    fn unload(self: Texture) { UnloadTexture(self.native) }
+}
+</code></pre>
+<p>A full program, in the style the rest of the book uses:</p>
+<pre><code>import(gfx = "std/graphics")
+
+fn main() -&gt; i32 {
+    win: gfx.Window = gfx.Window.open("demo", 800, 450)
+    pos: (f32, f32) = (400.0, 225.0)
+
+    while !win.should_close() {
+        if gfx.is_key_pressed(gfx.Key.Right) { pos.0 += 5.0 }
+        gfx.begin_drawing()
+        gfx.clear_background(gfx.Color.RayWhite)
+        gfx.draw_circle(pos.0, pos.1, 20.0, gfx.Color.Red)
+        gfx.end_drawing()
+    }
+    win.close()
+    ret 0
+}
+</code></pre>
+<h3 id="layer-3--stdgui-an-immediate-mode-widget-set"><a class="header" href="#layer-3--stdgui-an-immediate-mode-widget-set">Layer 3 — <code>std/gui</code>, an immediate-mode widget set</a></h3>
+<p>This is the piece that makes the library useful for <strong>native GUI apps</strong>, not just games — the same immediate-mode loop that draws a frame of a game can draw a frame of a settings panel. Modeled on raylib’s companion library <code>raygui</code>: no retained widget tree, no event callbacks — each widget function draws itself and returns whether it was interacted with <em>this frame</em>, decided entirely from the current mouse/keyboard state:</p>
+<pre><code>fn button(bounds: Rectangle, label: str) -&gt; bool   # true the frame it's clicked
+fn slider(bounds: Rectangle, value: f32, min: f32, max: f32) -&gt; f32  # returns updated value
+fn checkbox(bounds: Rectangle, label: str, checked: bool) -&gt; bool
+fn text_box(bounds: Rectangle, text: str) -&gt; str
+</code></pre>
+<p>Because it’s built entirely from <code>std/graphics</code> primitives (rectangles, text, mouse position, click state), it needs no compiler support beyond what a game already needs — the “GUI toolkit” is just a library, same as the “game engine” is.</p>
+<h2 id="open-engineering-prerequisites"><a class="header" href="#open-engineering-prerequisites">Open engineering prerequisites</a></h2>
+<p>These aren’t polish items — they’re things that must be resolved before layer 1 can be written for real. Found by testing directly against the current compiler while drafting this chapter (none of this is raylib-specific; both are general compiler defects surfaced by designing around them):</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>#</th><th>Prerequisite</th><th>Status</th></tr>
+</thead>
+<tbody>
+<tr><td>1</td><td><strong><code>!StructName</code> failable returns are broken for every struct, no FFI involved.</strong> Tested: <code>fn make() -&gt; !Point { ret @ok(Point{...}) }</code> fails to compile — codegen builds the <code>{ StructTy, i32 }</code> failable wrapper via <code>insertvalue</code>, but passes the struct’s alloca <em>pointer</em> where the raw aggregate <em>value</em> is expected (<code>'%tN' defined with type 'ptr' but expected '%Point = type {...}'</code>). This is pure Perzephxne, unrelated to graphics — it blocks the <code>Texture.load(path) -&gt; !Texture</code> pattern shown above, and blocks the same pattern for any fallible constructor returning a struct. This is the cheaper of the two fixes and has value independent of this library — worth fixing first, before any raylib work starts.</td><td></td></tr>
+<tr><td>2</td><td><strong>Struct-by-value FFI ABI.</strong> raylib passes and returns small structs by value constantly (<code>Vector2 GetMousePosition()</code>, <code>DrawCircleV(Vector2, ...)</code>). Tested empirically: a Perzephxne <code>extern fn</code> that takes/returns a <code>struct Vector2 { x: f32, y: f32 }</code> by value currently emits a raw LLVM aggregate call without System V ABI classification. Linked against real C code, the fields come back wrong (verified: <code>a + b</code> on two <code>Vector2</code> values returned incorrect results through the FFI boundary). This needs either (a) fixing codegen to classify small aggregates into the correct registers per the x86-64 SysV ABI for calls to <code>extern fn</code>, or (b) generating thin C shim functions with pointer-based signatures for every raylib entry point that takes/returns a struct by value, and binding to the shims instead of raylib directly.</td><td></td></tr>
+<tr><td>3</td><td><strong>Linker flags / native library dependencies.</strong> There is currently no way for a <code>przp.toml</code> project to declare “link against <code>-lraylib</code>” (or platform GL/window system libs). The <code>[deps]</code> manifest section is reserved but unimplemented (see <a href="./status-next.html">Status &amp; Next Work</a>). Binding any native library — not just raylib — needs this solved generally.</td><td></td></tr>
+<tr><td>4</td><td><strong>Variadic/macro helpers.</strong> A few raylib conveniences (<code>TextFormat</code>, which is a <code>printf</code>-style helper returning a static buffer) aren’t representable as a clean <code>extern fn</code>. These get reimplemented on top of <code>@fmt</code> instead of bound directly.</td><td></td></tr>
+<tr><td>5</td><td><strong>Callback-based APIs.</strong> Functions like <code>SetTraceLogCallback</code> take a C function pointer. Perzephxne’s bare function pointers (no closures) are sufficient here since raylib’s own callbacks are plain C function pointers with no captured state — this is a non-issue, listed for completeness.</td><td></td></tr>
+<tr><td>6</td><td><strong>Threading model.</strong> raylib expects single-threaded use of its main loop (window, input, and drawing calls all from one thread). The wrapper should document this constraint rather than attempt to paper over it.</td><td></td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="suggested-build-order"><a class="header" href="#suggested-build-order">Suggested build order</a></h2>
+<ol>
+<li>Resolve prerequisite #1 (<code>!Struct</code> returns) — cheap, self-contained, no FFI needed to reproduce or fix, and useful to every other struct-returning failable function in the language, not just this library.</li>
+<li>Resolve prerequisite #2 (struct-by-value FFI ABI) with a minimal repro test in the regression suite — this is the single riskiest item, since every layer above it depends on it working.</li>
+<li>Resolve prerequisite #3 (linker flags) with the smallest workable manifest addition — even a flat <code>link = ["raylib"]</code> key under <code>[build]</code> would unblock this.</li>
+<li>Write layer 1 (<code>std/graphics/raylib</code>) for a deliberately small surface first: window lifecycle, 2D shapes, keyboard/mouse input, and texture loading. Resist binding the entire raylib API up front.</li>
+<li>Write layer 2 (<code>std/graphics</code>) over that same small surface, with a regression test per wrapped function group (window, shapes, input, textures) following the existing <code>tests/run/std_*.przp</code> convention.</li>
+<li>Only after 2D is solid, extend to 3D (<code>Camera3D</code>, <code>DrawCube</code>, <code>DrawGrid</code>) and audio (<code>Sound</code>, <code>Music</code>).</li>
+<li>Layer 3 (<code>std/gui</code>) can start as soon as layer 2 has rectangles, text, and mouse state — it doesn’t need 3D or audio at all.</li>
+</ol>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-
-                            <a rel="next prefetch" href="getting-started.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
-                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                            <a rel="prev" href="status-next.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                             </a>
+
 
                         <div style="clear: both"></div>
                     </nav>
@@ -220,10 +338,10 @@
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-
-                    <a rel="next prefetch" href="getting-started.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
-                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                    <a rel="prev" href="status-next.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                     </a>
+
             </nav>
 
         </div>

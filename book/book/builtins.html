@@ -35,10 +35,10 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-d60a015a.js";
+            window.path_to_searchindex_js = "searchindex-cc4b6b10.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-b900b046.js"></script>
+        <script src="toc-e488213a.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -403,7 +403,7 @@ if err != 0 { @panic("integer overflow") }
 </thead>
 <tbody>
 <tr><td><code>@rng(T, min, max)</code></td><td><code>fn(type, T, T) -&gt; T</code></td><td>random integer or float in <code>[min, max]</code> inclusive</td></tr>
-<tr><td><code>@rng_seed(n)</code></td><td><code>fn(i32)</code></td><td>seed the RNG (default: unseeded / stdlib <code>rand</code>)</td></tr>
+<tr><td><code>@rng_seed(n)</code></td><td><code>fn(i32)</code></td><td>seed the RNG for a reproducible sequence</td></tr>
 </tbody>
 </table>
 </div>
@@ -411,8 +411,11 @@ if err != 0 { @panic("integer overflow") }
 <pre><code>x: i32  = @rng(i32, 1, 6)       # roll a die
 y: f64  = @rng(f64, 0.0, 1.0)   # uniform float
 z: u64  = @rng(u64, 0, 100)     # unsigned range
-
-@rng_seed(42)                    # reproducible sequence
+</code></pre>
+<p>The RNG is auto-seeded once at process start (from the clock and process ID), so <code>@rng</code> produces a different sequence on every run by default. Call <code>@rng_seed(n)</code> to pin the sequence for reproducible output — useful for tests and deterministic simulations:</p>
+<pre><code>@rng_seed(42)                    # same sequence every run
+a: i32 = @rng(i32, 1, 100)
+b: i32 = @rng(i32, 1, 100)
 </code></pre>
 <h2 id="assembly"><a class="header" href="#assembly">Assembly</a></h2>
 <div class="table-wrapper">
