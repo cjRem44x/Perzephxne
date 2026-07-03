@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-0358f6c2.js";
+            window.path_to_searchindex_js = "searchindex-e97ede83.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-e488213a.js"></script>
@@ -256,9 +256,11 @@ p: *u8 = &amp;buf[0]
 </table>
 </div>
 <h2 id="pointer-casts"><a class="header" href="#pointer-casts">Pointer Casts</a></h2>
+<p>A raw pointer coerces to any other raw pointer type directly — no cast builtin needed (this is the same C-style unsafe pointer aliasing C itself allows):</p>
 <pre><code>p: *i32 = &amp;x
-pb: *u8 = @bitcast(*u8, p)   # reinterpret pointer type
+pb: *u8 = p   # reinterpret pointer type, plain assignment
 </code></pre>
+<p><code>@bitcast(T, val)</code> (see <a href="./builtins.html">Builtins</a>) is for reinterpreting the bits of a <em>value</em> type (e.g. <code>f32</code> ↔ <code>u32</code>) — its type argument only accepts a bare type name, not a pointer type expression like <code>*u8</code>.</p>
 <h2 id="size-and-align"><a class="header" href="#size-and-align"><code>@size</code> and <code>@align</code></a></h2>
 <pre><code>sz: usize  = @size(i32)    # 4
 al: usize  = @align(f64)   # 8

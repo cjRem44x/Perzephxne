@@ -108,10 +108,14 @@ p: *u8 = &buf[0]
 
 ## Pointer Casts
 
+A raw pointer coerces to any other raw pointer type directly — no cast builtin needed (this is the same C-style unsafe pointer aliasing C itself allows):
+
 ```
 p: *i32 = &x
-pb: *u8 = @bitcast(*u8, p)   # reinterpret pointer type
+pb: *u8 = p   # reinterpret pointer type, plain assignment
 ```
+
+`@bitcast(T, val)` (see [Builtins](./builtins.md)) is for reinterpreting the bits of a *value* type (e.g. `f32` ↔ `u32`) — its type argument only accepts a bare type name, not a pointer type expression like `*u8`.
 
 ## `@size` and `@align`
 
