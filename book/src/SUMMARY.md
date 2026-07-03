@@ -33,3 +33,9 @@
 - [Operator Precedence](./operators.md)
 - [Naming Conventions](./naming.md)
 - [Status & Next Work](./status-next.md)
+
+---
+
+# Future Work (Design Sketches, Unimplemented)
+
+- [Graphics](./graphics.md)

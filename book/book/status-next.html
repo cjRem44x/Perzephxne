@@ -35,10 +35,10 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-d60a015a.js";
+            window.path_to_searchindex_js = "searchindex-cc4b6b10.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-b900b046.js"></script>
+        <script src="toc-e488213a.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -205,6 +205,8 @@
 <tr><td>Release UX</td><td>A future version command should be <code>przp version</code>, but versioning is intentionally deferred while beta work is moving quickly.</td></tr>
 <tr><td><code>any</code> type</td><td>Reserved keyword. Runtime-tagged values (boxing, type IDs, <code>when</code> dispatch on types) are designed but not implemented; removed from the reference until they exist.</td></tr>
 <tr><td>printf-style <code>%s</code></td><td><code>@pf("%s", s)</code> passes the fat pointer raw and crashes; use <code>{s}</code> interpolation. A fix should extract the data pointer (and handle non-NUL-terminated slices).</td></tr>
+<tr><td><code>!StructName</code> failable returns</td><td><code>fn f() -&gt; !Point { ret @ok(Point{...}) }</code> fails to compile for any struct — codegen passes the struct’s alloca pointer where the failable wrapper’s <code>insertvalue</code> expects the raw aggregate value. Found while drafting the <a href="./graphics.html">Graphics</a> design sketch; blocks any fallible constructor pattern (<code>Thing.load(path) -&gt; !Thing</code>), not just graphics.</td></tr>
+<tr><td>Struct-by-value FFI ABI</td><td>An <code>extern fn</code> that takes or returns a small struct by value (e.g. <code>Vector2 { f32, f32 }</code>) does not follow the x86-64 System V ABI — linked against real C code, field values come back wrong. Also found while drafting <a href="./graphics.html">Graphics</a>; blocks binding any C library whose API passes small structs by value, which is common (raylib, math libraries, many system APIs).</td></tr>
 </tbody>
 </table>
 </div>
@@ -219,6 +221,9 @@
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                             </a>
 
+                            <a rel="next prefetch" href="graphics.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                            </a>
 
                         <div style="clear: both"></div>
                     </nav>
@@ -230,6 +235,9 @@
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                     </a>
 
+                    <a rel="next prefetch" href="graphics.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                    </a>
             </nav>
 
         </div>
