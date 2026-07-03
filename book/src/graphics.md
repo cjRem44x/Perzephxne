@@ -1,51 +1,71 @@
 # Graphics — Design Sketch (Unimplemented)
 
-> **Nothing in this chapter exists yet.** `std/graphics` is not built, not shipped, and not tested. This is an architecture sketch — written to guide implementation — for a future media library in the spirit of [raylib](https://www.raylib.com/): simple enough for a weekend game, capable enough for a native GUI app. **This is not a raylib binding.** The plan is to write Perzephxne's own renderer and windowing layer from scratch, on raw platform APIs, and shape its call-level ergonomics after raylib's — because raylib's API is a genuinely good design, not because the library itself is a dependency worth taking on. Every other chapter in this book documents the compiler as it is; this one documents a plan.
+> **Nothing in this chapter exists yet.** No graphics module is built, shipped, or tested. This is an architecture sketch — written to guide implementation — for a future media stack in the spirit of [raylib](https://www.raylib.com/): simple enough for a weekend game, capable enough for a native GUI app. **This is not a raylib binding.** The plan is to write Perzephxne's own renderer and windowing layer from scratch, on raw platform APIs, and shape its call-level ergonomics after raylib's — because raylib's API is a genuinely good design, not because the library itself is a dependency worth taking on. Every other chapter in this book documents the compiler as it is; this one documents a plan.
+
+The stack splits into two purpose-specific libraries built on one shared foundation:
+
+- **`gdev`** — game-dev primitives: sprites, 3D cameras, audio, animation.
+- **`guix`** — native GUI widgets: buttons, sliders, text editing, window chrome, DPI scaling.
+- **`std/graphics`** — the shared foundation both depend on: window lifecycle, input, the raw GPU backend, and the 2D/3D draw primitives neither `gdev` nor `guix` needs to reimplement.
+
+A game doesn't need `guix`'s text-editing and clipboard code any more than a settings panel needs `gdev`'s 3D camera and audio mixer — splitting them means each stays as small as the thing it's actually for, without either depending on the other.
 
 ## Goals
 
-- **Fast, with nothing between the call and the GPU.** Draw calls should reach OpenGL (or whatever backend a given platform uses) directly — no bound C library's abstractions, no extra indirection layer, no per-frame hidden allocation. Perzephxne already has no GC and manual/RC memory control; the graphics layer should spend that advantage on latency, especially input-to-frame latency for mouse-driven interaction, not give it back to a middleman.
-- **Versatile.** The same primitives should support 2D and 3D games, and — layered with a small immediate-mode widget set — native GUI applications, editor tools, and visualizers, the same way Qt or GTK cover both custom-rendered content and native-feeling widgets from one toolkit.
+- **Fast, with nothing between the call and the GPU.** Draw calls should reach the GPU backend directly — no bound C library's abstractions, no extra indirection layer, no per-frame hidden allocation. Perzephxne already has no GC and manual/RC memory control; the graphics layer should spend that advantage on latency, especially input-to-frame latency for mouse-driven interaction, not give it back to a middleman.
+- **Versatile.** `gdev` covers 2D and 3D games; `guix` covers native GUI applications, editor tools, and visualizers — the same way Qt or GTK cover both custom-rendered content and native-feeling widgets from one toolkit family, without forcing a game to carry GUI weight or a GUI app to carry a 3D renderer.
 - **Idiomatic.** `snake_case` functions, `struct` + `impl` for resources, enums for key/button constants, tuples for multi-value returns (`get_mouse_position() -> (f32, f32)`), and `!T` failable returns for anything that can fail to load (a missing texture file should be a caught error, not a null-pointer crash).
 
 ## Why build our own renderer instead of binding raylib
 
-Binding raylib was the original plan, and it's a much smaller amount of work — but it means every Perzephxne program built on it inherits raylib's own constraints: a single prebuilt `.so`/`.a` to link against on every platform, raylib's own threading model, and a hard ceiling on performance and control set by whatever raylib's C implementation chooses to do internally. Writing the renderer directly against the platform (OpenGL for the GPU, native windowing/input APIs — X11 or Wayland on Linux first, matching this project's current target) means:
+Binding raylib was the original plan, and it's a much smaller amount of work — but it means every Perzephxne program built on it inherits raylib's own constraints: a single prebuilt `.so`/`.a` to link against on every platform, raylib's own threading model, and a hard ceiling on performance and control set by whatever raylib's C implementation chooses to do internally. Writing the renderer directly against the platform means:
 
 - **No layer between a draw call and the driver.** A wrapped `draw_rectangle()` can compile down to appending to a vertex buffer that's already bound, with no intermediate library deciding how that happens.
-- **Full control over the frame loop and threading**, instead of inheriting raylib's single-threaded-main-loop assumption.
-- **The widget layer (layer 3) can be built to genuinely competing with Qt/GTK** for native-app use, rather than staying a thin wrapper over a game library's optional extra (`raygui`) — real native apps need things like text layout, DPI awareness, and window-manager integration that a game-first library treats as secondary.
+- **Full control over the frame loop and threading**, instead of inheriting a game library's single-threaded-main-loop assumption.
+- **`guix` can genuinely compete with Qt/GTK** for native-app use, rather than staying a thin wrapper over a game library's optional extra (`raygui`) — real native apps need things like text layout, DPI awareness, and window-manager integration that a game-first library treats as secondary.
 - **One dependency story instead of two.** The library only ever needs what the OS already ships (`libGL`, `libX11`/Wayland client libs) — no separately-versioned third-party renderer to build, vendor, or link against on every target platform.
 
-The tradeoff is honest: this is a much bigger undertaking than binding an existing library. Window creation, GL context setup, function-pointer loading, an immediate-mode 2D/3D draw API, image decoding, and audio all have to be built, not bound. The sections below sketch that as a layered architecture so it can be built incrementally, starting from the smallest usable slice (open a window, clear it, draw a rectangle) rather than attempting the whole surface at once.
+### GPU backend: OpenGL first, behind a swap boundary
+
+OpenGL is the initial GPU backend — it's mature, well-documented, and (via GLX) gets a first triangle on screen with the least amount of platform-specific plumbing, which matches this project's current Linux-first target. It is not, long-term, the obviously-correct cross-platform answer: it's effectively frozen on macOS at OpenGL 4.1 (Apple has been steering everyone toward Metal for years), and it doesn't expose the explicit, modern control that Vulkan/Metal/D3D12 do. Committing to it as *the* answer now would mean a full rewrite the day real macOS or high-end-performance support becomes a goal.
+
+The mitigation is architectural, not a bet on OpenGL forever: `std/graphics` never calls GL functions directly. It calls through a small, fixed **backend contract** — init, clear, submit a batch of triangles/quads, upload a texture, bind a shader — and `std/graphics/gl` is just the first (and, for now, only) implementation of that contract. Adding Vulkan, Metal, or D3D12 later means writing a new backend that satisfies the same contract, not touching `std/graphics`, `gdev`, or `guix` at all. Getting this seam right *before* writing the GL backend — not retrofitting it once GL calls are already scattered through the wrapper — is listed explicitly in the build order below, because retrofitting it is exactly the kind of rewrite this boundary exists to avoid.
+
+The tradeoff is honest either way: this is a much bigger undertaking than binding an existing library. Window creation, GL context setup, function-pointer loading, a backend contract, an immediate-mode 2D/3D draw API, image decoding, and audio all have to be built, not bound. The sections below sketch that as a layered architecture so it can be built incrementally, starting from the smallest usable slice (open a window, clear it, draw a rectangle) rather than attempting the whole surface at once.
 
 ## Layered architecture
 
 ```
-┌─────────────────────────────────────────────┐
-│ std/gui        immediate-mode widgets        │  ← pure Perzephxne, built on std/graphics
-│                (button, slider, textbox)     │
-├─────────────────────────────────────────────┤
-│ std/graphics   idiomatic wrapper             │  ← snake_case fns, impl methods, enums,
-│                                               │     failable loads, tuple returns
-├─────────────────────────────────────────────┤
-│ std/graphics/gl       raw OpenGL bindings    │  ← extern fn per GL entry point, loaded at
-│                                               │     runtime (no libGL.so build-time symbols
-│                                               │     beyond the loader itself)
-│ std/graphics/window   platform windowing     │  ← extern fn to X11/Wayland + input events;
-│                       and input              │     one backend per platform, same surface
-├─────────────────────────────────────────────┤
-│ libGL.so, libX11.so / Wayland client libs    │  ← already present on the OS; no bundled
-│ (system, not shipped)                        │     third-party renderer dependency
-└─────────────────────────────────────────────┘
+┌────────────────────────────┐   ┌────────────────────────────┐
+│ guix   native GUI widgets  │   │ gdev   game-dev primitives │
+│ (button, slider, text      │   │ (sprites, 3D camera,       │
+│  editing, window chrome,   │   │  batching, audio,          │
+│  DPI scaling, clipboard)   │   │  animation helpers)        │
+└──────────────┬─────────────┘   └──────────────┬─────────────┘
+               └────────────────┬────────────────┘
+                     std/graphics — shared foundation
+             (2D/3D draw primitives, plain-data types, window
+              lifecycle, input, snake_case idiomatic wrapper)
+                    ┌────────────┴────────────┐
+                    │   backend contract        │  ← fixed interface: init, clear,
+                    │   (fixed interface)       │     submit batch, upload texture,
+                    └────────────┬────────────┘     bind shader, ...
+        ┌───────────────────────┼───────────────────────┐
+ std/graphics/gl (OpenGL,        │           (future: Vulkan/Metal/D3D12
+  first backend, via GLX)        │            backends satisfying the same
+ std/graphics/window (X11,       │            contract — no changes needed
+  first backend)                 │            above this line)
+        └───────────────────────┴───────────────────────┘
+      libGL.so, libX11.so / Wayland client libs (system, not shipped)
 ```
 
-### Layer 1 — platform bindings (windowing + raw GL)
+### Layer 1 — platform bindings and the backend contract
 
-Two thin `extern fn` layers, each a direct, dumb mapping onto a system API — no idiomatic naming, no safety wrapping, so advanced users can always drop down to the raw calls when a higher layer doesn't cover something yet:
+Three pieces, each a thin, dumb layer — no idiomatic naming, no safety wrapping, so advanced users can always drop to the raw calls when a higher layer doesn't cover something yet:
 
 - **`std/graphics/window`** — open a window and pump its event queue via the platform's native windowing API (X11 first, since that's universally available even under Wayland's XWayland compatibility layer; a native Wayland backend and, eventually, Win32/Cocoa backends follow the same shape behind one Perzephxne-facing surface).
-- **`std/graphics/gl`** — one `extern fn` per OpenGL entry point actually used. Since GL functions beyond 1.1 are resolved at runtime (`glXGetProcAddress` on Linux, not link-time symbols), this layer is a loader plus a table of function pointers, not a flat `extern fn` list against a link-time library the way the windowing layer is.
+- **The backend contract** — not a library binding at all, but a fixed set of Perzephxne function signatures (or a struct of function pointers) that any GPU backend must implement: `backend_init()`, `backend_clear(color)`, `backend_submit(vertices, indices)`, `backend_upload_texture(pixels, w, h) -> u32`, `backend_bind_shader(id)`, and a small, deliberately minimal set beyond that. This contract is designed once, before any backend implements it.
+- **`std/graphics/gl`** — the OpenGL implementation of that contract. Since GL functions beyond 1.1 are resolved at runtime (`glXGetProcAddress` on Linux, not link-time symbols), this layer is a loader plus a table of function pointers, not a flat `extern fn` list against a link-time library the way the windowing layer is.
 
 ```
 # std/graphics/window (sketch)
@@ -56,7 +76,15 @@ extern fn XMapWindow(display: *u8, window: u64)
 extern fn XNextEvent(display: *u8, event_out: *u8) -> i32
 extern fn XPending(display: *u8) -> i32
 
-# std/graphics/gl (sketch) — resolved at runtime, not linked at build time
+# the backend contract (sketch) — std/graphics calls only this, never GL/Vulkan/Metal directly
+fn backend_init(window: *void) -> bool
+fn backend_clear(color: Color)
+fn backend_submit(verts: []Vertex, indices: []u32)
+fn backend_upload_texture(pixels: []u8, w: i32, h: i32) -> u32
+fn backend_bind_shader(id: u32)
+
+# std/graphics/gl (sketch) — implements the contract above; resolved at runtime,
+# not linked at build time
 fn gl_get_proc_address(name: str) -> *void   # wraps glXGetProcAddress
 # each wrapped GL call is a function-pointer field on a loaded-functions struct,
 # populated once at startup by gl_get_proc_address("glClear"), etc.
@@ -71,9 +99,9 @@ struct Color     { r: u8, g: u8, b: u8, a: u8 }
 struct Rectangle { x: f32, y: f32, width: f32, height: f32 }
 ```
 
-### Layer 2 — the idiomatic wrapper
+### Layer 2 — `std/graphics`, the shared foundation
 
-`std/graphics` turns the raw platform + GL bindings into something that reads like the rest of the standard library and, deliberately, like raylib's call-level ergonomics: `snake_case` names, `enum` constants instead of bare integers, tuples instead of output parameters, and `!T` for anything that can fail. The difference from the original binding plan is entirely underneath this layer — `Window.open()` now creates an X11 window and a GL context instead of calling into raylib's `InitWindow`, and `draw_rectangle()` now issues raw GL draw calls (batched into a vertex buffer, flushed on `end_drawing()`) instead of forwarding to raylib's immediate 2D renderer. The surface Perzephxne code sees stays the same:
+`std/graphics` turns the backend contract and windowing layer into something that reads like the rest of the standard library and, deliberately, like raylib's call-level ergonomics: `snake_case` names, `enum` constants instead of bare integers, tuples instead of output parameters, and `!T` for anything that can fail. This is the layer both `gdev` and `guix` import — window lifecycle, input, and 2D drawing primitives live here exactly once, not duplicated in each consumer:
 
 ```
 enum Key {
@@ -87,7 +115,7 @@ struct Window { title: str, w: i32, h: i32 }
 
 impl Window {
     fn open(title: str, w: i32, h: i32) -> Window {
-        # opens an X11 window, creates a GL context, loads GL entry points
+        # opens an X11 window, creates a GL context, initializes the backend
         ret gfx_open_window(title, w, h)
     }
     fn should_close(self: Window) -> bool { ret gfx_should_close() }
@@ -100,46 +128,104 @@ fn mouse_position() -> (f32, f32) { ret gfx_mouse_position() }
 struct Texture { id: u32, w: i32, h: i32 }
 impl Texture {
     fn load(path: str) -> !Texture {
-        # decode (PNG to start), upload via glTexImage2D, wrap the GL texture id
+        # decode (PNG to start), upload via backend_upload_texture, wrap the id
         ret gfx_load_texture(path)
     }
     fn unload(self: Texture) { gfx_delete_texture(self.id) }
+}
+
+fn begin_drawing()
+fn end_drawing()               # flushes the frame's batched draws to the backend
+fn clear_background(c: Color)
+fn draw_rectangle(x: f32, y: f32, w: f32, h: f32, c: Color)
+fn draw_circle(x: f32, y: f32, r: f32, c: Color)
+fn draw_texture(t: Texture, x: f32, y: f32)
+fn draw_text(s: str, x: f32, y: f32, size: i32, c: Color)
+```
+
+### Layer 3a — `gdev`, game-dev primitives
+
+Built on `std/graphics`, adding the pieces a game needs that a GUI app doesn't:
+
+```
+struct Camera3D { position: Vector3, target: Vector3, up: Vector3, fovy: f32 }
+fn begin_mode_3d(cam: Camera3D)
+fn end_mode_3d()
+fn draw_cube(pos: Vector3, w: f32, h: f32, d: f32, c: Color)
+fn draw_grid(slices: i32, spacing: f32)
+
+struct Sprite { texture: Texture, frame: Rectangle }
+impl Sprite {
+    fn draw(self: Sprite, pos: Vector2) { draw_texture_rec(self.texture, self.frame, pos) }
+}
+
+struct Sound { id: u32 }
+impl Sound {
+    fn load(path: str) -> !Sound { ret gdev_load_sound(path) }
+    fn play(self: Sound) { gdev_play_sound(self.id) }
 }
 ```
 
 A full program, in the style the rest of the book uses:
 
 ```
-import(gfx = "std/graphics")
+import(gdev = "std/gdev")
 
 fn main() -> i32 {
-    win: gfx.Window = gfx.Window.open("demo", 800, 450)
+    win: gdev.Window = gdev.Window.open("demo", 800, 450)
     pos: (f32, f32) = (400.0, 225.0)
 
     while !win.should_close() {
-        if gfx.is_key_pressed(gfx.Key.Right) { pos.0 += 5.0 }
-        gfx.begin_drawing()
-        gfx.clear_background(gfx.Color.RayWhite)
-        gfx.draw_circle(pos.0, pos.1, 20.0, gfx.Color.Red)
-        gfx.end_drawing()
+        if gdev.is_key_pressed(gdev.Key.Right) { pos.0 += 5.0 }
+        gdev.begin_drawing()
+        gdev.clear_background(gdev.Color.RayWhite)
+        gdev.draw_circle(pos.0, pos.1, 20.0, gdev.Color.Red)
+        gdev.end_drawing()
     }
     win.close()
     ret 0
 }
 ```
 
-### Layer 3 — `std/gui`, an immediate-mode widget set
+### Layer 3b — `guix`, native GUI widgets
 
-This is the piece that makes the library useful for **native GUI apps**, not just games — the same immediate-mode loop that draws a frame of a game can draw a frame of a settings panel. Modeled on raylib's companion library `raygui`: no retained widget tree, no event callbacks — each widget function draws itself and returns whether it was interacted with *this frame*, decided entirely from the current mouse/keyboard state:
+This is the piece aimed squarely at native apps, not games — immediate-mode, raygui-style widgets, plus the concerns a game doesn't have to think about: DPI scaling, text editing, focus/tab order, and clipboard. No retained widget tree, no event callbacks — each widget function draws itself and returns whether it was interacted with *this frame*, decided entirely from the current mouse/keyboard state:
 
 ```
 fn button(bounds: Rectangle, label: str) -> bool   # true the frame it's clicked
 fn slider(bounds: Rectangle, value: f32, min: f32, max: f32) -> f32  # returns updated value
 fn checkbox(bounds: Rectangle, label: str, checked: bool) -> bool
-fn text_box(bounds: Rectangle, text: str) -> str
+fn text_box(bounds: Rectangle, text: str) -> str    # handles cursor, selection, IME later
+
+fn dpi_scale() -> f32                # for crisp rendering on high-DPI displays
+fn set_clipboard(s: str)
+fn get_clipboard() -> str
+fn request_focus(widget_id: i32)     # tab order / keyboard navigation
 ```
 
-Because it's built entirely from `std/graphics` primitives (rectangles, text, mouse position, click state), it needs no compiler support beyond what a game already needs — the "GUI toolkit" is just a library, same as the "game engine" is. Matching Qt/GTK's *reach* (real desktop apps, not just game overlays) is a layer-3 goal, not a layer-1/2 one: it comes from investing in text layout, DPI scaling, and window-manager integration (resizable/native-chrome windows, clipboard, drag-and-drop) once the primitives underneath are solid, not from anything the renderer or windowing layer needs to do differently.
+Because it's built entirely from `std/graphics` primitives (rectangles, text, mouse position, click state), `guix` needs no compiler support beyond what `gdev` already needs — the "GUI toolkit" is just a library, same as the "game engine" is. The `Qt`/`GTK`-level reach — resizable native-chrome windows, real text layout, window-manager integration — is a `guix`-specific investment on top of the shared primitives, not something `std/graphics` or the backend contract needs to change to support.
+
+```
+import(guix = "std/guix")
+
+fn main() -> i32 {
+    win: guix.Window = guix.Window.open("settings", 400, 300)
+    volume: f32 = 0.5
+
+    while !win.should_close() {
+        guix.begin_drawing()
+        guix.clear_background(guix.Color.RayWhite)
+        volume = guix.slider(guix.Rectangle{.x=20.0, .y=20.0, .width=360.0, .height=24.0},
+                              volume, 0.0, 1.0)
+        if guix.button(guix.Rectangle{.x=20.0, .y=60.0, .width=100.0, .height=32.0}, "Apply") {
+            @pf("volume: {volume}\n")
+        }
+        guix.end_drawing()
+    }
+    win.close()
+    ret 0
+}
+```
 
 ## Resolved prerequisites
 
@@ -148,25 +234,29 @@ Both of the compiler defects this chapter originally surfaced have since been fi
 - **`!StructName` failable returns.** `fn make() -> !Point { ret @ok(Point{...}) }` now works for any struct, tagged union, or array — see `tests/run/failable_struct.przp`.
 - **Struct-by-value FFI ABI.** An `extern fn` reached via `import()` that takes or returns a plain struct by value (e.g. `Vector2 { f32, f32 }`) now follows the x86-64 System V ABI, verified by linking against independently-compiled C code — see [Functions § Struct-by-Value Parameters and Returns](./functions.md#struct-by-value-parameters-and-returns) and `tests/ffi/struct_abi`. The one scoped limitation: this only works when the `extern fn` is declared in a module reached through `import()` — a struct-by-value `extern fn` declared directly in a file with no import fails to compile with a clear diagnostic rather than silently miscompiling.
 
-This means the FFI mechanics layer 1 depends on (struct-by-value calls, failable returns for loaders) are no longer blocked on compiler work — the remaining prerequisites below are about what actually has to be written (a renderer, a windowing backend), not compiler correctness.
+This means the FFI mechanics layer 1 depends on (struct-by-value calls, failable returns for loaders) are no longer blocked on compiler work — the remaining prerequisites below are about what actually has to be written (a renderer, a windowing backend, the backend contract), not compiler correctness.
 
 ## Open engineering prerequisites
 
 | # | Prerequisite | Status |
 |---|---|---|
 | 1 | **Linker flags / native library dependencies.** There is currently no way for a `przp.toml` project to declare "link against `-lX11 -lGL`" or similar. The `[deps]` manifest section is reserved but unimplemented (see [Status & Next Work](./status-next.md)). As a stopgap for a proof of concept, `przp sac` does accept extra native object/archive files on its command line, passed straight through to the link step (used by the ABI regression test above) — but that's a `sac`-only escape hatch, not a real answer for a `przp build`/`przp run` project. |
-| 2 | **GL function loading.** Nothing beyond OpenGL 1.1 is available as a link-time symbol — every modern GL entry point (shaders, buffers, textures beyond the basics) has to be resolved at runtime via `glXGetProcAddress` and called through a function pointer. This needs a small runtime loader written once, not per-project. |
-| 3 | **Windowing backend.** X11 first (works everywhere on Linux, including under Wayland via XWayland); a native Wayland backend, then Win32/Cocoa, come later behind the same `std/graphics/window` surface so `std/graphics` and everything above it never has to change per platform. |
-| 4 | **Image and audio codecs.** No bundled renderer means no bundled codecs either — PNG/JPEG decoding and audio file loading need their own (likely also hand-written or minimally-bound) implementations, deferred until the 2D primitives above them are solid. |
-| 5 | **Variadic/macro helpers.** Small conveniences like a `printf`-style text-formatting helper for on-screen debug text are built on `@fmt` rather than needing any new compiler feature — a non-issue, listed for completeness. |
-| 6 | **Threading model.** GL contexts are tied to the thread that created them; the wrapper should document a single-threaded main loop (window, input, and drawing calls all from one thread) as the initial supported model rather than attempt general multi-threaded rendering from the start. |
+| 2 | **Backend contract design.** The fixed interface `std/graphics` calls through (init, clear, submit, upload texture, bind shader) needs to be designed and settled *before* the GL backend is written against it — this is what makes future Vulkan/Metal/D3D12 backends additive instead of a rewrite. |
+| 3 | **GL function loading.** Nothing beyond OpenGL 1.1 is available as a link-time symbol — every modern GL entry point (shaders, buffers, textures beyond the basics) has to be resolved at runtime via `glXGetProcAddress` and called through a function pointer. This needs a small runtime loader written once, not per-project. |
+| 4 | **Windowing backend.** X11 first (works everywhere on Linux, including under Wayland via XWayland); a native Wayland backend, then Win32/Cocoa, come later behind the same `std/graphics/window` surface so `std/graphics`, `gdev`, and `guix` never have to change per platform. |
+| 5 | **Image and audio codecs.** No bundled renderer means no bundled codecs either — PNG/JPEG decoding (for `guix` icons and `gdev` textures alike) and audio file loading (for `gdev`) need their own (likely also hand-written or minimally-bound) implementations, deferred until the 2D primitives above them are solid. |
+| 6 | **Text layout.** `guix` needs real text shaping/layout (cursor positioning, line wrapping, at minimum) to be a credible native-app toolkit; `gdev` only needs simple bitmap-font text draw calls. This is a `guix`-specific investment, not a `std/graphics` one. |
+| 7 | **Variadic/macro helpers.** Small conveniences like a `printf`-style text-formatting helper for on-screen debug text are built on `@fmt` rather than needing any new compiler feature — a non-issue, listed for completeness. |
+| 8 | **Threading model.** GPU contexts are tied to the thread that created them; the wrapper should document a single-threaded main loop (window, input, and drawing calls all from one thread) as the initial supported model rather than attempt general multi-threaded rendering from the start. |
 
 ## Suggested build order
 
 1. Resolve prerequisite #1 (linker flags) with the smallest workable manifest addition — even a flat `link = ["X11", "GL"]` key under `[build]` would unblock this for real projects, not just `sac`-based experiments.
-2. Write the windowing backend (`std/graphics/window`, X11) for the smallest usable slice: open a window, pump events, report close/resize.
-3. Write the GL loader (`std/graphics/gl`) and get a single triangle or cleared background on screen — this is the point where "a window exists" becomes "a frame can be drawn."
-4. Write layer 2 (`std/graphics`) over that same small surface: 2D shapes, keyboard/mouse input, then texture loading once an image codec exists. Resist building out the full raylib-equivalent surface up front.
-5. Write a regression test per wrapped function group (window, shapes, input, textures), following the existing `tests/run/std_*.przp` convention, to the extent a windowing/GL-dependent test can run headlessly in CI.
-6. Only after 2D is solid, extend to 3D (`Camera3D`-equivalent, cube/grid primitives) and audio.
-7. Layer 3 (`std/gui`) can start as soon as layer 2 has rectangles, text, and mouse state — it doesn't need 3D or audio at all. Prioritize mouse-interaction latency here specifically, since that's the axis this design most wants to win on: input state should be sampled once per frame with nothing between the OS event and code reading it.
+2. Design the backend contract (prerequisite #2) before writing any GL code — settle the smallest set of operations `std/graphics` needs (clear, submit a batch, upload a texture, bind a shader) so the GL backend is written *against* a fixed interface, not the interface being reverse-engineered out of GL calls after the fact.
+3. Write the windowing backend (`std/graphics/window`, X11) for the smallest usable slice: open a window, pump events, report close/resize.
+4. Write `std/graphics/gl` as the first implementation of the backend contract, and get a single triangle or cleared background on screen — this is the point where "a window exists" becomes "a frame can be drawn."
+5. Write layer 2 (`std/graphics`) over that same small surface: 2D shapes, keyboard/mouse input, then texture loading once an image codec exists. Resist building out the full raylib-equivalent surface up front.
+6. Write a regression test per wrapped function group (window, shapes, input, textures), following the existing `tests/run/std_*.przp` convention, to the extent a windowing/GPU-dependent test can run headlessly in CI.
+7. Split into `gdev` and `guix` once `std/graphics`'s 2D primitives, input, and texture loading are solid — from here the two can proceed independently, since neither depends on the other, only on `std/graphics`.
+8. `gdev`: extend to 3D (`Camera3D`-equivalent, cube/grid primitives) and audio.
+9. `guix`: extend to DPI scaling, text editing/cursor handling, focus/tab order, and clipboard. Prioritize mouse-interaction latency here specifically, since that's the axis this design most wants to win on: input state should be sampled once per frame with nothing between the OS event and code reading it.
