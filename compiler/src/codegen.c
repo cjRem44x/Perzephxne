@@ -4671,9 +4671,6 @@ static void cg_stmt(CG *cg, Stmt *s) {
                 pop_scope(cg); /* init scope */
             }
 
-            /* wire up loop label for named break/continue */
-            if (fc->kind == FOR_RANGE || fc->kind == FOR_EACH || fc->kind == FOR_EACH_IDX)
-                ; /* label already set after push_loop_scope above */
             break;
         }
 
@@ -5172,16 +5169,19 @@ static void emit_extern_fn_abi_wrapper(CG *cg, Item *item,
         }
         for (size_t i = 0; i < np; i++) {
             if (psh[i].kind == ABI_MEMORY) {
-                if (any) emit(cg, ", "); any = 1;
+                if (any) emit(cg, ", ");
+                any = 1;
                 emit(cg, "ptr byval(%s) align %d",
                      llvm_type(params->data[i].ty), psh[i].align);
             } else if (psh[i].kind == ABI_REGS) {
                 for (int k = 0; k < psh[i].n; k++) {
-                    if (any) emit(cg, ", "); any = 1;
+                    if (any) emit(cg, ", ");
+                    any = 1;
                     emit(cg, "%s", psh[i].slot_llt[k]);
                 }
             } else {
-                if (any) emit(cg, ", "); any = 1;
+                if (any) emit(cg, ", ");
+                any = 1;
                 emit(cg, "%s", llvm_type(params->data[i].ty));
             }
         }
@@ -5266,16 +5266,19 @@ static void emit_extern_fn_abi_wrapper(CG *cg, Item *item,
     }
     for (size_t i = 0; i < np; i++) {
         if (psh[i].kind == ABI_MEMORY) {
-            if (any) emit(cg, ", "); any = 1;
+            if (any) emit(cg, ", ");
+            any = 1;
             emit(cg, "ptr byval(%s) align %d %s",
                  llvm_type(params->data[i].ty), psh[i].align, pptr[i]);
         } else if (psh[i].kind == ABI_REGS) {
             for (int k = 0; k < psh[i].n; k++) {
-                if (any) emit(cg, ", "); any = 1;
+                if (any) emit(cg, ", ");
+                any = 1;
                 emit(cg, "%s %%t%d", psh[i].slot_llt[k], regs_slot[i][k]);
             }
         } else {
-            if (any) emit(cg, ", "); any = 1;
+            if (any) emit(cg, ", ");
+            any = 1;
             emit(cg, "%s %%p%zu", llvm_type(params->data[i].ty), i);
         }
     }

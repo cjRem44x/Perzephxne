@@ -394,8 +394,8 @@ static void desugar_union_arm(Sema *s, UnionInfo *ui, WhenArm *arm) {
             fe->kind = EXPR_FIELD;
             fe->span = arm->span;
             fe->field.obj = payref;
-            char *fidx = arena_alloc(s->arena, 8);
-            snprintf(fidx, 8, "%zu", bi);
+            char *fidx = arena_alloc(s->arena, 24);
+            snprintf(fidx, 24, "%zu", bi);
             fe->field.field = fidx;
             Stmt *ls = ARENA_NEW(s->arena, Stmt);
             ls->kind = STMT_LET;
