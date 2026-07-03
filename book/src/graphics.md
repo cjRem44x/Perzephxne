@@ -141,25 +141,28 @@ fn text_box(bounds: Rectangle, text: str) -> str
 
 Because it's built entirely from `std/graphics` primitives (rectangles, text, mouse position, click state), it needs no compiler support beyond what a game already needs — the "GUI toolkit" is just a library, same as the "game engine" is.
 
-## Open engineering prerequisites
+## Resolved prerequisites
 
-These aren't polish items — they're things that must be resolved before layer 1 can be written for real. Found by testing directly against the current compiler while drafting this chapter (none of this is raylib-specific; both are general compiler defects surfaced by designing around them):
+Both of the compiler defects this chapter originally surfaced have since been fixed and regression-tested — they're recorded here because they were found while drafting this design, not because they're still blocking it:
+
+- **`!StructName` failable returns.** `fn make() -> !Point { ret @ok(Point{...}) }` now works for any struct, tagged union, or array — see `tests/run/failable_struct.przp`.
+- **Struct-by-value FFI ABI.** An `extern fn` reached via `import()` that takes or returns a plain struct by value (e.g. `Vector2 { f32, f32 }`) now follows the x86-64 System V ABI, verified by linking against independently-compiled C code — see [Functions § Struct-by-Value Parameters and Returns](./functions.md#struct-by-value-parameters-and-returns) and `tests/ffi/struct_abi`. The one scoped limitation: this only works when the `extern fn` is declared in a module reached through `import()` (exactly the shape `std/graphics/raylib` would take) — a struct-by-value `extern fn` declared directly in a file with no import fails to compile with a clear diagnostic rather than silently miscompiling.
+
+This means layer 1 (the raw raylib binding) is no longer blocked on compiler work — the remaining prerequisites below are about the build/link pipeline, not code generation correctness.
+
+## Open engineering prerequisites
 
 | # | Prerequisite | Status |
 |---|---|---|
-| 1 | **`!StructName` failable returns are broken for every struct, no FFI involved.** Tested: `fn make() -> !Point { ret @ok(Point{...}) }` fails to compile — codegen builds the `{ StructTy, i32 }` failable wrapper via `insertvalue`, but passes the struct's alloca *pointer* where the raw aggregate *value* is expected (`'%tN' defined with type 'ptr' but expected '%Point = type {...}'`). This is pure Perzephxne, unrelated to graphics — it blocks the `Texture.load(path) -> !Texture` pattern shown above, and blocks the same pattern for any fallible constructor returning a struct. This is the cheaper of the two fixes and has value independent of this library — worth fixing first, before any raylib work starts. |
-| 2 | **Struct-by-value FFI ABI.** raylib passes and returns small structs by value constantly (`Vector2 GetMousePosition()`, `DrawCircleV(Vector2, ...)`). Tested empirically: a Perzephxne `extern fn` that takes/returns a `struct Vector2 { x: f32, y: f32 }` by value currently emits a raw LLVM aggregate call without System V ABI classification. Linked against real C code, the fields come back wrong (verified: `a + b` on two `Vector2` values returned incorrect results through the FFI boundary). This needs either (a) fixing codegen to classify small aggregates into the correct registers per the x86-64 SysV ABI for calls to `extern fn`, or (b) generating thin C shim functions with pointer-based signatures for every raylib entry point that takes/returns a struct by value, and binding to the shims instead of raylib directly. |
-| 3 | **Linker flags / native library dependencies.** There is currently no way for a `przp.toml` project to declare "link against `-lraylib`" (or platform GL/window system libs). The `[deps]` manifest section is reserved but unimplemented (see [Status & Next Work](./status-next.md)). Binding any native library — not just raylib — needs this solved generally. |
-| 4 | **Variadic/macro helpers.** A few raylib conveniences (`TextFormat`, which is a `printf`-style helper returning a static buffer) aren't representable as a clean `extern fn`. These get reimplemented on top of `@fmt` instead of bound directly. |
-| 5 | **Callback-based APIs.** Functions like `SetTraceLogCallback` take a C function pointer. Perzephxne's bare function pointers (no closures) are sufficient here since raylib's own callbacks are plain C function pointers with no captured state — this is a non-issue, listed for completeness. |
-| 6 | **Threading model.** raylib expects single-threaded use of its main loop (window, input, and drawing calls all from one thread). The wrapper should document this constraint rather than attempt to paper over it. |
+| 1 | **Linker flags / native library dependencies.** There is currently no way for a `przp.toml` project to declare "link against `-lraylib`" (or platform GL/window system libs). The `[deps]` manifest section is reserved but unimplemented (see [Status & Next Work](./status-next.md)). Binding any native library — not just raylib — needs this solved generally. As a stopgap for a proof of concept, `przp sac` does accept extra native object/archive files on its command line, passed straight through to the link step (used by the ABI regression test above) — but that's a `sac`-only escape hatch, not a real answer for a `przp build`/`przp run` project. |
+| 2 | **Variadic/macro helpers.** A few raylib conveniences (`TextFormat`, which is a `printf`-style helper returning a static buffer) aren't representable as a clean `extern fn`. These get reimplemented on top of `@fmt` instead of bound directly. |
+| 3 | **Callback-based APIs.** Functions like `SetTraceLogCallback` take a C function pointer. Perzephxne's bare function pointers (no closures) are sufficient here since raylib's own callbacks are plain C function pointers with no captured state — this is a non-issue, listed for completeness. |
+| 4 | **Threading model.** raylib expects single-threaded use of its main loop (window, input, and drawing calls all from one thread). The wrapper should document this constraint rather than attempt to paper over it. |
 
 ## Suggested build order
 
-1. Resolve prerequisite #1 (`!Struct` returns) — cheap, self-contained, no FFI needed to reproduce or fix, and useful to every other struct-returning failable function in the language, not just this library.
-2. Resolve prerequisite #2 (struct-by-value FFI ABI) with a minimal repro test in the regression suite — this is the single riskiest item, since every layer above it depends on it working.
-3. Resolve prerequisite #3 (linker flags) with the smallest workable manifest addition — even a flat `link = ["raylib"]` key under `[build]` would unblock this.
-4. Write layer 1 (`std/graphics/raylib`) for a deliberately small surface first: window lifecycle, 2D shapes, keyboard/mouse input, and texture loading. Resist binding the entire raylib API up front.
-5. Write layer 2 (`std/graphics`) over that same small surface, with a regression test per wrapped function group (window, shapes, input, textures) following the existing `tests/run/std_*.przp` convention.
-6. Only after 2D is solid, extend to 3D (`Camera3D`, `DrawCube`, `DrawGrid`) and audio (`Sound`, `Music`).
-7. Layer 3 (`std/gui`) can start as soon as layer 2 has rectangles, text, and mouse state — it doesn't need 3D or audio at all.
+1. Resolve prerequisite #1 (linker flags) with the smallest workable manifest addition — even a flat `link = ["raylib"]` key under `[build]` would unblock this for real projects, not just `sac`-based experiments.
+2. Write layer 1 (`std/graphics/raylib`) for a deliberately small surface first: window lifecycle, 2D shapes, keyboard/mouse input, and texture loading. Resist binding the entire raylib API up front.
+3. Write layer 2 (`std/graphics`) over that same small surface, with a regression test per wrapped function group (window, shapes, input, textures) following the existing `tests/run/std_*.przp` convention.
+4. Only after 2D is solid, extend to 3D (`Camera3D`, `DrawCube`, `DrawGrid`) and audio (`Sound`, `Music`).
+5. Layer 3 (`std/gui`) can start as soon as layer 2 has rectangles, text, and mouse state — it doesn't need 3D or audio at all.

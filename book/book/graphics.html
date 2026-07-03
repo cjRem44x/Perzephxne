@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-cc4b6b10.js";
+            window.path_to_searchindex_js = "searchindex-0358f6c2.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-e488213a.js"></script>
@@ -295,28 +295,30 @@ fn checkbox(bounds: Rectangle, label: str, checked: bool) -&gt; bool
 fn text_box(bounds: Rectangle, text: str) -&gt; str
 </code></pre>
 <p>Because it’s built entirely from <code>std/graphics</code> primitives (rectangles, text, mouse position, click state), it needs no compiler support beyond what a game already needs — the “GUI toolkit” is just a library, same as the “game engine” is.</p>
+<h2 id="resolved-prerequisites"><a class="header" href="#resolved-prerequisites">Resolved prerequisites</a></h2>
+<p>Both of the compiler defects this chapter originally surfaced have since been fixed and regression-tested — they’re recorded here because they were found while drafting this design, not because they’re still blocking it:</p>
+<ul>
+<li><strong><code>!StructName</code> failable returns.</strong> <code>fn make() -&gt; !Point { ret @ok(Point{...}) }</code> now works for any struct, tagged union, or array — see <code>tests/run/failable_struct.przp</code>.</li>
+<li><strong>Struct-by-value FFI ABI.</strong> An <code>extern fn</code> reached via <code>import()</code> that takes or returns a plain struct by value (e.g. <code>Vector2 { f32, f32 }</code>) now follows the x86-64 System V ABI, verified by linking against independently-compiled C code — see <a href="./functions.html#struct-by-value-parameters-and-returns">Functions § Struct-by-Value Parameters and Returns</a> and <code>tests/ffi/struct_abi</code>. The one scoped limitation: this only works when the <code>extern fn</code> is declared in a module reached through <code>import()</code> (exactly the shape <code>std/graphics/raylib</code> would take) — a struct-by-value <code>extern fn</code> declared directly in a file with no import fails to compile with a clear diagnostic rather than silently miscompiling.</li>
+</ul>
+<p>This means layer 1 (the raw raylib binding) is no longer blocked on compiler work — the remaining prerequisites below are about the build/link pipeline, not code generation correctness.</p>
 <h2 id="open-engineering-prerequisites"><a class="header" href="#open-engineering-prerequisites">Open engineering prerequisites</a></h2>
-<p>These aren’t polish items — they’re things that must be resolved before layer 1 can be written for real. Found by testing directly against the current compiler while drafting this chapter (none of this is raylib-specific; both are general compiler defects surfaced by designing around them):</p>
 <div class="table-wrapper">
 <table>
 <thead>
 <tr><th>#</th><th>Prerequisite</th><th>Status</th></tr>
 </thead>
 <tbody>
-<tr><td>1</td><td><strong><code>!StructName</code> failable returns are broken for every struct, no FFI involved.</strong> Tested: <code>fn make() -&gt; !Point { ret @ok(Point{...}) }</code> fails to compile — codegen builds the <code>{ StructTy, i32 }</code> failable wrapper via <code>insertvalue</code>, but passes the struct’s alloca <em>pointer</em> where the raw aggregate <em>value</em> is expected (<code>'%tN' defined with type 'ptr' but expected '%Point = type {...}'</code>). This is pure Perzephxne, unrelated to graphics — it blocks the <code>Texture.load(path) -&gt; !Texture</code> pattern shown above, and blocks the same pattern for any fallible constructor returning a struct. This is the cheaper of the two fixes and has value independent of this library — worth fixing first, before any raylib work starts.</td><td></td></tr>
-<tr><td>2</td><td><strong>Struct-by-value FFI ABI.</strong> raylib passes and returns small structs by value constantly (<code>Vector2 GetMousePosition()</code>, <code>DrawCircleV(Vector2, ...)</code>). Tested empirically: a Perzephxne <code>extern fn</code> that takes/returns a <code>struct Vector2 { x: f32, y: f32 }</code> by value currently emits a raw LLVM aggregate call without System V ABI classification. Linked against real C code, the fields come back wrong (verified: <code>a + b</code> on two <code>Vector2</code> values returned incorrect results through the FFI boundary). This needs either (a) fixing codegen to classify small aggregates into the correct registers per the x86-64 SysV ABI for calls to <code>extern fn</code>, or (b) generating thin C shim functions with pointer-based signatures for every raylib entry point that takes/returns a struct by value, and binding to the shims instead of raylib directly.</td><td></td></tr>
-<tr><td>3</td><td><strong>Linker flags / native library dependencies.</strong> There is currently no way for a <code>przp.toml</code> project to declare “link against <code>-lraylib</code>” (or platform GL/window system libs). The <code>[deps]</code> manifest section is reserved but unimplemented (see <a href="./status-next.html">Status &amp; Next Work</a>). Binding any native library — not just raylib — needs this solved generally.</td><td></td></tr>
-<tr><td>4</td><td><strong>Variadic/macro helpers.</strong> A few raylib conveniences (<code>TextFormat</code>, which is a <code>printf</code>-style helper returning a static buffer) aren’t representable as a clean <code>extern fn</code>. These get reimplemented on top of <code>@fmt</code> instead of bound directly.</td><td></td></tr>
-<tr><td>5</td><td><strong>Callback-based APIs.</strong> Functions like <code>SetTraceLogCallback</code> take a C function pointer. Perzephxne’s bare function pointers (no closures) are sufficient here since raylib’s own callbacks are plain C function pointers with no captured state — this is a non-issue, listed for completeness.</td><td></td></tr>
-<tr><td>6</td><td><strong>Threading model.</strong> raylib expects single-threaded use of its main loop (window, input, and drawing calls all from one thread). The wrapper should document this constraint rather than attempt to paper over it.</td><td></td></tr>
+<tr><td>1</td><td><strong>Linker flags / native library dependencies.</strong> There is currently no way for a <code>przp.toml</code> project to declare “link against <code>-lraylib</code>” (or platform GL/window system libs). The <code>[deps]</code> manifest section is reserved but unimplemented (see <a href="./status-next.html">Status &amp; Next Work</a>). Binding any native library — not just raylib — needs this solved generally. As a stopgap for a proof of concept, <code>przp sac</code> does accept extra native object/archive files on its command line, passed straight through to the link step (used by the ABI regression test above) — but that’s a <code>sac</code>-only escape hatch, not a real answer for a <code>przp build</code>/<code>przp run</code> project.</td><td></td></tr>
+<tr><td>2</td><td><strong>Variadic/macro helpers.</strong> A few raylib conveniences (<code>TextFormat</code>, which is a <code>printf</code>-style helper returning a static buffer) aren’t representable as a clean <code>extern fn</code>. These get reimplemented on top of <code>@fmt</code> instead of bound directly.</td><td></td></tr>
+<tr><td>3</td><td><strong>Callback-based APIs.</strong> Functions like <code>SetTraceLogCallback</code> take a C function pointer. Perzephxne’s bare function pointers (no closures) are sufficient here since raylib’s own callbacks are plain C function pointers with no captured state — this is a non-issue, listed for completeness.</td><td></td></tr>
+<tr><td>4</td><td><strong>Threading model.</strong> raylib expects single-threaded use of its main loop (window, input, and drawing calls all from one thread). The wrapper should document this constraint rather than attempt to paper over it.</td><td></td></tr>
 </tbody>
 </table>
 </div>
 <h2 id="suggested-build-order"><a class="header" href="#suggested-build-order">Suggested build order</a></h2>
 <ol>
-<li>Resolve prerequisite #1 (<code>!Struct</code> returns) — cheap, self-contained, no FFI needed to reproduce or fix, and useful to every other struct-returning failable function in the language, not just this library.</li>
-<li>Resolve prerequisite #2 (struct-by-value FFI ABI) with a minimal repro test in the regression suite — this is the single riskiest item, since every layer above it depends on it working.</li>
-<li>Resolve prerequisite #3 (linker flags) with the smallest workable manifest addition — even a flat <code>link = ["raylib"]</code> key under <code>[build]</code> would unblock this.</li>
+<li>Resolve prerequisite #1 (linker flags) with the smallest workable manifest addition — even a flat <code>link = ["raylib"]</code> key under <code>[build]</code> would unblock this for real projects, not just <code>sac</code>-based experiments.</li>
 <li>Write layer 1 (<code>std/graphics/raylib</code>) for a deliberately small surface first: window lifecycle, 2D shapes, keyboard/mouse input, and texture loading. Resist binding the entire raylib API up front.</li>
 <li>Write layer 2 (<code>std/graphics</code>) over that same small surface, with a regression test per wrapped function group (window, shapes, input, textures) following the existing <code>tests/run/std_*.przp</code> convention.</li>
 <li>Only after 2D is solid, extend to 3D (<code>Camera3D</code>, <code>DrawCube</code>, <code>DrawGrid</code>) and audio (<code>Sound</code>, <code>Music</code>).</li>

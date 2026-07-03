@@ -638,7 +638,16 @@ static void basename_no_ext(const char *path, char *out, size_t outsz) {
 }
 
 /* compile one .przp file → .ll → binary via clang */
-static int compile_file(const char *src_path, const char *out_path, int release) {
+/* True if `path` does not end in ".przp" — used by `sac` to pass through
+   already-compiled native objects/archives to the final link step, e.g. a
+   C shim linked alongside a struct-by-value `extern fn` test. */
+static int has_przp_ext(const char *path) {
+    size_t n = strlen(path);
+    return n >= 5 && !strcmp(path + n - 5, ".przp");
+}
+
+static int compile_file(const char *src_path, const char *out_path, int release,
+                         const char **extra_links, int n_extra) {
     char err[256];
     char *src = read_file_or_null(src_path, err, sizeof(err));
     if (!src) {
@@ -680,7 +689,10 @@ static int compile_file(const char *src_path, const char *out_path, int release)
     /* invoke clang to produce the binary */
     char cmd[2048];
     const char *opt = release ? "-O2" : "-O0 -g";
-    snprintf(cmd, sizeof(cmd), "clang %s %s -o %s -lm -pthread", opt, ll_path, out_path);
+    int pos = snprintf(cmd, sizeof(cmd), "clang %s %s", opt, ll_path);
+    for (int i = 0; i < n_extra && pos < (int)sizeof(cmd); i++)
+        pos += snprintf(cmd + pos, sizeof(cmd) - (size_t)pos, " %s", extra_links[i]);
+    snprintf(cmd + pos, sizeof(cmd) - (size_t)pos, " -o %s -lm -pthread", out_path);
     int ret = system(cmd);
     if (!getenv("PRZP_KEEP_IR")) remove(ll_path);
     return (ret == 0) ? 0 : 1;
@@ -689,23 +701,30 @@ static int compile_file(const char *src_path, const char *out_path, int release)
 /* ── Sub-commands ─────────────────────────────────────────────────────────── */
 
 static void cmd_sac(int argc, char **argv) {
-    /* przp sac <files...> [-o=Name] [--release] */
+    /* przp sac <files...> [-o=Name] [--release]
+       Non-.przp file arguments (e.g. a .o built from a small C shim) pass
+       straight through to the final link step — useful for exercising an
+       `extern fn` against real native code in a regression test. */
     const char *out_name = "out";
     int release = 0;
     const char **files = malloc(sizeof(char*) * (size_t)argc);
     int nfiles = 0;
+    const char **extra_links = malloc(sizeof(char*) * (size_t)argc);
+    int n_extra = 0;
 
     for (int i = 0; i < argc; i++) {
         if (!strncmp(argv[i], "-o=", 3)) { out_name = argv[i] + 3; continue; }
         if (!strcmp(argv[i], "--release")) { release = 1; continue; }
-        files[nfiles++] = argv[i];
+        if (has_przp_ext(argv[i])) files[nfiles++] = argv[i];
+        else                       extra_links[n_extra++] = argv[i];
     }
 
-    if (nfiles == 0) { fprintf(stderr, "przp sac: no input files\n"); free(files); exit(1); }
+    if (nfiles == 0) { fprintf(stderr, "przp sac: no input files\n"); free(files); free(extra_links); exit(1); }
 
     if (nfiles == 1) {
-        int rc = compile_file(files[0], out_name, release);
+        int rc = compile_file(files[0], out_name, release, extra_links, n_extra);
         free(files);
+        free(extra_links);
         exit(rc);
     }
 
@@ -773,9 +792,13 @@ static void cmd_sac(int argc, char **argv) {
     if (!ok) { remove(ll_path); exit(1); }
     char cmd2[2048];
     const char *opt2 = release ? "-O2" : "-O0 -g";
-    snprintf(cmd2, sizeof(cmd2), "clang %s %s -o %s -lm -pthread", opt2, ll_path, out_name);
+    int pos2 = snprintf(cmd2, sizeof(cmd2), "clang %s %s", opt2, ll_path);
+    for (int i = 0; i < n_extra && pos2 < (int)sizeof(cmd2); i++)
+        pos2 += snprintf(cmd2 + pos2, sizeof(cmd2) - (size_t)pos2, " %s", extra_links[i]);
+    snprintf(cmd2 + pos2, sizeof(cmd2) - (size_t)pos2, " -o %s -lm -pthread", out_name);
     int ret2 = system(cmd2);
     if (!getenv("PRZP_KEEP_IR")) remove(ll_path);
+    free(extra_links);
     exit((ret2 == 0) ? 0 : 1);
 }
 
@@ -949,7 +972,7 @@ static void cmd_build(int argc, char **argv) {
         snprintf(out_buf, sizeof(out_buf), "%s", manifest.package_name);
     }
 
-    int rc = compile_file(manifest.entry, out_buf, release);
+    int rc = compile_file(manifest.entry, out_buf, release, NULL, 0);
     exit(rc);
 }
 
@@ -966,7 +989,7 @@ static void cmd_run(int argc, char **argv) {
     char out_buf[256];
     snprintf(out_buf, sizeof(out_buf), "%s", manifest.package_name);
 
-    if (compile_file(manifest.entry, out_buf, release) != 0) exit(1);
+    if (compile_file(manifest.entry, out_buf, release, NULL, 0) != 0) exit(1);
 
     char run_cmd[512];
     snprintf(run_cmd, sizeof(run_cmd), "./%s", out_buf);

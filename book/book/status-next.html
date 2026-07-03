@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-cc4b6b10.js";
+            window.path_to_searchindex_js = "searchindex-0358f6c2.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-e488213a.js"></script>
@@ -205,8 +205,7 @@
 <tr><td>Release UX</td><td>A future version command should be <code>przp version</code>, but versioning is intentionally deferred while beta work is moving quickly.</td></tr>
 <tr><td><code>any</code> type</td><td>Reserved keyword. Runtime-tagged values (boxing, type IDs, <code>when</code> dispatch on types) are designed but not implemented; removed from the reference until they exist.</td></tr>
 <tr><td>printf-style <code>%s</code></td><td><code>@pf("%s", s)</code> passes the fat pointer raw and crashes; use <code>{s}</code> interpolation. A fix should extract the data pointer (and handle non-NUL-terminated slices).</td></tr>
-<tr><td><code>!StructName</code> failable returns</td><td><code>fn f() -&gt; !Point { ret @ok(Point{...}) }</code> fails to compile for any struct — codegen passes the struct’s alloca pointer where the failable wrapper’s <code>insertvalue</code> expects the raw aggregate value. Found while drafting the <a href="./graphics.html">Graphics</a> design sketch; blocks any fallible constructor pattern (<code>Thing.load(path) -&gt; !Thing</code>), not just graphics.</td></tr>
-<tr><td>Struct-by-value FFI ABI</td><td>An <code>extern fn</code> that takes or returns a small struct by value (e.g. <code>Vector2 { f32, f32 }</code>) does not follow the x86-64 System V ABI — linked against real C code, field values come back wrong. Also found while drafting <a href="./graphics.html">Graphics</a>; blocks binding any C library whose API passes small structs by value, which is common (raylib, math libraries, many system APIs).</td></tr>
+<tr><td>Struct-by-value FFI, non-imported <code>extern fn</code></td><td><code>extern fn foo(v: Vector2) -&gt; Vector2</code> declared directly in a file (not reached via <code>import()</code>) fails to compile if it needs struct-by-value ABI handling — the wrapper mechanism needs an import alias to redirect call sites to (see <a href="./stdlib.html">Standard Library</a>). Move the declaration into its own module and <code>import()</code> it, which is fully supported.</td></tr>
 </tbody>
 </table>
 </div>

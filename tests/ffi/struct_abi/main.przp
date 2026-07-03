@@ -1,0 +1,33 @@
+import(s = "shapes")
+
+fn main() -> i32 {
+    # SSE, single eightbyte (8B) — real arithmetic, not just identity
+    v2: s.Vector2 = s.vec2_add(s.Vector2{.x=1.0, .y=2.0}, s.Vector2{.x=3.0, .y=4.0})
+    @pf("{v2.x} {v2.y}\n")
+
+    # SSE, full eightbyte + partial eightbyte (12B) — real arithmetic
+    v3: s.Vector3 = s.vec3_sum(s.Vector3{.x=1.0,.y=2.0,.z=3.0}, s.Vector3{.x=10.0,.y=20.0,.z=30.0})
+    @pf("{v3.x} {v3.y} {v3.z}\n")
+
+    # SSE, two full eightbytes (16B)
+    r: s.Rectangle = s.rect_id(s.Rectangle{.x=10.0, .y=20.0, .w=30.0, .h=40.0})
+    @pf("{r.x} {r.y} {r.w} {r.h}\n")
+
+    # INTEGER, single eightbyte (4B)
+    c: s.Color = s.color_id(s.Color{.r=255u8, .g=128u8, .b=64u8, .a=1u8})
+    @pf("{c.r} {c.g} {c.b} {c.a}\n")
+
+    # INTEGER merge rule: int+float share one eightbyte -> INTEGER (8B)
+    m: s.Mixed8 = s.mixed8_id(s.Mixed8{.a=42, .b=3.5})
+    @pf("{m.a} {m.b}\n")
+
+    # MEMORY class: exceeds 16 bytes -> byval/sret (20B)
+    b: s.Big20 = s.big20_id(s.Big20{.a=1, .b=2, .c=3, .d=4, .e=5})
+    @pf("{b.a} {b.b} {b.c} {b.d} {b.e}\n")
+
+    # SSE, two full eightbytes carried as double (16B)
+    t: s.Two64 = s.two64_id(s.Two64{.a=1.25, .b=2.5})
+    @pf("{t.a} {t.b}\n")
+
+    ret 0
+}

@@ -1,0 +1,62 @@
+struct Point { x: i32, y: i32, z: i32, w: i32 }
+struct Line { a: Point, b: Point }
+
+enum Shape {
+    Circle(f64),
+    Point,
+}
+
+fn make_point(ok: bool) -> !Point {
+    if !ok { ret @err(1) }
+    p: Point = Point{.x=1, .y=2, .z=3, .w=4}
+    ret @ok(p)                                  # @ok on an existing variable
+}
+
+fn make_point_lit(ok: bool) -> !Point {
+    if !ok { ret @err(2) }
+    ret @ok(Point{.x=5, .y=6, .z=7, .w=8})      # @ok on a struct literal directly
+}
+
+fn make_line(ok: bool) -> !Line {
+    if !ok { ret @err(3) }
+    ret @ok(Line{.a=Point{.x=1,.y=2,.z=3,.w=4}, .b=Point{.x=5,.y=6,.z=7,.w=8}})
+}
+
+fn make_arr(ok: bool) -> ![3]i32 {
+    if !ok { ret @err(4) }
+    ret @ok([100, 200, 300])
+}
+
+fn make_shape(ok: bool) -> !Shape {
+    if !ok { ret @err(5) }
+    ret @ok(Shape.Circle(3.5))
+}
+
+fn main() -> i32 {
+    p1, e1: !Point = make_point(true)
+    @pf("{p1.x} {p1.y} {p1.z} {p1.w} {e1}\n")
+
+    p2, e2: !Point = make_point_lit(true)
+    @pf("{p2.x} {p2.y} {p2.z} {p2.w} {e2}\n")
+
+    p3, e3: !Point = make_point(false)
+    @pf("{e3}\n")
+
+    l1, e4: !Line = make_line(true)
+    @pf("{l1.a.x} {l1.b.w} {e4}\n")
+
+    a1, e5: ![3]i32 = make_arr(true)
+    @pf("{a1[0]} {a1[1]} {a1[2]} {e5}\n")
+
+    s1, e6: !Shape = make_shape(true)
+    when s1 {
+        Shape.Circle(r) => @pf("circle {r} {e6}\n"),
+        Shape.Point     => @pf("point {e6}\n"),
+    }
+
+    # plain-assignment form (discard error flag)
+    p4: Point = make_point(true)
+    @pf("{p4.x} {p4.y}\n")
+
+    ret 0
+}

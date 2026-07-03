@@ -50,6 +50,8 @@ typedef struct Symbol {
     const char    *llvm_name; /* @name or %name */
     int            is_global;
     int            is_fn_ref;  /* 1 = top-level function (not a stored fn ptr) */
+    int            is_extern;  /* 1 = declared via `extern fn` — needs ABI classification
+                                   for any struct/array parameter or return passed by value */
     Type          *ty;
 } Symbol;
 
@@ -221,7 +223,7 @@ static void define_sym(CG *cg, const char *name, const char *llvm, int global, T
     cg->scope->syms = s;
 }
 
-static void define_fn_sym(CG *cg, const char *name, Type *ty) {
+static void define_fn_sym_ex(CG *cg, const char *name, Type *ty, int is_extern) {
     char buf[256];
     snprintf(buf, sizeof(buf), "@%s", name);
     Symbol *s = ARENA_NEW(cg->arena, Symbol);
@@ -229,9 +231,14 @@ static void define_fn_sym(CG *cg, const char *name, Type *ty) {
     s->llvm_name = arena_strdup(cg->arena, buf);
     s->is_global = 1;
     s->is_fn_ref = 1;
+    s->is_extern = is_extern;
     s->ty        = ty;
     s->next      = cg->scope->syms;
     cg->scope->syms = s;
+}
+
+static void define_fn_sym(CG *cg, const char *name, Type *ty) {
+    define_fn_sym_ex(cg, name, ty, 0);
 }
 
 static Symbol *lookup(CG *cg, const char *name) {
@@ -344,6 +351,9 @@ static int is_plain_union(CG *cg, const char *name) {
     return 0;
 }
 
+/* forward decls — defined later, needed by the ABI classifier below */
+static int type_is_float(Type *ty);
+
 /* Approximate byte size of a type for union payload sizing */
 static int cg_type_byte_size(CG *cg, Type *ty) {
     if (!ty) return 0;
@@ -378,6 +388,188 @@ static int cg_type_byte_size(CG *cg, Type *ty) {
         }
         default: return 8;
     }
+}
+
+/* ── x86-64 System V ABI classification for struct/array-by-value FFI ──────
+   Perzephxne's own calling convention (struct = alloca pointer, passed as a
+   raw LLVM aggregate between Perzephxne functions) is self-consistent for
+   Perzephxne-to-Perzephxne calls, since both sides are emitted by the same
+   compiler. It is NOT the platform C ABI, so it breaks the moment a struct
+   crosses an `extern fn` boundary into real, separately-compiled C code —
+   verified empirically: linking against a real C function that takes/returns
+   a small struct by value produces wrong field values unless the call site
+   performs the same eightbyte classification the platform ABI specifies.
+   This block implements just enough of that classification (scalar fields
+   only, homogeneous or mixed, up to 16 bytes; anything larger is passed
+   through memory, which needs no classification) to make `extern fn`
+   declarations with struct/array-by-value parameters or returns interop
+   correctly with real C code — the case that matters for wrapping a C
+   library like raylib whose API passes Vector2/Color/Rectangle by value. */
+
+/* Natural alignment (bytes) of a type, mirroring C struct layout rules. */
+static int cg_type_align(CG *cg, Type *ty) {
+    if (!ty) return 4;
+    switch (ty->kind) {
+        case TY_BOOL: case TY_I8: case TY_U8: case TY_CHAR: return 1;
+        case TY_I16: case TY_U16: return 2;
+        case TY_I32: case TY_U32: case TY_F32: return 4;
+        case TY_I64: case TY_U64: case TY_F64: case TY_USIZE:
+        case TY_PTR: case TY_SMART_PTR: return 8;
+        case TY_STR: case TY_SLICE: case TY_ANY: return 8;
+        case TY_NAMED: {
+            EnumInfo *ei = find_enum(cg, ty->named.name);
+            if (ei) return cg_type_align(cg, ei->backing_ty);
+            StructInfo *si = find_struct(cg, ty->named.name);
+            int max_a = 1;
+            if (si) {
+                for (size_t i = 0; i < si->fields.len; i++) {
+                    int a = cg_type_align(cg, si->fields.data[i].ty);
+                    if (a > max_a) max_a = a;
+                }
+            }
+            return max_a;
+        }
+        case TY_ARRAY: return cg_type_align(cg, ty->array.inner);
+        default: return 8;
+    }
+}
+
+/* A flattened primitive leaf inside a struct/array being classified:
+   the byte offset (real, padding-aware) it starts at, its size, and
+   whether it belongs to the SSE (float-family) or INTEGER register class. */
+typedef struct { int offset; int size; int is_float; } ABILeaf;
+
+#define ABI_MAX_LEAVES 32
+
+/* Recursively flatten `ty` into primitive leaves at real C-ABI byte offsets
+   (aligning each field to its own natural alignment, matching the padding
+   LLVM's default — non-packed — struct layout already inserts). Returns the
+   offset immediately after the last field (before any trailing alignment
+   padding); the caller rounds that up to the type's own alignment for the
+   total size. Truncates rather than overflows if a struct has more than
+   ABI_MAX_LEAVES primitive fields — such structs are unrealistic for a
+   pass-by-value FFI argument and will simply be over-approximated as MEMORY
+   class by the caller once total size is computed. */
+static int abi_flatten(CG *cg, Type *ty, int base, ABILeaf *out, int *n) {
+    if (!ty) return base;
+    switch (ty->kind) {
+        case TY_NAMED: {
+            EnumInfo *ei = find_enum(cg, ty->named.name);
+            if (ei) return abi_flatten(cg, ei->backing_ty, base, out, n);
+            StructInfo *si = find_struct(cg, ty->named.name);
+            if (!si) {
+                if (*n < ABI_MAX_LEAVES) out[(*n)++] = (ABILeaf){base, 8, 0};
+                return base + 8;
+            }
+            int off = base;
+            for (size_t i = 0; i < si->fields.len; i++) {
+                Type *fty = si->fields.data[i].ty;
+                int a = cg_type_align(cg, fty);
+                off = (off + a - 1) / a * a;
+                off = abi_flatten(cg, fty, off, out, n);
+            }
+            return off;
+        }
+        case TY_ARRAY: {
+            int64_t cnt = 0;
+            if (ty->array.size && ty->array.size->kind == EXPR_INT)
+                cnt = (int64_t)ty->array.size->ival;
+            int off = base;
+            for (int64_t i = 0; i < cnt; i++)
+                off = abi_flatten(cg, ty->array.inner, off, out, n);
+            return off;
+        }
+        default: {
+            int sz = cg_type_byte_size(cg, ty);
+            int is_f = type_is_float(ty);
+            if (*n < ABI_MAX_LEAVES) out[(*n)++] = (ABILeaf){base, sz, is_f};
+            return base + sz;
+        }
+    }
+}
+
+/* Real, padding-aware byte size of a struct/array type (unlike the naive
+   field-size sum in cg_type_byte_size, used elsewhere for union payload
+   sizing where over-estimating is harmless). */
+static int abi_real_size(CG *cg, Type *ty) {
+    ABILeaf leaves[ABI_MAX_LEAVES];
+    int n = 0;
+    int end = abi_flatten(cg, ty, 0, leaves, &n);
+    int a = cg_type_align(cg, ty);
+    return (end + a - 1) / a * a;
+}
+
+typedef enum { ABI_SCALAR, ABI_MEMORY, ABI_REGS } ABIKind;
+
+typedef struct {
+    ABIKind     kind;
+    int         n;             /* register slots used (ABI_REGS: 1 or 2) */
+    const char *slot_llt[2];   /* coerced carrier type per slot: "double"/"float" (SSE) or "i8"/"i16"/"i32"/"i64" (INTEGER) */
+    int         size;          /* real total byte size */
+    int         align;         /* natural alignment, for byval/sret */
+} ABIShape;
+
+static const char *abi_int_carrier(int bytes) {
+    if (bytes <= 1) return "i8";
+    if (bytes <= 2) return "i16";
+    if (bytes <= 4) return "i32";
+    return "i64";
+}
+
+/* Classify a type for the purpose of passing/returning it BY VALUE across an
+   `extern fn` boundary. Only TY_NAMED (struct, not enum) and TY_ARRAY are
+   ever non-ABI_SCALAR — everything else (scalars, pointers, str/slice fat
+   pointers, enums) already crosses the FFI boundary correctly today and is
+   returned as ABI_SCALAR (no special handling). */
+static ABIShape abi_classify(CG *cg, Type *ty) {
+    ABIShape sh = {0};
+    if (!ty || ty->kind == TY_TUPLE) { sh.kind = ABI_SCALAR; return sh; }
+    if (ty->kind == TY_NAMED && find_enum(cg, ty->named.name)) { sh.kind = ABI_SCALAR; return sh; }
+    if (ty->kind != TY_NAMED && ty->kind != TY_ARRAY) { sh.kind = ABI_SCALAR; return sh; }
+
+    ABILeaf leaves[ABI_MAX_LEAVES];
+    int n = 0;
+    abi_flatten(cg, ty, 0, leaves, &n);
+    int size  = abi_real_size(cg, ty);
+    int align = cg_type_align(cg, ty);
+    sh.size = size; sh.align = align;
+
+    if (size == 0 || size > 16 || n >= ABI_MAX_LEAVES) {
+        sh.kind = ABI_MEMORY;
+        return sh;
+    }
+
+    sh.kind = ABI_REGS;
+    sh.n = (size > 8) ? 2 : 1;
+    for (int eb = 0; eb < sh.n; eb++) {
+        int eb_start = eb * 8;
+        int eb_end   = eb_start + 8;
+        int covered  = 0;      /* bytes of this eightbyte actually occupied by a field */
+        int any_int  = 0;
+        int any_field = 0;
+        for (int i = 0; i < n; i++) {
+            int ls = leaves[i].offset, le = ls + leaves[i].size;
+            if (le <= eb_start || ls >= eb_end) continue; /* no overlap */
+            any_field = 1;
+            int ov_start = ls > eb_start ? ls : eb_start;
+            int ov_end   = le < eb_end   ? le : eb_end;
+            covered += (ov_end - ov_start);
+            if (!leaves[i].is_float) any_int = 1;
+        }
+        int eb_bytes = eb_end <= size ? 8 : (size - eb_start);
+        if (eb_bytes > 8) eb_bytes = 8;
+        if (!any_field) {
+            /* pure padding eightbyte (shouldn't normally happen within a
+               struct's real size, but stay safe) — treat as INTEGER of the
+               eightbyte's byte width */
+            sh.slot_llt[eb] = abi_int_carrier(eb_bytes);
+        } else if (any_int) {
+            sh.slot_llt[eb] = abi_int_carrier(eb_bytes);
+        } else {
+            sh.slot_llt[eb] = (covered <= 4 && eb_bytes <= 4) ? "float" : "double";
+        }
+    }
+    return sh;
 }
 
 /* For named types: enums use their backing integer type; structs/unions use %Name. */
@@ -1908,6 +2100,18 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                     fatal_at(e->span, "@ok requires one argument");
                 Type *vty = NULL;
                 Val val = cg_expr(cg, e->builtin.args.data[0], &vty);
+                /* struct/array values from EXPR_IDENT or EXPR_STRUCT_LIT come back
+                   as an alloca pointer (Perzephxne's "struct value = ptr" convention);
+                   load the actual aggregate before packing it into the { T, i32 }
+                   wrapper, which needs a first-class value, not a pointer. */
+                ExprKind vk = e->builtin.args.data[0]->kind;
+                if (vty && ((vty->kind == TY_NAMED && !find_enum(cg, vty->named.name))
+                            || vty->kind == TY_ARRAY)
+                        && (vk == EXPR_IDENT || vk == EXPR_STRUCT_LIT || vk == EXPR_ARRAY_LIT)) {
+                    int loaded = new_tmp(cg);
+                    emit(cg, "  %%t%d = load %s, ptr %s\n", loaded, llvm_type(vty), val.buf);
+                    val = val_tmp(loaded);
+                }
                 const char *val_llt = vty ? effective_llvm_type(cg, vty) : "i32";
                 /* build { val_llt, i32 } aggregate */
                 char fail_llt[256];
@@ -4996,6 +5200,204 @@ static int mark_declared(CG *cg, const char *name) {
     return 1; /* first time */
 }
 
+/* Does this extern fn signature involve at least one struct/array passed or
+   returned by value? Those are the only signatures needing ABI-aware
+   handling — plain scalar/pointer signatures (the overwhelming majority)
+   keep using the simple direct `declare`, unchanged. */
+static int extern_fn_needs_abi(CG *cg, Item *item) {
+    for (size_t i = 0; i < item->extern_fn.params.len; i++)
+        if (abi_classify(cg, item->extern_fn.params.data[i].ty).kind != ABI_SCALAR)
+            return 1;
+    if (item->extern_fn.ret
+            && abi_classify(cg, item->extern_fn.ret).kind != ABI_SCALAR)
+        return 1;
+    return 0;
+}
+
+/* Emit the real C function under `real_c_name` using an ABI-classified
+   (register-coerced or byval/sret) signature, plus a thin wrapper visible
+   under `visible_name` using the plain, friendly Perzephxne struct types —
+   Perzephxne call sites always target the wrapper, so nothing outside this
+   function needs to know the real ABI shape. The wrapper unpacks its
+   friendly-typed arguments into the real call's coerced representation,
+   and reassembles a coerced return value back into the friendly struct
+   type before returning it (matching Perzephxne's "struct = alloca ptr"
+   convention that the rest of codegen already expects). */
+static void emit_extern_fn_abi_wrapper(CG *cg, Item *item,
+                                        const char *real_c_name,
+                                        const char *visible_name) {
+    ParamList *params = &item->extern_fn.params;
+    Type *ret_ty = item->extern_fn.ret;
+    ABIShape ret_shape = abi_classify(cg, ret_ty);
+    size_t np = params->len;
+
+    ABIShape *psh = np ? ARENA_ALLOC(cg->arena, ABIShape, np) : NULL;
+    for (size_t i = 0; i < np; i++) psh[i] = abi_classify(cg, params->data[i].ty);
+
+    /* ---- 1. declare the real C function, ABI-coerced ---- */
+    if (mark_declared(cg, real_c_name)) {
+        int any = 0;
+        if (ret_shape.kind == ABI_MEMORY) {
+            emit(cg, "declare void @%s(ptr sret(%s) align %d",
+                 real_c_name, llvm_type(ret_ty), ret_shape.align);
+            any = 1;
+        } else if (ret_shape.kind == ABI_REGS && ret_shape.n == 2) {
+            emit(cg, "declare { %s, %s } @%s(",
+                 ret_shape.slot_llt[0], ret_shape.slot_llt[1], real_c_name);
+        } else if (ret_shape.kind == ABI_REGS) {
+            emit(cg, "declare %s @%s(", ret_shape.slot_llt[0], real_c_name);
+        } else {
+            emit(cg, "declare %s @%s(", ret_ty ? llvm_type(ret_ty) : "void", real_c_name);
+        }
+        for (size_t i = 0; i < np; i++) {
+            if (psh[i].kind == ABI_MEMORY) {
+                if (any) emit(cg, ", "); any = 1;
+                emit(cg, "ptr byval(%s) align %d",
+                     llvm_type(params->data[i].ty), psh[i].align);
+            } else if (psh[i].kind == ABI_REGS) {
+                for (int k = 0; k < psh[i].n; k++) {
+                    if (any) emit(cg, ", "); any = 1;
+                    emit(cg, "%s", psh[i].slot_llt[k]);
+                }
+            } else {
+                if (any) emit(cg, ", "); any = 1;
+                emit(cg, "%s", llvm_type(params->data[i].ty));
+            }
+        }
+        if (item->extern_fn.variadic) {
+            if (any) emit(cg, ", ");
+            emit(cg, "...");
+        }
+        emit(cg, ")\n");
+    }
+
+    /* ---- 2. define the friendly wrapper ---- */
+    const char *wrap_ret_llt = ret_ty ? llvm_type(ret_ty) : "void";
+    int wrap_is_void = !strcmp(wrap_ret_llt, "void");
+    emit(cg, "define %s @%s(", wrap_ret_llt, visible_name);
+    for (size_t i = 0; i < np; i++) {
+        if (i) emit(cg, ", ");
+        emit(cg, "%s %%p%zu", llvm_type(params->data[i].ty), i);
+    }
+    emit(cg, ") {\nentry:\n");
+
+    /* materialize each friendly param into an alloca so struct-typed ones
+       can have their bytes reinterpreted for register-class coercion */
+    char **pptr = np ? malloc(sizeof(char *) * np) : NULL;
+    for (size_t i = 0; i < np; i++) {
+        char buf[32];
+        if (psh[i].kind != ABI_SCALAR) {
+            int a = cg->tmp_id++;
+            emit(cg, "  %%t%d = alloca %s\n", a, llvm_type(params->data[i].ty));
+            emit(cg, "  store %s %%p%zu, ptr %%t%d\n", llvm_type(params->data[i].ty), i, a);
+            snprintf(buf, sizeof(buf), "%%t%d", a);
+        } else {
+            snprintf(buf, sizeof(buf), "%%p%zu", i);
+        }
+        pptr[i] = arena_strdup(cg->arena, buf);
+    }
+
+    int sret_alloca = -1;
+    if (ret_shape.kind == ABI_MEMORY) {
+        sret_alloca = cg->tmp_id++;
+        emit(cg, "  %%t%d = alloca %s\n", sret_alloca, llvm_type(ret_ty));
+    }
+
+    /* Pass A: for each REGS-classified param, load its coerced slot value(s)
+       from the alloca now — these are separate instructions that must be
+       emitted before the `call` line that consumes them. */
+    int regs_slot[64][2];
+    for (size_t i = 0; i < np && i < 64; i++) {
+        if (psh[i].kind != ABI_REGS) continue;
+        for (int k = 0; k < psh[i].n; k++) {
+            int lv = cg->tmp_id++;
+            if (k == 0) {
+                emit(cg, "  %%t%d = load %s, ptr %s\n", lv, psh[i].slot_llt[0], pptr[i]);
+            } else {
+                int off = cg->tmp_id++;
+                emit(cg, "  %%t%d = getelementptr i8, ptr %s, i64 8\n", off, pptr[i]);
+                emit(cg, "  %%t%d = load %s, ptr %%t%d\n", lv, psh[i].slot_llt[1], off);
+            }
+            regs_slot[i][k] = lv;
+        }
+    }
+
+    /* Pass B: emit the real call using the values prepared above. */
+    char callret[64];
+    if (ret_shape.kind == ABI_MEMORY) snprintf(callret, sizeof(callret), "void");
+    else if (ret_shape.kind == ABI_REGS && ret_shape.n == 2)
+        snprintf(callret, sizeof(callret), "{ %s, %s }", ret_shape.slot_llt[0], ret_shape.slot_llt[1]);
+    else if (ret_shape.kind == ABI_REGS)
+        snprintf(callret, sizeof(callret), "%s", ret_shape.slot_llt[0]);
+    else snprintf(callret, sizeof(callret), "%s", ret_ty ? llvm_type(ret_ty) : "void");
+
+    int call_result = -1;
+    int emit_result = strcmp(callret, "void") != 0;
+    if (emit_result) call_result = cg->tmp_id++;
+
+    if (emit_result) emit(cg, "  %%t%d = call %s @%s(", call_result, callret, real_c_name);
+    else              emit(cg, "  call %s @%s(", callret, real_c_name);
+
+    int any = 0;
+    if (ret_shape.kind == ABI_MEMORY) {
+        emit(cg, "ptr sret(%s) align %d %%t%d", llvm_type(ret_ty), ret_shape.align, sret_alloca);
+        any = 1;
+    }
+    for (size_t i = 0; i < np; i++) {
+        if (psh[i].kind == ABI_MEMORY) {
+            if (any) emit(cg, ", "); any = 1;
+            emit(cg, "ptr byval(%s) align %d %s",
+                 llvm_type(params->data[i].ty), psh[i].align, pptr[i]);
+        } else if (psh[i].kind == ABI_REGS) {
+            for (int k = 0; k < psh[i].n; k++) {
+                if (any) emit(cg, ", "); any = 1;
+                emit(cg, "%s %%t%d", psh[i].slot_llt[k], regs_slot[i][k]);
+            }
+        } else {
+            if (any) emit(cg, ", "); any = 1;
+            emit(cg, "%s %%p%zu", llvm_type(params->data[i].ty), i);
+        }
+    }
+    if (item->extern_fn.variadic) {
+        if (any) emit(cg, ", ");
+        emit(cg, "...");
+    }
+    emit(cg, ")\n");
+
+    if (sret_alloca >= 0) {
+        if (wrap_is_void) { emit(cg, "  ret void\n}\n"); }
+        else {
+            int loaded = cg->tmp_id++;
+            emit(cg, "  %%t%d = load %s, ptr %%t%d\n", loaded, wrap_ret_llt, sret_alloca);
+            emit(cg, "  ret %s %%t%d\n}\n", wrap_ret_llt, loaded);
+        }
+    } else if (ret_shape.kind == ABI_REGS) {
+        int slot = cg->tmp_id++;
+        emit(cg, "  %%t%d = alloca %s\n", slot, wrap_ret_llt);
+        if (ret_shape.n == 1) {
+            emit(cg, "  store %s %%t%d, ptr %%t%d\n", ret_shape.slot_llt[0], call_result, slot);
+        } else {
+            int e0 = cg->tmp_id++, e1 = cg->tmp_id++;
+            emit(cg, "  %%t%d = extractvalue { %s, %s } %%t%d, 0\n",
+                 e0, ret_shape.slot_llt[0], ret_shape.slot_llt[1], call_result);
+            emit(cg, "  %%t%d = extractvalue { %s, %s } %%t%d, 1\n",
+                 e1, ret_shape.slot_llt[0], ret_shape.slot_llt[1], call_result);
+            emit(cg, "  store %s %%t%d, ptr %%t%d\n", ret_shape.slot_llt[0], e0, slot);
+            int off = cg->tmp_id++;
+            emit(cg, "  %%t%d = getelementptr i8, ptr %%t%d, i64 8\n", off, slot);
+            emit(cg, "  store %s %%t%d, ptr %%t%d\n", ret_shape.slot_llt[1], e1, off);
+        }
+        int loaded = cg->tmp_id++;
+        emit(cg, "  %%t%d = load %s, ptr %%t%d\n", loaded, wrap_ret_llt, slot);
+        emit(cg, "  ret %s %%t%d\n}\n", wrap_ret_llt, loaded);
+    } else if (wrap_is_void) {
+        emit(cg, "  ret void\n}\n");
+    } else {
+        emit(cg, "  ret %s %%t%d\n}\n", wrap_ret_llt, call_result);
+    }
+    free(pptr);
+}
+
 static void cg_extern_fn(CG *cg, Item *item) {
     const char *c_name = item->extern_fn.c_name ? item->extern_fn.c_name : item->name;
     /* skip if this exact declaration (by mangled name) was already emitted */
@@ -5003,6 +5405,10 @@ static void cg_extern_fn(CG *cg, Item *item) {
     if (is_preamble_decl(c_name)) {
         /* preamble already declares the real C function; just emit a wrapper alias */
         if (item->extern_fn.c_name) {
+            if (extern_fn_needs_abi(cg, item)) {
+                emit_extern_fn_abi_wrapper(cg, item, c_name, item->name);
+                return;
+            }
             const char *ret_llt = item->extern_fn.ret ? llvm_type(item->extern_fn.ret) : "void";
             int is_void = !strcmp(ret_llt, "void");
             /* emit define wrapper: alias__fn(...) -> fn(...) */
@@ -5033,6 +5439,10 @@ static void cg_extern_fn(CG *cg, Item *item) {
     const char *ret_llt = item->extern_fn.ret ? llvm_type(item->extern_fn.ret) : "void";
 
     if (item->extern_fn.c_name) {
+        if (extern_fn_needs_abi(cg, item)) {
+            emit_extern_fn_abi_wrapper(cg, item, c_name, item->name);
+            return;
+        }
         /* Imported extern fn: declare C function + emit thin wrapper with mangled name */
         /* First declare the original C function (if not already declared) */
         if (mark_declared(cg, c_name)) {
@@ -5072,6 +5482,22 @@ static void cg_extern_fn(CG *cg, Item *item) {
         if (is_void) emit(cg, "  ret void\n}\n");
         else         emit(cg, "  ret %s %%r\n}\n", ret_llt);
         return;
+    }
+
+    /* Normal (non-imported) extern fn declaration. A struct/array-by-value
+       parameter or return here can't be routed through the ABI wrapper: with
+       no import alias there's no rewrite pass redirecting call sites to a
+       differently-named wrapper, and the wrapper can't share the real C
+       symbol's name (the linker would see two definitions). Fail loudly
+       rather than silently emit ABI-mismatched code — put the declaration in
+       its own module and `import()` it instead, which is supported. */
+    if (extern_fn_needs_abi(cg, item)) {
+        fatal_at(item->span,
+            "extern fn '%s': struct/array-by-value parameters or return types "
+            "are only supported when declared in a module reached via import() "
+            "(the ABI wrapper needs an import alias to redirect call sites to); "
+            "move this declaration into its own module and import it",
+            item->name);
     }
 
     /* Normal extern fn declaration */
@@ -5372,7 +5798,7 @@ int codegen(Module *mod, FILE *out, int release) {
                     ty->fn.params.data[j] = item->extern_fn.params.data[j].ty;
             }
             ty->fn.variadic = item->extern_fn.variadic;
-            define_fn_sym(&cg, item->name, ty);
+            define_fn_sym_ex(&cg, item->name, ty, 1);
         }
     }
     /* also register impl methods */
