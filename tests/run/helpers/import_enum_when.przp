@@ -1,0 +1,16 @@
+enum Op {
+    Add,
+    Sub,
+    Mul,
+}
+
+# Regression: a `when` block inside an imported module's own function body
+# must have its enum-variant patterns (and any nested calls) rewritten by
+# the import's alias-mangling pass, same as any other statement.
+fn apply(op: Op, a: i32, b: i32) -> i32 {
+    ret when op {
+        Op.Add => a + b,
+        Op.Sub => a - b,
+        Op.Mul => a * b,
+    }
+}

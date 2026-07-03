@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-630bb592.js";
+            window.path_to_searchindex_js = "searchindex-d60a015a.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-b900b046.js"></script>
@@ -396,6 +396,33 @@
 </tbody>
 </table>
 </div>
+<h3 id="high-level-helpers"><a class="header" href="#high-level-helpers">High-Level Helpers</a></h3>
+<p>Pick an algorithm with the <code>HashKind</code> / <code>CipherKind</code> enums — today each has one member (<code>Sha256</code>, <code>XorSha</code>), leaving room to add more without changing call sites.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Function</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>hash_pk(kind, plain)</code></td><td>hash a password/key → lowercase hex digest string</td></tr>
+<tr><td><code>auth_hash(kind, plain, hashed)</code></td><td><code>true</code> if hashing <code>plain</code> reproduces <code>hashed</code></td></tr>
+<tr><td><code>enc_file(kind, path, key)</code></td><td>encrypt the file at <code>path</code> in place</td></tr>
+<tr><td><code>dec_file(kind, path, key)</code></td><td>decrypt the file at <code>path</code> in place (symmetric with <code>enc_file</code>)</td></tr>
+</tbody>
+</table>
+</div>
+<pre><code>import(crypto = "std/crypto")
+
+# password hashing
+h: str = crypto.hash_pk(crypto.HashKind.Sha256, "hunter2")
+ok: bool = crypto.auth_hash(crypto.HashKind.Sha256, "hunter2", h)   # true
+
+# file encryption — enc_file/dec_file use the same transform, so
+# calling either one twice with the same key restores the original bytes
+crypto.enc_file(crypto.CipherKind.XorSha, "secret.txt", "correct horse battery staple")
+crypto.dec_file(crypto.CipherKind.XorSha, "secret.txt", "correct horse battery staple")
+</code></pre>
+<p><code>CipherKind.XorSha</code> derives a keystream from <code>sha256(key || block_counter)</code> and XORs it against the file’s bytes 32 bytes at a time — unlike a repeating-key XOR, the keystream never repeats within a file. It is not authenticated (no tamper detection) and has not been audited; treat it as a starting point for the standard library rather than a production cipher.</p>
 
                     </main>
 

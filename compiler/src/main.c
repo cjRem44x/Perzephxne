@@ -201,6 +201,15 @@ static void rw_ident_stmts(StmtList sl, const char **orig, size_t n_orig,
                 break;
             case STMT_BLOCK:  rw_ident_stmts(s->block, orig, n_orig, alias, a); break;
             case STMT_DEFER:  rw_ident_stmts(s->defer, orig, n_orig, alias, a); break;
+            case STMT_WHEN:
+                rw_ident_expr(s->when.val, orig, n_orig, alias, a);
+                for (size_t j = 0; j < s->when.arms.len; j++) {
+                    WhenArm *arm = &s->when.arms.data[j];
+                    for (size_t k = 0; k < arm->pats.len; k++)
+                        rw_ident_expr(arm->pats.data[k], orig, n_orig, alias, a);
+                    rw_ident_stmt(arm->body, orig, n_orig, alias, a);
+                }
+                break;
             default: break;
         }
     }
@@ -278,6 +287,15 @@ static void rw_ident_expr(Expr *e, const char **orig, size_t n_orig,
             rw_ident_expr(e->if_expr.cond, orig, n_orig, alias, a);
             rw_ident_stmt(e->if_expr.then_, orig, n_orig, alias, a);
             rw_ident_stmt(e->if_expr.else_, orig, n_orig, alias, a);
+            break;
+        case EXPR_WHEN:
+            rw_ident_expr(e->when.cond, orig, n_orig, alias, a);
+            for (size_t i = 0; i < e->when.arms.len; i++) {
+                WhenArm *arm = &e->when.arms.data[i];
+                for (size_t j = 0; j < arm->pats.len; j++)
+                    rw_ident_expr(arm->pats.data[j], orig, n_orig, alias, a);
+                rw_ident_stmt(arm->body, orig, n_orig, alias, a);
+            }
             break;
         default: break;
     }

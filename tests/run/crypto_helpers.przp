@@ -1,0 +1,32 @@
+import(crypto = "std/crypto")
+import(file = "std/file")
+
+fn main() -> i32 {
+    # hash_pk / auth_hash
+    h: str = crypto.hash_pk(crypto.HashKind.Sha256, "hunter2")
+    ok: bool = crypto.auth_hash(crypto.HashKind.Sha256, "hunter2", h)
+    bad: bool = crypto.auth_hash(crypto.HashKind.Sha256, "wrong", h)
+    @pf("{h} {ok} {bad}\n")
+
+    # enc_file / dec_file round trip
+    path: str = "tests/tmp/crypto_helpers.bin"
+    plain: str = "The quick brown fox jumps over the lazy dog."
+    file.write_all(path, plain)
+    crypto.enc_file(crypto.CipherKind.XorSha, path, "correct horse battery staple")
+    encrypted: str = file.read_all(path)
+    changed: bool = encrypted != plain
+    crypto.dec_file(crypto.CipherKind.XorSha, path, "correct horse battery staple")
+    decrypted: str = file.read_all(path)
+    roundtrip: bool = decrypted == plain
+    @pf("{changed} {roundtrip}\n")
+
+    # wrong key must not decrypt back to the original
+    crypto.enc_file(crypto.CipherKind.XorSha, path, "keyA")
+    crypto.dec_file(crypto.CipherKind.XorSha, path, "keyB")
+    wrong: str = file.read_all(path)
+    wrong_key_fails: bool = wrong != plain
+    @pf("{wrong_key_fails}\n")
+
+    file.remove_file(path)
+    ret 0
+}
