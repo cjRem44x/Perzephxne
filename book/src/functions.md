@@ -147,6 +147,19 @@ extern struct FILE_opaque  # opaque type — use via pointers only
 extern fn fopen(path: *u8, mode: *u8) -> *FILE_opaque
 ```
 
+### Struct-by-Value Parameters and Returns
+
+A plain (non-opaque) `struct` can be passed to or returned from an `extern fn` by value, matching the x86-64 System V C ABI so it interops correctly with a real C library:
+
+```
+struct Vector2 { x: f32, y: f32 }
+extern fn Vector2Add(a: Vector2, b: Vector2) -> Vector2
+```
+
+This is the calling convention raylib, many math libraries, and plenty of system APIs use pervasively (`Vector2`, `Color`, `Rectangle`-shaped structs). Perzephxne classifies the struct's fields per the platform ABI (small all-float structs pass in SSE registers, small all-integer/mixed structs pass in general registers, anything over 16 bytes passes through memory) and generates the matching call shape automatically — nothing beyond declaring the signature is required.
+
+This only works for an `extern fn` reached through `import()`. A `struct`-by-value `extern fn` declared directly in a file with no import will fail to compile with a clear error, since the compiler needs the import alias to route Perzephxne call sites to the internal wrapper it generates. Put the declaration in its own module and import it — a one-function module works fine if that's all you need.
+
 ## Inline
 
 Use `inline fn` to hint that a function should be inlined at call sites:

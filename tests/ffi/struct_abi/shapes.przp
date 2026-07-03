@@ -1,0 +1,15 @@
+struct Vector2 { x: f32, y: f32 }
+struct Vector3 { x: f32, y: f32, z: f32 }
+struct Rectangle { x: f32, y: f32, w: f32, h: f32 }
+struct Color { r: u8, g: u8, b: u8, a: u8 }
+struct Mixed8 { a: i32, b: f32 }
+struct Big20 { a: i32, b: i32, c: i32, d: i32, e: i32 }
+struct Two64 { a: f64, b: f64 }
+
+extern fn vec2_add(a: Vector2, b: Vector2) -> Vector2
+extern fn vec3_sum(a: Vector3, b: Vector3) -> Vector3
+extern fn rect_id(r: Rectangle) -> Rectangle
+extern fn color_id(c: Color) -> Color
+extern fn mixed8_id(m: Mixed8) -> Mixed8
+extern fn big20_id(b: Big20) -> Big20
+extern fn two64_id(t: Two64) -> Two64

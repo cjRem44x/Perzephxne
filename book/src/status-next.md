@@ -26,8 +26,7 @@ The core language surface is represented in the book and regression suite. The r
 | Release UX | A future version command should be `przp version`, but versioning is intentionally deferred while beta work is moving quickly. |
 | `any` type | Reserved keyword. Runtime-tagged values (boxing, type IDs, `when` dispatch on types) are designed but not implemented; removed from the reference until they exist. |
 | printf-style `%s` | `@pf("%s", s)` passes the fat pointer raw and crashes; use `{s}` interpolation. A fix should extract the data pointer (and handle non-NUL-terminated slices). |
-| `!StructName` failable returns | `fn f() -> !Point { ret @ok(Point{...}) }` fails to compile for any struct — codegen passes the struct's alloca pointer where the failable wrapper's `insertvalue` expects the raw aggregate value. Found while drafting the [Graphics](./graphics.md) design sketch; blocks any fallible constructor pattern (`Thing.load(path) -> !Thing`), not just graphics. |
-| Struct-by-value FFI ABI | An `extern fn` that takes or returns a small struct by value (e.g. `Vector2 { f32, f32 }`) does not follow the x86-64 System V ABI — linked against real C code, field values come back wrong. Also found while drafting [Graphics](./graphics.md); blocks binding any C library whose API passes small structs by value, which is common (raylib, math libraries, many system APIs). |
+| Struct-by-value FFI, non-imported `extern fn` | `extern fn foo(v: Vector2) -> Vector2` declared directly in a file (not reached via `import()`) fails to compile if it needs struct-by-value ABI handling — the wrapper mechanism needs an import alias to redirect call sites to (see [Standard Library](./stdlib.md)). Move the declaration into its own module and `import()` it, which is fully supported. |
 
 ## Documentation Rule
 

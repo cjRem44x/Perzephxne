@@ -165,6 +165,60 @@ run_multifile_case() {
     fi
 }
 
+# FFI case: compile a companion shim.c with a real C compiler, then link the
+# .przp module(s) against the resulting .o. Exercises `extern fn` signatures
+# against independently-compiled native code — the only way to catch calling
+# convention (ABI) mismatches, which self-consistent Perzephxne-to-Perzephxne
+# calls can never expose.
+run_ffi_case() {
+    local src_dir="$1"
+    local name
+    name="$(basename "$src_dir")"
+    local work="$TMP/ffi/$name"
+    local shim_o="$work/shim.o"
+    local bin="$TMP/bin/$name.ffi"
+    local actual="$TMP/out/$name.ffi.stdout"
+    local shim_err="$TMP/err/$name.ffi.shim.stderr"
+    local compile_err="$TMP/err/$name.ffi.compile.stderr"
+    local run_err="$TMP/err/$name.ffi.run.stderr"
+    local expected="$src_dir/stdout"
+    local files=()
+
+    printf 'ffi   %s\n' "$name"
+    mkdir -p "$work"
+    cp "$src_dir"/*.przp "$src_dir/shim.c" "$work/"
+
+    if ! clang -c "$work/shim.c" -o "$shim_o" 2>"$shim_err"; then
+        printf 'FAIL  %s: shim compile failed\n' "$name" >&2
+        sed -n '1,80p' "$shim_err" >&2
+        failures=$((failures + 1))
+        return
+    fi
+
+    while IFS= read -r file; do
+        files+=("$file")
+    done < <(find "$work" -maxdepth 1 -name '*.przp' | sort)
+
+    if ! PRZP_STDLIB="$STDLIB" "$PRZP" sac "${files[@]}" "$shim_o" -o="$bin" >"$TMP/out/$name.ffi.compile.stdout" 2>"$compile_err"; then
+        printf 'FAIL  %s: ffi compile failed\n' "$name" >&2
+        sed -n '1,120p' "$compile_err" >&2
+        failures=$((failures + 1))
+        return
+    fi
+
+    if ! "$bin" >"$actual" 2>"$run_err"; then
+        printf 'FAIL  %s: ffi run failed\n' "$name" >&2
+        sed -n '1,120p' "$run_err" >&2
+        failures=$((failures + 1))
+        return
+    fi
+
+    if ! diff -u "$expected" "$actual"; then
+        printf 'FAIL  %s: ffi stdout mismatch\n' "$name" >&2
+        failures=$((failures + 1))
+    fi
+}
+
 run_cli_fail() {
     local name="$1"
     local expected="$2"
@@ -257,6 +311,11 @@ done
 for dir in "$ROOT"/tests/multifile/*; do
     [ -d "$dir" ] || continue
     run_multifile_case "$dir"
+done
+
+for dir in "$ROOT"/tests/ffi/*; do
+    [ -d "$dir" ] || continue
+    run_ffi_case "$dir"
 done
 
 run_init_case
