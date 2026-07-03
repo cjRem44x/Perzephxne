@@ -127,6 +127,17 @@ v.print()   # ERROR: method 'print' expects a smart pointer receiver (^vec2),
             #        but was called on a plain value 'vec2'
 ```
 
+A `^T` receiver calling a by-value `self: T` method is fine, though — the compiler auto-derefs past the RC header and copies the value, the same way a `*T` receiver can call a by-value method:
+
+```
+impl vec2 {
+    fn print_val(self: vec2) { @pf("{self.x}, {self.y}\n") }
+}
+
+q: ^vec2 = @new(vec2.new(1, 2))
+q.print_val()   # OK — dereferences q, copies the struct into self
+```
+
 And the same distinction applies to the dereference operators themselves — `.^` requires a `^T` operand, `.*` requires a `*T` operand:
 
 ```
