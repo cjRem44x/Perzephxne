@@ -115,6 +115,18 @@ q.print()   # ERROR: method 'print' expects a raw pointer receiver (*vec2),
             #        but was called through a smart pointer (^vec2)
 ```
 
+A plain value (not a pointer at all) has no RC header either, so it can't be passed to a `^T`-self method — unlike a `*T`-self method, which can validly take the plain value's address on the fly:
+
+```
+impl vec2 {
+    fn print(self: ^vec2) { ... }
+}
+
+v := vec2.new(4, 12)
+v.print()   # ERROR: method 'print' expects a smart pointer receiver (^vec2),
+            #        but was called on a plain value 'vec2'
+```
+
 And the same distinction applies to the dereference operators themselves — `.^` requires a `^T` operand, `.*` requires a `*T` operand:
 
 ```

@@ -1,0 +1,1 @@
+expects a smart pointer receiver (^vec2), but was called on a plain value 'vec2'
