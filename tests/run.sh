@@ -219,6 +219,81 @@ run_ffi_case() {
     fi
 }
 
+# X11 windowing tests (std/graphics/window). Needs libX11 and a running X
+# server, neither of which is guaranteed on every dev/CI machine — skipped
+# with a message, not failed, when unavailable. run_x11_setup starts a
+# private Xvfb instance once for the whole suite; run_x11_teardown stops it.
+X11_DISPLAY=""
+X11_XVFB_PID=""
+
+run_x11_setup() {
+    if ! command -v Xvfb >/dev/null 2>&1; then
+        printf 'skip  x11 tests: Xvfb not installed\n'
+        return 1
+    fi
+    if ! ldconfig -p 2>/dev/null | grep -q "libX11\.so"; then
+        printf 'skip  x11 tests: libX11 not installed\n'
+        return 1
+    fi
+    local disp=":77"
+    Xvfb "$disp" -screen 0 1024x768x24 >/dev/null 2>&1 &
+    X11_XVFB_PID=$!
+    local tries=0
+    while [ $tries -lt 20 ]; do
+        # crude readiness check: Xvfb creates this socket once it's ready
+        if [ -S "/tmp/.X11-unix/X77" ]; then break; fi
+        sleep 0.2
+        tries=$((tries + 1))
+    done
+    if [ ! -S "/tmp/.X11-unix/X77" ]; then
+        printf 'skip  x11 tests: Xvfb did not start\n'
+        kill "$X11_XVFB_PID" 2>/dev/null
+        X11_XVFB_PID=""
+        return 1
+    fi
+    X11_DISPLAY="$disp"
+    return 0
+}
+
+run_x11_teardown() {
+    if [ -n "$X11_XVFB_PID" ]; then
+        kill "$X11_XVFB_PID" 2>/dev/null
+        wait "$X11_XVFB_PID" 2>/dev/null
+    fi
+}
+
+run_x11_case() {
+    local src_dir="$1"
+    local name
+    name="$(basename "$src_dir")"
+    local bin="$TMP/bin/$name.x11"
+    local actual="$TMP/out/$name.x11.stdout"
+    local compile_err="$TMP/err/$name.x11.compile.stderr"
+    local run_err="$TMP/err/$name.x11.run.stderr"
+    local expected="$src_dir/stdout"
+
+    printf 'x11   %s\n' "$name"
+    if ! PRZP_STDLIB="$STDLIB" "$PRZP" sac "$src_dir/main.przp" -lX11 -o="$bin" \
+            >"$TMP/out/$name.x11.compile.stdout" 2>"$compile_err"; then
+        printf 'FAIL  %s: x11 compile failed\n' "$name" >&2
+        sed -n '1,120p' "$compile_err" >&2
+        failures=$((failures + 1))
+        return
+    fi
+
+    if ! DISPLAY="$X11_DISPLAY" timeout 10 "$bin" >"$actual" 2>"$run_err"; then
+        printf 'FAIL  %s: x11 run failed\n' "$name" >&2
+        sed -n '1,120p' "$run_err" >&2
+        failures=$((failures + 1))
+        return
+    fi
+
+    if ! diff -u "$expected" "$actual"; then
+        printf 'FAIL  %s: x11 stdout mismatch\n' "$name" >&2
+        failures=$((failures + 1))
+    fi
+}
+
 run_cli_fail() {
     local name="$1"
     local expected="$2"
@@ -317,6 +392,14 @@ for dir in "$ROOT"/tests/ffi/*; do
     [ -d "$dir" ] || continue
     run_ffi_case "$dir"
 done
+
+if run_x11_setup; then
+    for dir in "$ROOT"/tests/x11/*; do
+        [ -d "$dir" ] || continue
+        run_x11_case "$dir"
+    done
+    run_x11_teardown
+fi
 
 run_init_case
 

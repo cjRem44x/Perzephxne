@@ -1,0 +1,59 @@
+# std/graphics/window — X11 windowing (first backend; see book/graphics.md)
+#
+# Thin, dumb extern fn bindings to Xlib — no idiomatic wrapping here (that
+# lives in std/graphics). This layer exists so a higher layer, and anyone
+# who needs to drop to raw Xlib, have something honest to build on.
+#
+# XEvent is a 192-byte C union; every event variant shares "type" at byte
+# offset 0 and (for the events used here) "window" at offset 32.
+# ClientMessage additionally has "message_type" (an Atom) at offset 40 and
+# its data union at offset 56. These offsets were checked against a real
+# compile of <X11/Xlib.h> on x86-64 Linux (offsetof each field), not
+# guessed — Xlib gives no other portable way to read event fields from a
+# bare byte buffer without a full struct-by-value FFI binding for XEvent.
+
+extern fn XOpenDisplay(name: *u8) -> *u8
+extern fn XCloseDisplay(display: *u8) -> i32
+extern fn XDefaultScreen(display: *u8) -> i32
+extern fn XRootWindow(display: *u8, screen: i32) -> u64
+extern fn XCreateSimpleWindow(display: *u8, parent: u64, x: i32, y: i32,
+                               w: u32, h: u32, border_w: u32, border: u64, bg: u64) -> u64
+extern fn XDestroyWindow(display: *u8, window: u64) -> i32
+extern fn XMapWindow(display: *u8, window: u64) -> i32
+extern fn XStoreName(display: *u8, window: u64, name: *u8) -> i32
+extern fn XSelectInput(display: *u8, window: u64, mask: i64) -> i32
+extern fn XInternAtom(display: *u8, name: *u8, only_if_exists: i32) -> u64
+extern fn XSetWMProtocols(display: *u8, window: u64, protocols: *u64, count: i32) -> i32
+extern fn XNextEvent(display: *u8, event_out: *u8) -> i32
+extern fn XPending(display: *u8) -> i32
+extern fn XFlush(display: *u8) -> i32
+extern fn XSendEvent(display: *u8, window: u64, propagate: i32, mask: i64, event: *u8) -> i32
+
+EVENT_SIZE: usize = 192
+EVENT_CLIENT_MESSAGE: i32 = 33
+
+# event_type: the event's type tag (byte offset 0 in every XEvent variant)
+fn event_type(buf: *u8) -> i32 {
+    p: *i32 = buf
+    ret p.*
+}
+
+# event_window: the target window ID (byte offset 32 in every XEvent variant)
+fn event_window(buf: *u8) -> u64 {
+    p: *u64 = buf + 32
+    ret p.*
+}
+
+# event_client_message_type: the ClientMessage's Atom (byte offset 40)
+fn event_client_message_type(buf: *u8) -> u64 {
+    p: *u64 = buf + 40
+    ret p.*
+}
+
+# event_client_data_l0: the first long of a ClientMessage's data union
+# (byte offset 56) — WM_PROTOCOLS ClientMessages carry the requested
+# protocol's Atom (e.g. WM_DELETE_WINDOW) here.
+fn event_client_data_l0(buf: *u8) -> i64 {
+    p: *i64 = buf + 56
+    ret p.*
+}

@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-190b5316.js";
+            window.path_to_searchindex_js = "searchindex-a32e22bf.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-e488213a.js"></script>
@@ -177,9 +177,9 @@
 
                 <div id="mdbook-content" class="content">
                     <main>
-                        <h1 id="graphics--design-sketch-unimplemented"><a class="header" href="#graphics--design-sketch-unimplemented">Graphics — Design Sketch (Unimplemented)</a></h1>
+                        <h1 id="graphics--design-sketch-mostly-unimplemented"><a class="header" href="#graphics--design-sketch-mostly-unimplemented">Graphics — Design Sketch (Mostly Unimplemented)</a></h1>
 <blockquote>
-<p><strong>Nothing in this chapter exists yet.</strong> No graphics module is built, shipped, or tested. This is an architecture sketch — written to guide implementation — for a future media stack in the spirit of <a href="https://www.raylib.com/">raylib</a>: simple enough for a weekend game, capable enough for a native GUI app. <strong>This is not a raylib binding.</strong> The plan is to write Perzephxne’s own renderer and windowing layer from scratch, on raw platform APIs, and shape its call-level ergonomics after raylib’s — because raylib’s API is a genuinely good design, not because the library itself is a dependency worth taking on. Every other chapter in this book documents the compiler as it is; this one documents a plan.</p>
+<p><strong>Almost nothing in this chapter is built yet.</strong> This is an architecture sketch — written to guide implementation — for a future media stack in the spirit of <a href="https://www.raylib.com/">raylib</a>: simple enough for a weekend game, capable enough for a native GUI app. <strong>This is not a raylib binding.</strong> The plan is to write Perzephxne’s own renderer and windowing layer from scratch, on raw platform APIs, and shape its call-level ergonomics after raylib’s — because raylib’s API is a genuinely good design, not because the library itself is a dependency worth taking on. Every other chapter in this book documents the compiler as it is; this one documents a plan, with one exception: <code>std/graphics/window</code>’s open/close path (below) is real, shipped, and regression-tested. Everything else — the backend contract, the GL backend, <code>std/graphics</code>, <code>gdev</code>, and <code>guix</code> — remains unbuilt.</p>
 </blockquote>
 <p>The stack splits into two purpose-specific libraries built on one shared foundation:</p>
 <ul>
@@ -232,31 +232,36 @@
 <h3 id="layer-1--platform-bindings-and-the-backend-contract"><a class="header" href="#layer-1--platform-bindings-and-the-backend-contract">Layer 1 — platform bindings and the backend contract</a></h3>
 <p>Three pieces, each a thin, dumb layer — no idiomatic naming, no safety wrapping, so advanced users can always drop to the raw calls when a higher layer doesn’t cover something yet:</p>
 <ul>
-<li><strong><code>std/graphics/window</code></strong> — open a window and pump its event queue via the platform’s native windowing API (X11 first, since that’s universally available even under Wayland’s XWayland compatibility layer; a native Wayland backend and, eventually, Win32/Cocoa backends follow the same shape behind one Perzephxne-facing surface).</li>
-<li><strong>The backend contract</strong> — not a library binding at all, but a fixed set of Perzephxne function signatures (or a struct of function pointers) that any GPU backend must implement: <code>backend_init()</code>, <code>backend_clear(color)</code>, <code>backend_submit(vertices, indices)</code>, <code>backend_upload_texture(pixels, w, h) -&gt; u32</code>, <code>backend_bind_shader(id)</code>, and a small, deliberately minimal set beyond that. This contract is designed once, before any backend implements it.</li>
-<li><strong><code>std/graphics/gl</code></strong> — the OpenGL implementation of that contract. Since GL functions beyond 1.1 are resolved at runtime (<code>glXGetProcAddress</code> on Linux, not link-time symbols), this layer is a loader plus a table of function pointers, not a flat <code>extern fn</code> list against a link-time library the way the windowing layer is.</li>
+<li><strong><code>std/graphics/window</code></strong> — open a window and pump its event queue via the platform’s native windowing API (X11 first, since that’s universally available even under Wayland’s XWayland compatibility layer; a native Wayland backend and, eventually, Win32/Cocoa backends follow the same shape behind one Perzephxne-facing surface). <strong>Implemented</strong> — see below.</li>
+<li><strong>The backend contract</strong> — not a library binding at all, but a fixed set of Perzephxne function signatures (or a struct of function pointers) that any GPU backend must implement: <code>backend_init()</code>, <code>backend_clear(color)</code>, <code>backend_submit(vertices, indices)</code>, <code>backend_upload_texture(pixels, w, h) -&gt; u32</code>, <code>backend_bind_shader(id)</code>, and a small, deliberately minimal set beyond that. This contract is designed once, before any backend implements it. Not yet designed.</li>
+<li><strong><code>std/graphics/gl</code></strong> — the OpenGL implementation of that contract. Since GL functions beyond 1.1 are resolved at runtime (<code>glXGetProcAddress</code> on Linux, not link-time symbols), this layer is a loader plus a table of function pointers, not a flat <code>extern fn</code> list against a link-time library the way the windowing layer is. Not yet built.</li>
 </ul>
-<pre><code># std/graphics/window (sketch)
-extern fn XOpenDisplay(name: *u8) -&gt; *u8
+<h3 id="stdgraphicswindow--implemented"><a class="header" href="#stdgraphicswindow--implemented"><code>std/graphics/window</code> — implemented</a></h3>
+<p>Open, title, and cleanly close an X11 window, linked via <code>[build].link = ["X11"]</code> (see <a href="./build-system.html">Build System</a>). Real <code>extern fn</code> bindings, not a sketch — see <code>compiler/std/graphics/window.przp</code> and the regression test <code>tests/x11/window_close</code>:</p>
+<pre><code>extern fn XOpenDisplay(name: *u8) -&gt; *u8
+extern fn XCloseDisplay(display: *u8) -&gt; i32
+extern fn XDefaultScreen(display: *u8) -&gt; i32
+extern fn XRootWindow(display: *u8, screen: i32) -&gt; u64
 extern fn XCreateSimpleWindow(display: *u8, parent: u64, x: i32, y: i32,
                                w: u32, h: u32, border_w: u32, border: u64, bg: u64) -&gt; u64
-extern fn XMapWindow(display: *u8, window: u64)
+extern fn XDestroyWindow(display: *u8, window: u64) -&gt; i32
+extern fn XMapWindow(display: *u8, window: u64) -&gt; i32
+extern fn XStoreName(display: *u8, window: u64, name: *u8) -&gt; i32
+extern fn XSelectInput(display: *u8, window: u64, mask: i64) -&gt; i32
+extern fn XInternAtom(display: *u8, name: *u8, only_if_exists: i32) -&gt; u64
+extern fn XSetWMProtocols(display: *u8, window: u64, protocols: *u64, count: i32) -&gt; i32
 extern fn XNextEvent(display: *u8, event_out: *u8) -&gt; i32
 extern fn XPending(display: *u8) -&gt; i32
-
-# the backend contract (sketch) — std/graphics calls only this, never GL/Vulkan/Metal directly
-fn backend_init(window: *void) -&gt; bool
-fn backend_clear(color: Color)
-fn backend_submit(verts: []Vertex, indices: []u32)
-fn backend_upload_texture(pixels: []u8, w: i32, h: i32) -&gt; u32
-fn backend_bind_shader(id: u32)
-
-# std/graphics/gl (sketch) — implements the contract above; resolved at runtime,
-# not linked at build time
-fn gl_get_proc_address(name: str) -&gt; *void   # wraps glXGetProcAddress
-# each wrapped GL call is a function-pointer field on a loaded-functions struct,
-# populated once at startup by gl_get_proc_address("glClear"), etc.
+extern fn XFlush(display: *u8) -&gt; i32
+extern fn XSendEvent(display: *u8, window: u64, propagate: i32, mask: i64, event: *u8) -&gt; i32
 </code></pre>
+<p><code>XEvent</code> is a 192-byte C union with no Perzephxne struct declared for it (yet) — events are read directly out of a raw <code>[192]u8</code> buffer via pointer arithmetic and type-punning (<code>p: *u64 = buf + 32</code> reads the <code>window</code> field every event variant shares at that byte offset), with the offsets checked against a real <code>offsetof(XClientMessageEvent, ...)</code> compile rather than guessed:</p>
+<pre><code>fn event_type(buf: *u8) -&gt; i32 { p: *i32 = buf; ret p.* }              # offset 0
+fn event_window(buf: *u8) -&gt; u64 { p: *u64 = buf + 32; ret p.* }        # offset 32
+fn event_client_message_type(buf: *u8) -&gt; u64 { p: *u64 = buf + 40; ret p.* }  # offset 40
+fn event_client_data_l0(buf: *u8) -&gt; i64 { p: *i64 = buf + 56; ret p.* }       # offset 56
+</code></pre>
+<p>Close detection uses the standard <code>WM_PROTOCOLS</code>/<code>WM_DELETE_WINDOW</code> handshake — a window manager sends a <code>ClientMessage</code> on a close-button click rather than the connection just dying, so a well-behaved window has to register for it and watch for it in the event loop, the same way a C/Xlib program would. <code>tests/x11/window_close</code> verifies this by sending itself that exact <code>ClientMessage</code> via <code>XSendEvent</code> (a real round trip through the X server, not a mocked event) and confirming the event loop reads it correctly and exits — since the test’s virtual display has no window manager to click a close button in the first place. That test only runs when <code>Xvfb</code> and <code>libX11</code> are available; <code>tests/run.sh</code> skips it with a message otherwise rather than failing the whole suite on machines without a virtual display set up.</p>
 <p>Plain-old-data types (<code>Vector2</code>, <code>Vector3</code>, <code>Color</code>, <code>Rectangle</code>) are ordinary Perzephxne <code>struct</code> declarations, field-for-field, since Perzephxne structs already follow C ABI layout — this part of the original raylib-binding sketch carries over unchanged, since it’s just describing data, not an API:</p>
 <pre><code>struct Vector2   { x: f32, y: f32 }
 struct Vector3   { x: f32, y: f32, z: f32 }
@@ -390,7 +395,7 @@ fn main() -&gt; i32 {
 <tbody>
 <tr><td>1</td><td><strong>Backend contract design.</strong> The fixed interface <code>std/graphics</code> calls through (init, clear, submit, upload texture, bind shader) needs to be designed and settled <em>before</em> the GL backend is written against it — this is what makes future Vulkan/Metal/D3D12 backends additive instead of a rewrite.</td><td></td></tr>
 <tr><td>2</td><td><strong>GL function loading.</strong> Nothing beyond OpenGL 1.1 is available as a link-time symbol — every modern GL entry point (shaders, buffers, textures beyond the basics) has to be resolved at runtime via <code>glXGetProcAddress</code> and called through a function pointer. This needs a small runtime loader written once, not per-project.</td><td></td></tr>
-<tr><td>3</td><td><strong>Windowing backend.</strong> X11 first (works everywhere on Linux, including under Wayland via XWayland); a native Wayland backend, then Win32/Cocoa, come later behind the same <code>std/graphics/window</code> surface so <code>std/graphics</code>, <code>gdev</code>, and <code>guix</code> never have to change per platform.</td><td></td></tr>
+<tr><td>3</td><td><strong>Windowing backend.</strong> X11 first (works everywhere on Linux, including under Wayland via XWayland); a native Wayland backend, then Win32/Cocoa, come later behind the same <code>std/graphics/window</code> surface so <code>std/graphics</code>, <code>gdev</code>, and <code>guix</code> never have to change per platform. <strong>Partially done</strong>: open/title/close (including the <code>WM_DELETE_WINDOW</code> handshake) is implemented and tested. Still needed: resize reporting, keyboard/mouse input events.</td><td></td></tr>
 <tr><td>4</td><td><strong>Image and audio codecs.</strong> No bundled renderer means no bundled codecs either — PNG/JPEG decoding (for <code>guix</code> icons and <code>gdev</code> textures alike) and audio file loading (for <code>gdev</code>) need their own (likely also hand-written or minimally-bound) implementations, deferred until the 2D primitives above them are solid.</td><td></td></tr>
 <tr><td>5</td><td><strong>Text layout.</strong> <code>guix</code> needs real text shaping/layout (cursor positioning, line wrapping, at minimum) to be a credible native-app toolkit; <code>gdev</code> only needs simple bitmap-font text draw calls. This is a <code>guix</code>-specific investment, not a <code>std/graphics</code> one.</td><td></td></tr>
 <tr><td>6</td><td><strong>Variadic/macro helpers.</strong> Small conveniences like a <code>printf</code>-style text-formatting helper for on-screen debug text are built on <code>@fmt</code> rather than needing any new compiler feature — a non-issue, listed for completeness.</td><td></td></tr>
@@ -401,7 +406,7 @@ fn main() -&gt; i32 {
 <h2 id="suggested-build-order"><a class="header" href="#suggested-build-order">Suggested build order</a></h2>
 <ol>
 <li>Design the backend contract (prerequisite #1) before writing any GL code — settle the smallest set of operations <code>std/graphics</code> needs (clear, submit a batch, upload a texture, bind a shader) so the GL backend is written <em>against</em> a fixed interface, not the interface being reverse-engineered out of GL calls after the fact.</li>
-<li>Write the windowing backend (<code>std/graphics/window</code>, X11) for the smallest usable slice: open a window, pump events, report close/resize.</li>
+<li>Write the windowing backend (<code>std/graphics/window</code>, X11) for the smallest usable slice: open a window, pump events, report close/resize. <strong>Open + title + close is done</strong>; resize and input events are still open.</li>
 <li>Write <code>std/graphics/gl</code> as the first implementation of the backend contract, and get a single triangle or cleared background on screen — this is the point where “a window exists” becomes “a frame can be drawn.”</li>
 <li>Write layer 2 (<code>std/graphics</code>) over that same small surface: 2D shapes, keyboard/mouse input, then texture loading once an image codec exists. Resist building out the full raylib-equivalent surface up front.</li>
 <li>Write a regression test per wrapped function group (window, shapes, input, textures), following the existing <code>tests/run/std_*.przp</code> convention, to the extent a windowing/GPU-dependent test can run headlessly in CI.</li>
