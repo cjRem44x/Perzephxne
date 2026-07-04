@@ -859,10 +859,14 @@ static void cmd_init(int argc, char **argv) {
     exit(0);
 }
 
+#define MANIFEST_MAX_LINK_LIBS 16
+
 typedef struct {
     char package_name[256];
     char version[64];
     char entry[256];
+    char link_libs[MANIFEST_MAX_LINK_LIBS][64];
+    int  n_link_libs;
 } Manifest;
 
 static char *trim_ws(char *s) {
@@ -883,6 +887,34 @@ static int parse_quoted_value(const char *s, char *out, size_t outsz) {
     memcpy(out, q, n);
     out[n] = '\0';
     return 1;
+}
+
+/* Parse a single-line TOML string array, e.g. `["X11", "GL"]`, into `out`
+   (up to `max` entries of `elsz` bytes each). Returns the number of entries
+   parsed, or -1 on malformed input (missing brackets/quotes). */
+static int parse_string_array_value(const char *s, char out[][64], int max) {
+    const char *p = strchr(s, '[');
+    if (!p) return -1;
+    p++;
+    const char *close = strchr(p, ']');
+    if (!close) return -1;
+    int n = 0;
+    while (p < close) {
+        while (p < close && (isspace((unsigned char)*p) || *p == ',')) p++;
+        if (p >= close) break;
+        if (*p != '"') return -1;
+        p++;
+        const char *end = memchr(p, '"', (size_t)(close - p));
+        if (!end) return -1;
+        if (n >= max) return -1;
+        size_t len = (size_t)(end - p);
+        if (len >= 64) len = 63;
+        memcpy(out[n], p, len);
+        out[n][len] = '\0';
+        n++;
+        p = end + 1;
+    }
+    return n;
 }
 
 static int read_manifest(Manifest *m) {
@@ -939,6 +971,16 @@ static int read_manifest(Manifest *m) {
                 fclose(f);
                 return -1;
             }
+        } else if (section == SEC_BUILD && !strcmp(key, "link")) {
+            int n = parse_string_array_value(val, m->link_libs, MANIFEST_MAX_LINK_LIBS);
+            if (n < 0) {
+                fprintf(stderr, "przp.toml:%d: error: [build].link must be an array of quoted "
+                                "strings, e.g. link = [\"X11\", \"GL\"] (max %d)\n",
+                        line_no, MANIFEST_MAX_LINK_LIBS);
+                fclose(f);
+                return -1;
+            }
+            m->n_link_libs = n;
         } else if (section == SEC_NONE) {
             fprintf(stderr, "przp.toml:%d: error: key '%s' must be inside [package], [build], or [deps]\n", line_no, key);
             fclose(f);
@@ -978,7 +1020,14 @@ static void cmd_build(int argc, char **argv) {
         snprintf(out_buf, sizeof(out_buf), "%s", manifest.package_name);
     }
 
-    int rc = compile_file(manifest.entry, out_buf, release, NULL, 0);
+    char link_flags[MANIFEST_MAX_LINK_LIBS][68];
+    const char *link_argv[MANIFEST_MAX_LINK_LIBS];
+    for (int i = 0; i < manifest.n_link_libs; i++) {
+        snprintf(link_flags[i], sizeof(link_flags[i]), "-l%s", manifest.link_libs[i]);
+        link_argv[i] = link_flags[i];
+    }
+
+    int rc = compile_file(manifest.entry, out_buf, release, link_argv, manifest.n_link_libs);
     exit(rc);
 }
 
@@ -995,7 +1044,14 @@ static void cmd_run(int argc, char **argv) {
     char out_buf[256];
     snprintf(out_buf, sizeof(out_buf), "%s", manifest.package_name);
 
-    if (compile_file(manifest.entry, out_buf, release, NULL, 0) != 0) exit(1);
+    char link_flags[MANIFEST_MAX_LINK_LIBS][68];
+    const char *link_argv[MANIFEST_MAX_LINK_LIBS];
+    for (int i = 0; i < manifest.n_link_libs; i++) {
+        snprintf(link_flags[i], sizeof(link_flags[i]), "-l%s", manifest.link_libs[i]);
+        link_argv[i] = link_flags[i];
+    }
+
+    if (compile_file(manifest.entry, out_buf, release, link_argv, manifest.n_link_libs) != 0) exit(1);
 
     char run_cmd[512];
     snprintf(run_cmd, sizeof(run_cmd), "./%s", out_buf);

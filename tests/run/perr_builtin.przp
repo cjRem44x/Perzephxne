@@ -1,0 +1,10 @@
+extern fn fopen(path: *u8, mode: *u8) -> *u8
+
+fn main() -> i32 {
+    f: *u8 = fopen("tests_no_such_file_perr.txt".data, "r".data)
+    if f == null {
+        @perr("opening file")
+    }
+    @pf("done\n")
+    ret 0
+}

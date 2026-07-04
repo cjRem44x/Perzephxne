@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-615f87ce.js";
+            window.path_to_searchindex_js = "searchindex-190b5316.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-e488213a.js"></script>
@@ -218,6 +218,7 @@ version = "0.1.0"
 
 [build]
 entry = "src/main.przp"
+link  = ["X11", "GL"]
 
 [deps]
 # reserved for future package dependencies
@@ -232,11 +233,12 @@ entry = "src/main.przp"
 <tr><td><code>[package].name</code></td><td style="text-align: right">yes</td><td>Package name. Used as the default <code>przp build</code>/<code>przp run</code> binary name.</td></tr>
 <tr><td><code>[package].version</code></td><td style="text-align: right">no</td><td>Package version metadata.</td></tr>
 <tr><td><code>[build].entry</code></td><td style="text-align: right">no</td><td>Entry source file. Defaults to <code>src/main.przp</code>.</td></tr>
+<tr><td><code>[build].link</code></td><td style="text-align: right">no</td><td>Array of system library names to link against — each entry becomes a <code>-l&lt;name&gt;</code> flag on the final link step (<code>link = ["X11", "GL"]</code> links <code>-lX11 -lGL</code>). For linking against <code>extern fn</code> declarations backed by libraries the OS already ships (no bundled <code>.so</code>/<code>.a</code> of your own).</td></tr>
 </tbody>
 </table>
 </div>
 <p><code>[deps]</code> is accepted as a reserved section, but the current toolchain does not download or resolve packages. Standard library modules are shipped with the compiler and imported with paths such as <code>"std/io"</code>.</p>
-<p>Only <code>[package]</code>, <code>[build]</code>, and <code>[deps]</code> are recognized. Manifest values are quoted strings; malformed assignments, unknown sections, and invalid string values are reported as <code>przp.toml:line: error: ...</code>.</p>
+<p>Only <code>[package]</code>, <code>[build]</code>, and <code>[deps]</code> are recognized. Manifest values are quoted strings (or, for <code>[build].link</code>, an array of quoted strings on one line); malformed assignments, unknown sections, and invalid string/array values are reported as <code>przp.toml:line: error: ...</code>.</p>
 <h2 id="outputs"><a class="header" href="#outputs">Outputs</a></h2>
 <p>Project builds write the binary to the current project directory:</p>
 <pre><code>przp build          # ./MyProject, using [package].name
