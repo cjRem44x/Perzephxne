@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-a32e22bf.js";
+            window.path_to_searchindex_js = "searchindex-5efdff8f.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-e488213a.js"></script>
@@ -281,6 +281,15 @@ when x {
     0..=9   =&gt; @pf("single digit\n"),
     10..=99 =&gt; @pf("double digit\n"),
     _       =&gt; @pf("big\n"),
+}
+</code></pre>
+<p><code>when</code> also matches on <code>str</code> subjects, comparing by content (not pointer identity):</p>
+<pre><code>cmd: str = @cin("enter: ")
+
+when cmd {
+    "a"       =&gt; @pf("a!\n"),
+    "b" | "c" =&gt; @pf("b or c!\n"),
+    _         =&gt; @pf("invalid!\n"),
 }
 </code></pre>
 <p>Matching enums:</p>

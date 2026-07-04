@@ -173,6 +173,7 @@ Failable (`!T`) values carry a result and an error flag. These builtins inspect 
 | `@unwrap(val)` | `fn(!T) -> T` | alias for `@ok` |
 | `@err(val)` | `fn(!T) -> i32` | extract the error code (0 = success) |
 | `@is_ok(val)` | `fn(!T) -> bool` | true if the error flag is not set |
+| `@is_err(val)` | `fn(!T) -> bool` | true if the error flag is set (`!@is_ok(val)`) |
 
 ```
 result: !i32 = @i32("42")
@@ -180,6 +181,9 @@ if @is_ok(result) {
     @pf("parsed: %d\n", @ok(result))
 } else {
     @pf("error code: %d\n", @err(result))
+}
+if @is_err(result) {
+    @pf("failed\n")
 }
 ```
 
