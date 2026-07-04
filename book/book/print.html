@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-a32e22bf.js";
+            window.path_to_searchindex_js = "searchindex-5efdff8f.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-e488213a.js"></script>
@@ -940,6 +940,15 @@ when x {
     0..=9   =&gt; @pf("single digit\n"),
     10..=99 =&gt; @pf("double digit\n"),
     _       =&gt; @pf("big\n"),
+}
+</code></pre>
+<p><code>when</code> also matches on <code>str</code> subjects, comparing by content (not pointer identity):</p>
+<pre><code>cmd: str = @cin("enter: ")
+
+when cmd {
+    "a"       =&gt; @pf("a!\n"),
+    "b" | "c" =&gt; @pf("b or c!\n"),
+    _         =&gt; @pf("invalid!\n"),
 }
 </code></pre>
 <p>Matching enums:</p>
@@ -1941,6 +1950,7 @@ bits: u32 = @bitcast(u32, f)   # raw bit pattern — 0x3F800000
 <tr><td><code>@unwrap(val)</code></td><td><code>fn(!T) -&gt; T</code></td><td>alias for <code>@ok</code></td></tr>
 <tr><td><code>@err(val)</code></td><td><code>fn(!T) -&gt; i32</code></td><td>extract the error code (0 = success)</td></tr>
 <tr><td><code>@is_ok(val)</code></td><td><code>fn(!T) -&gt; bool</code></td><td>true if the error flag is not set</td></tr>
+<tr><td><code>@is_err(val)</code></td><td><code>fn(!T) -&gt; bool</code></td><td>true if the error flag is set (<code>!@is_ok(val)</code>)</td></tr>
 </tbody>
 </table>
 </div>
@@ -1949,6 +1959,9 @@ if @is_ok(result) {
     @pf("parsed: %d\n", @ok(result))
 } else {
     @pf("error code: %d\n", @err(result))
+}
+if @is_err(result) {
+    @pf("failed\n")
 }
 </code></pre>
 <p>When you only need the error code, use failable destructuring instead:</p>

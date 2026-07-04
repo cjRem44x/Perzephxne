@@ -144,6 +144,18 @@ when x {
 }
 ```
 
+`when` also matches on `str` subjects, comparing by content (not pointer identity):
+
+```
+cmd: str = @cin("enter: ")
+
+when cmd {
+    "a"       => @pf("a!\n"),
+    "b" | "c" => @pf("b or c!\n"),
+    _         => @pf("invalid!\n"),
+}
+```
+
 Matching enums:
 
 ```
