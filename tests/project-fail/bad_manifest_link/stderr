@@ -1,0 +1,1 @@
+przp.toml:6: error: [build].link must be an array of quoted strings

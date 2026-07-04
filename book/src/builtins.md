@@ -10,6 +10,7 @@ Builtins are compiler-provided functions and constants. They are always in scope
 | `@epf(fmt, ...)` | `fn(str, ...) -> void` | print formatted to stderr |
 | `@fmt(fmt, ...)` | `fn(str, ...) -> str` | format to a heap-allocated string |
 | `@cin(prompt?)` | `fn(str?) -> str` | read a line from stdin |
+| `@perr(msg)` | `fn(str) -> void` | print `"msg: <reason>\n"` to stderr, like C's `perror()` |
 
 `@pf`, `@epf`, and `@fmt` all support `{expr}` interpolation inside the format string:
 
@@ -25,6 +26,17 @@ Interpolated `bool` values are printed as C-style integers (`1` or `0`). Use
 `@str(value)` when you need `"true"` or `"false"` text.
 
 Use `{{` and `}}` to emit literal braces.
+
+`@perr` reads the C runtime's `errno` and appends its message, for reporting failures from `extern fn` calls into C libraries the same way C code would:
+
+```
+extern fn fopen(path: *u8, mode: *u8) -> *u8
+
+f: *u8 = fopen("does_not_exist.txt".data, "r".data)
+if f == null {
+    @perr("opening file")   # "opening file: No such file or directory"
+}
+```
 
 ## Type Casts
 

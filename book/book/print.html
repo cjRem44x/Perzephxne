@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-615f87ce.js";
+            window.path_to_searchindex_js = "searchindex-190b5316.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-e488213a.js"></script>
@@ -284,6 +284,7 @@ version = "0.1.0"
 
 [build]
 entry = "src/main.przp"
+link  = ["X11", "GL"]
 
 [deps]
 # reserved for future package dependencies
@@ -298,11 +299,12 @@ entry = "src/main.przp"
 <tr><td><code>[package].name</code></td><td style="text-align: right">yes</td><td>Package name. Used as the default <code>przp build</code>/<code>przp run</code> binary name.</td></tr>
 <tr><td><code>[package].version</code></td><td style="text-align: right">no</td><td>Package version metadata.</td></tr>
 <tr><td><code>[build].entry</code></td><td style="text-align: right">no</td><td>Entry source file. Defaults to <code>src/main.przp</code>.</td></tr>
+<tr><td><code>[build].link</code></td><td style="text-align: right">no</td><td>Array of system library names to link against — each entry becomes a <code>-l&lt;name&gt;</code> flag on the final link step (<code>link = ["X11", "GL"]</code> links <code>-lX11 -lGL</code>). For linking against <code>extern fn</code> declarations backed by libraries the OS already ships (no bundled <code>.so</code>/<code>.a</code> of your own).</td></tr>
 </tbody>
 </table>
 </div>
 <p><code>[deps]</code> is accepted as a reserved section, but the current toolchain does not download or resolve packages. Standard library modules are shipped with the compiler and imported with paths such as <code>"std/io"</code>.</p>
-<p>Only <code>[package]</code>, <code>[build]</code>, and <code>[deps]</code> are recognized. Manifest values are quoted strings; malformed assignments, unknown sections, and invalid string values are reported as <code>przp.toml:line: error: ...</code>.</p>
+<p>Only <code>[package]</code>, <code>[build]</code>, and <code>[deps]</code> are recognized. Manifest values are quoted strings (or, for <code>[build].link</code>, an array of quoted strings on one line); malformed assignments, unknown sections, and invalid string/array values are reported as <code>przp.toml:line: error: ...</code>.</p>
 <h2 id="outputs"><a class="header" href="#outputs">Outputs</a></h2>
 <p>Project builds write the binary to the current project directory:</p>
 <pre><code>przp build          # ./MyProject, using [package].name
@@ -1763,6 +1765,7 @@ first: *u8 = environ.*
 <tr><td><code>@epf(fmt, ...)</code></td><td><code>fn(str, ...) -&gt; void</code></td><td>print formatted to stderr</td></tr>
 <tr><td><code>@fmt(fmt, ...)</code></td><td><code>fn(str, ...) -&gt; str</code></td><td>format to a heap-allocated string</td></tr>
 <tr><td><code>@cin(prompt?)</code></td><td><code>fn(str?) -&gt; str</code></td><td>read a line from stdin</td></tr>
+<tr><td><code>@perr(msg)</code></td><td><code>fn(str) -&gt; void</code></td><td>print <code>"msg: &lt;reason&gt;\n"</code> to stderr, like C’s <code>perror()</code></td></tr>
 </tbody>
 </table>
 </div>
@@ -1776,6 +1779,14 @@ greeting: str = @fmt("Hello, {name}!")
 <p>Interpolated <code>bool</code> values are printed as C-style integers (<code>1</code> or <code>0</code>). Use
 <code>@str(value)</code> when you need <code>"true"</code> or <code>"false"</code> text.</p>
 <p>Use <code>{{</code> and <code>}}</code> to emit literal braces.</p>
+<p><code>@perr</code> reads the C runtime’s <code>errno</code> and appends its message, for reporting failures from <code>extern fn</code> calls into C libraries the same way C code would:</p>
+<pre><code>extern fn fopen(path: *u8, mode: *u8) -&gt; *u8
+
+f: *u8 = fopen("does_not_exist.txt".data, "r".data)
+if f == null {
+    @perr("opening file")   # "opening file: No such file or directory"
+}
+</code></pre>
 <h2 id="type-casts"><a class="header" href="#type-casts">Type Casts</a></h2>
 <p><code>@T(val)</code> converts <code>val</code> to type <code>T</code>:</p>
 <p><code>@i8</code> <code>@i16</code> <code>@i32</code> <code>@i64</code> <code>@u8</code> <code>@u16</code> <code>@u32</code> <code>@u64</code> <code>@f32</code> <code>@f64</code> <code>@usize</code> <code>@bool</code> <code>@char</code> <code>@str</code></p>
@@ -2401,7 +2412,7 @@ r: f64 = m.sqrt(2.0)
 <tr><td>Diagnostic consistency</td><td>Continue moving command, manifest, import, semantic, and codegen failures toward source-located errors where possible.</td></tr>
 <tr><td>Regression breadth</td><td>Add more edge-case tests for parser recovery, generic instantiation, failable destructuring, and unsafe pointer operations.</td></tr>
 <tr><td>Build/runtime portability</td><td>Keep Linux x86-64 as the current target, then audit assumptions before broadening platform support.</td></tr>
-<tr><td>Package dependencies</td><td><code>[deps]</code> is reserved. There is no external resolver yet; Core/Stdlib ships with the language.</td></tr>
+<tr><td>Package dependencies</td><td><code>[deps]</code> is reserved. There is no external resolver yet; Core/Stdlib ships with the language. <code>[build].link</code> (see <a href="#build-system-przp">Build System</a>) covers linking against system libraries the OS already ships (e.g. <code>link = ["X11", "GL"]</code>) — this is not a package resolver, just linker flags.</td></tr>
 <tr><td>Release UX</td><td>A future version command should be <code>przp version</code>, but versioning is intentionally deferred while beta work is moving quickly.</td></tr>
 <tr><td><code>any</code> type</td><td>Reserved keyword. Runtime-tagged values (boxing, type IDs, <code>when</code> dispatch on types) are designed but not implemented; removed from the reference until they exist.</td></tr>
 <tr><td>printf-style <code>%s</code></td><td><code>@pf("%s", s)</code> passes the fat pointer raw and crashes; use <code>{s}</code> interpolation. A fix should extract the data pointer (and handle non-NUL-terminated slices).</td></tr>
@@ -2614,8 +2625,9 @@ fn main() -&gt; i32 {
 <ul>
 <li><strong><code>!StructName</code> failable returns.</strong> <code>fn make() -&gt; !Point { ret @ok(Point{...}) }</code> now works for any struct, tagged union, or array — see <code>tests/run/failable_struct.przp</code>.</li>
 <li><strong>Struct-by-value FFI ABI.</strong> An <code>extern fn</code> reached via <code>import()</code> that takes or returns a plain struct by value (e.g. <code>Vector2 { f32, f32 }</code>) now follows the x86-64 System V ABI, verified by linking against independently-compiled C code — see <a href="#struct-by-value-parameters-and-returns">Functions § Struct-by-Value Parameters and Returns</a> and <code>tests/ffi/struct_abi</code>. The one scoped limitation: this only works when the <code>extern fn</code> is declared in a module reached through <code>import()</code> — a struct-by-value <code>extern fn</code> declared directly in a file with no import fails to compile with a clear diagnostic rather than silently miscompiling.</li>
+<li><strong>Linker flags / native library dependencies.</strong> <code>[build].link</code> in <code>przp.toml</code> now declares system libraries to link against (<code>link = ["X11", "GL"]</code> → <code>-lX11 -lGL</code> on the final link step, for both <code>przp build</code> and <code>przp run</code>) — see <a href="#build-system-przp">Build System</a> and <code>tests/project/link_libs</code>. This is not a package resolver (<code>[deps]</code> is still reserved and unimplemented, see <a href="#status--next-work">Status &amp; Next Work</a>) — it only covers linking against libraries the OS already ships, which is exactly what the windowing (<code>libX11</code>) and GPU (<code>libGL</code>) layers below need.</li>
 </ul>
-<p>This means the FFI mechanics layer 1 depends on (struct-by-value calls, failable returns for loaders) are no longer blocked on compiler work — the remaining prerequisites below are about what actually has to be written (a renderer, a windowing backend, the backend contract), not compiler correctness.</p>
+<p>This means the FFI mechanics and linking layer 1 depends on (struct-by-value calls, failable returns for loaders, linking against system libraries) are no longer blocked on compiler/toolchain work — the remaining prerequisites below are about what actually has to be written (a renderer, a windowing backend, the backend contract), not missing tooling.</p>
 <h2 id="open-engineering-prerequisites"><a class="header" href="#open-engineering-prerequisites">Open engineering prerequisites</a></h2>
 <div class="table-wrapper">
 <table>
@@ -2623,21 +2635,19 @@ fn main() -&gt; i32 {
 <tr><th>#</th><th>Prerequisite</th><th>Status</th></tr>
 </thead>
 <tbody>
-<tr><td>1</td><td><strong>Linker flags / native library dependencies.</strong> There is currently no way for a <code>przp.toml</code> project to declare “link against <code>-lX11 -lGL</code>” or similar. The <code>[deps]</code> manifest section is reserved but unimplemented (see <a href="#status--next-work">Status &amp; Next Work</a>). As a stopgap for a proof of concept, <code>przp sac</code> does accept extra native object/archive files on its command line, passed straight through to the link step (used by the ABI regression test above) — but that’s a <code>sac</code>-only escape hatch, not a real answer for a <code>przp build</code>/<code>przp run</code> project.</td><td></td></tr>
-<tr><td>2</td><td><strong>Backend contract design.</strong> The fixed interface <code>std/graphics</code> calls through (init, clear, submit, upload texture, bind shader) needs to be designed and settled <em>before</em> the GL backend is written against it — this is what makes future Vulkan/Metal/D3D12 backends additive instead of a rewrite.</td><td></td></tr>
-<tr><td>3</td><td><strong>GL function loading.</strong> Nothing beyond OpenGL 1.1 is available as a link-time symbol — every modern GL entry point (shaders, buffers, textures beyond the basics) has to be resolved at runtime via <code>glXGetProcAddress</code> and called through a function pointer. This needs a small runtime loader written once, not per-project.</td><td></td></tr>
-<tr><td>4</td><td><strong>Windowing backend.</strong> X11 first (works everywhere on Linux, including under Wayland via XWayland); a native Wayland backend, then Win32/Cocoa, come later behind the same <code>std/graphics/window</code> surface so <code>std/graphics</code>, <code>gdev</code>, and <code>guix</code> never have to change per platform.</td><td></td></tr>
-<tr><td>5</td><td><strong>Image and audio codecs.</strong> No bundled renderer means no bundled codecs either — PNG/JPEG decoding (for <code>guix</code> icons and <code>gdev</code> textures alike) and audio file loading (for <code>gdev</code>) need their own (likely also hand-written or minimally-bound) implementations, deferred until the 2D primitives above them are solid.</td><td></td></tr>
-<tr><td>6</td><td><strong>Text layout.</strong> <code>guix</code> needs real text shaping/layout (cursor positioning, line wrapping, at minimum) to be a credible native-app toolkit; <code>gdev</code> only needs simple bitmap-font text draw calls. This is a <code>guix</code>-specific investment, not a <code>std/graphics</code> one.</td><td></td></tr>
-<tr><td>7</td><td><strong>Variadic/macro helpers.</strong> Small conveniences like a <code>printf</code>-style text-formatting helper for on-screen debug text are built on <code>@fmt</code> rather than needing any new compiler feature — a non-issue, listed for completeness.</td><td></td></tr>
-<tr><td>8</td><td><strong>Threading model.</strong> GPU contexts are tied to the thread that created them; the wrapper should document a single-threaded main loop (window, input, and drawing calls all from one thread) as the initial supported model rather than attempt general multi-threaded rendering from the start.</td><td></td></tr>
+<tr><td>1</td><td><strong>Backend contract design.</strong> The fixed interface <code>std/graphics</code> calls through (init, clear, submit, upload texture, bind shader) needs to be designed and settled <em>before</em> the GL backend is written against it — this is what makes future Vulkan/Metal/D3D12 backends additive instead of a rewrite.</td><td></td></tr>
+<tr><td>2</td><td><strong>GL function loading.</strong> Nothing beyond OpenGL 1.1 is available as a link-time symbol — every modern GL entry point (shaders, buffers, textures beyond the basics) has to be resolved at runtime via <code>glXGetProcAddress</code> and called through a function pointer. This needs a small runtime loader written once, not per-project.</td><td></td></tr>
+<tr><td>3</td><td><strong>Windowing backend.</strong> X11 first (works everywhere on Linux, including under Wayland via XWayland); a native Wayland backend, then Win32/Cocoa, come later behind the same <code>std/graphics/window</code> surface so <code>std/graphics</code>, <code>gdev</code>, and <code>guix</code> never have to change per platform.</td><td></td></tr>
+<tr><td>4</td><td><strong>Image and audio codecs.</strong> No bundled renderer means no bundled codecs either — PNG/JPEG decoding (for <code>guix</code> icons and <code>gdev</code> textures alike) and audio file loading (for <code>gdev</code>) need their own (likely also hand-written or minimally-bound) implementations, deferred until the 2D primitives above them are solid.</td><td></td></tr>
+<tr><td>5</td><td><strong>Text layout.</strong> <code>guix</code> needs real text shaping/layout (cursor positioning, line wrapping, at minimum) to be a credible native-app toolkit; <code>gdev</code> only needs simple bitmap-font text draw calls. This is a <code>guix</code>-specific investment, not a <code>std/graphics</code> one.</td><td></td></tr>
+<tr><td>6</td><td><strong>Variadic/macro helpers.</strong> Small conveniences like a <code>printf</code>-style text-formatting helper for on-screen debug text are built on <code>@fmt</code> rather than needing any new compiler feature — a non-issue, listed for completeness.</td><td></td></tr>
+<tr><td>7</td><td><strong>Threading model.</strong> GPU contexts are tied to the thread that created them; the wrapper should document a single-threaded main loop (window, input, and drawing calls all from one thread) as the initial supported model rather than attempt general multi-threaded rendering from the start.</td><td></td></tr>
 </tbody>
 </table>
 </div>
 <h2 id="suggested-build-order"><a class="header" href="#suggested-build-order">Suggested build order</a></h2>
 <ol>
-<li>Resolve prerequisite #1 (linker flags) with the smallest workable manifest addition — even a flat <code>link = ["X11", "GL"]</code> key under <code>[build]</code> would unblock this for real projects, not just <code>sac</code>-based experiments.</li>
-<li>Design the backend contract (prerequisite #2) before writing any GL code — settle the smallest set of operations <code>std/graphics</code> needs (clear, submit a batch, upload a texture, bind a shader) so the GL backend is written <em>against</em> a fixed interface, not the interface being reverse-engineered out of GL calls after the fact.</li>
+<li>Design the backend contract (prerequisite #1) before writing any GL code — settle the smallest set of operations <code>std/graphics</code> needs (clear, submit a batch, upload a texture, bind a shader) so the GL backend is written <em>against</em> a fixed interface, not the interface being reverse-engineered out of GL calls after the fact.</li>
 <li>Write the windowing backend (<code>std/graphics/window</code>, X11) for the smallest usable slice: open a window, pump events, report close/resize.</li>
 <li>Write <code>std/graphics/gl</code> as the first implementation of the backend contract, and get a single triangle or cleared background on screen — this is the point where “a window exists” becomes “a frame can be drawn.”</li>
 <li>Write layer 2 (<code>std/graphics</code>) over that same small surface: 2D shapes, keyboard/mouse input, then texture loading once an image codec exists. Resist building out the full raylib-equivalent surface up front.</li>

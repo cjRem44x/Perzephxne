@@ -1,0 +1,6 @@
+[package]
+name = "bad_manifest_link"
+
+[build]
+entry = "src/main.przp"
+link = X11, GL

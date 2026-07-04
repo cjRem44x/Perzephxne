@@ -22,7 +22,7 @@ The core language surface is represented in the book and regression suite. The r
 | Diagnostic consistency | Continue moving command, manifest, import, semantic, and codegen failures toward source-located errors where possible. |
 | Regression breadth | Add more edge-case tests for parser recovery, generic instantiation, failable destructuring, and unsafe pointer operations. |
 | Build/runtime portability | Keep Linux x86-64 as the current target, then audit assumptions before broadening platform support. |
-| Package dependencies | `[deps]` is reserved. There is no external resolver yet; Core/Stdlib ships with the language. |
+| Package dependencies | `[deps]` is reserved. There is no external resolver yet; Core/Stdlib ships with the language. `[build].link` (see [Build System](./build-system.md)) covers linking against system libraries the OS already ships (e.g. `link = ["X11", "GL"]`) — this is not a package resolver, just linker flags. |
 | Release UX | A future version command should be `przp version`, but versioning is intentionally deferred while beta work is moving quickly. |
 | `any` type | Reserved keyword. Runtime-tagged values (boxing, type IDs, `when` dispatch on types) are designed but not implemented; removed from the reference until they exist. |
 | printf-style `%s` | `@pf("%s", s)` passes the fat pointer raw and crashes; use `{s}` interpolation. A fix should extract the data pointer (and handle non-NUL-terminated slices). |

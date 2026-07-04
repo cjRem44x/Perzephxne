@@ -1,0 +1,7 @@
+[package]
+name = "link_libs"
+version = "0.1.0"
+
+[build]
+entry = "src/main.przp"
+link = ["pthread", "m"]

@@ -480,6 +480,7 @@ static Type *builtin_ret_ty(Sema *s, const char *name) {
     if (!strcmp(name, "cin"))                         return s->ty_str;
     if (!strcmp(name, "exit"))                        return s->ty_void;
     if (!strcmp(name, "panic"))                       return s->ty_void;
+    if (!strcmp(name, "perr"))                        return s->ty_void;
     if (!strcmp(name, "assert"))                      return s->ty_void;
     if (!strcmp(name, "alo"))                         return make_ptr(s, TY_PTR, NULL);
     if (!strcmp(name, "free"))                        return s->ty_void;

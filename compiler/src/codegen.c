@@ -1110,6 +1110,36 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                 return val_tmp(t);
             }
 
+            /* @perr(msg) — print "msg: <strerror(errno)>\n" to stderr, like C's perror() */
+            if (!strcmp(name, "perr")) {
+                if (e->builtin.args.len < 1)
+                    fatal_at(e->span, "@perr requires a message argument");
+                Type *mty = NULL;
+                Val msg = cg_expr(cg, e->builtin.args.data[0], &mty);
+                if (!mty || mty->kind != TY_STR)
+                    fatal_at(e->span, "@perr requires a str argument");
+                int mp = new_tmp(cg);
+                emit(cg, "  %%t%d = extractvalue { ptr, i64 } %s, 0\n", mp, msg.buf);
+                int ml64 = new_tmp(cg);
+                emit(cg, "  %%t%d = extractvalue { ptr, i64 } %s, 1\n", ml64, msg.buf);
+                int ml = new_tmp(cg);
+                emit(cg, "  %%t%d = trunc i64 %%t%d to i32\n", ml, ml64);
+                int eloc = new_tmp(cg);
+                emit(cg, "  %%t%d = call ptr @__errno_location()\n", eloc);
+                int eval = new_tmp(cg);
+                emit(cg, "  %%t%d = load i32, ptr %%t%d\n", eval, eloc);
+                int estr = new_tmp(cg);
+                emit(cg, "  %%t%d = call ptr @strerror(i32 %%t%d)\n", estr, eval);
+                int stde = new_tmp(cg);
+                emit(cg, "  %%t%d = load ptr, ptr @stderr\n", stde);
+                int t = new_tmp(cg);
+                emit(cg, "  %%t%d = call i32 (ptr, ptr, ...) @fprintf(ptr %%t%d, ptr @.fmt.perr, "
+                         "i32 %%t%d, ptr %%t%d, ptr %%t%d)\n",
+                     t, stde, ml, mp, estr);
+                if (out_ty) *out_ty = NULL;
+                return val_tmp(t);
+            }
+
             /* @exit */
             if (!strcmp(name, "exit")) {
                 Val code = cg_expr(cg, e->builtin.args.data[0], NULL);
@@ -5587,6 +5617,8 @@ int codegen(Module *mod, FILE *out, int release) {
     emit(&cg, "declare double @strtod(ptr, ptr)\n");
     emit(&cg, "declare i32 @strcmp(ptr, ptr)\n");
     emit(&cg, "declare i32 @memcmp(ptr, ptr, i64)\n");
+    emit(&cg, "declare ptr @strerror(i32)\n");
+    emit(&cg, "declare ptr @__errno_location()\n");
     emit(&cg, "declare i64 @strlen(ptr)\n");
     emit(&cg, "declare i32 @rand()\n");
     emit(&cg, "declare void @srand(i32)\n");
@@ -5613,7 +5645,8 @@ int codegen(Module *mod, FILE *out, int release) {
     /* format string constants */
     emit(&cg, "@.fmt.d   = private constant [3 x i8] c\"%%d\\00\"\n");
     emit(&cg, "@.fmt.f   = private constant [3 x i8] c\"%%f\\00\"\n");
-    emit(&cg, "@.fmt.lld = private constant [5 x i8] c\"%%lld\\00\"\n\n");
+    emit(&cg, "@.fmt.lld = private constant [5 x i8] c\"%%lld\\00\"\n");
+    emit(&cg, "@.fmt.perr = private constant [10 x i8] c\"%%.*s: %%s\\0A\\00\"\n\n");
 
     /* enum variant tables (no IR to emit — enums are integer constants) */
     for (size_t i = 0; i < mod->items.len; i++) {

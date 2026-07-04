@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-615f87ce.js";
+            window.path_to_searchindex_js = "searchindex-190b5316.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-e488213a.js"></script>
@@ -190,6 +190,7 @@
 <tr><td><code>@epf(fmt, ...)</code></td><td><code>fn(str, ...) -&gt; void</code></td><td>print formatted to stderr</td></tr>
 <tr><td><code>@fmt(fmt, ...)</code></td><td><code>fn(str, ...) -&gt; str</code></td><td>format to a heap-allocated string</td></tr>
 <tr><td><code>@cin(prompt?)</code></td><td><code>fn(str?) -&gt; str</code></td><td>read a line from stdin</td></tr>
+<tr><td><code>@perr(msg)</code></td><td><code>fn(str) -&gt; void</code></td><td>print <code>"msg: &lt;reason&gt;\n"</code> to stderr, like C’s <code>perror()</code></td></tr>
 </tbody>
 </table>
 </div>
@@ -203,6 +204,14 @@ greeting: str = @fmt("Hello, {name}!")
 <p>Interpolated <code>bool</code> values are printed as C-style integers (<code>1</code> or <code>0</code>). Use
 <code>@str(value)</code> when you need <code>"true"</code> or <code>"false"</code> text.</p>
 <p>Use <code>{{</code> and <code>}}</code> to emit literal braces.</p>
+<p><code>@perr</code> reads the C runtime’s <code>errno</code> and appends its message, for reporting failures from <code>extern fn</code> calls into C libraries the same way C code would:</p>
+<pre><code>extern fn fopen(path: *u8, mode: *u8) -&gt; *u8
+
+f: *u8 = fopen("does_not_exist.txt".data, "r".data)
+if f == null {
+    @perr("opening file")   # "opening file: No such file or directory"
+}
+</code></pre>
 <h2 id="type-casts"><a class="header" href="#type-casts">Type Casts</a></h2>
 <p><code>@T(val)</code> converts <code>val</code> to type <code>T</code>:</p>
 <p><code>@i8</code> <code>@i16</code> <code>@i32</code> <code>@i64</code> <code>@u8</code> <code>@u16</code> <code>@u32</code> <code>@u64</code> <code>@f32</code> <code>@f64</code> <code>@usize</code> <code>@bool</code> <code>@char</code> <code>@str</code></p>
