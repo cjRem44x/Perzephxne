@@ -1,0 +1,63 @@
+import(win = "std/graphics/window")
+
+fn main() -> i32 {
+    display: *u8 = win.XOpenDisplay(null)
+    if display == null {
+        @perr("XOpenDisplay")
+        ret 1
+    }
+
+    screen: i32 = win.XDefaultScreen(display)
+    root: u64 = win.XRootWindow(display, screen)
+
+    window: u64 = win.XCreateSimpleWindow(display, root, 0, 0, 320u32, 240u32, 1u32, 0u64, 0u64)
+    win.XStoreName(display, window, "przp window test".data)
+
+    wm_protocols: u64 = win.XInternAtom(display, "WM_PROTOCOLS".data, 0)
+    wm_delete: u64 = win.XInternAtom(display, "WM_DELETE_WINDOW".data, 0)
+
+    protocols: [1]u64 = [wm_delete]
+    win.XSetWMProtocols(display, window, &protocols[0], 1)
+
+    win.XMapWindow(display, window)
+    win.XFlush(display)
+    @pf("window opened\n")
+
+    # No window manager is running under the test's virtual display, so
+    # nothing will click the (nonexistent) close button. Simulate exactly
+    # what a window manager does on a close-button click: send a real
+    # WM_PROTOCOLS/WM_DELETE_WINDOW ClientMessage through the X server via
+    # XSendEvent, then let the normal event loop below receive and act on
+    # it exactly as it would for a genuine user close request.
+    fake_event: [192]u8 = undef
+    fake_base: *u8 = &fake_event[0]
+    ftype: *i32 = fake_base
+    ftype.* = win.EVENT_CLIENT_MESSAGE
+    fwin: *u64 = fake_base + 32
+    fwin.* = window
+    fmsg: *u64 = fake_base + 40
+    fmsg.* = wm_protocols
+    fformat: *i32 = fake_base + 48
+    fformat.* = 32
+    fdata0: *i64 = fake_base + 56
+    fdata0.* = @bitcast(i64, wm_delete)
+    win.XSendEvent(display, window, 0, 0, fake_base)
+    win.XFlush(display)
+
+    event: [192]u8 = undef
+    event_base: *u8 = &event[0]
+    closed: bool = false
+    while !closed {
+        win.XNextEvent(display, event_base)
+        if win.event_type(event_base) == win.EVENT_CLIENT_MESSAGE {
+            if win.event_client_data_l0(event_base) == @bitcast(i64, wm_delete) {
+                closed = true
+            }
+        }
+    }
+
+    win.XDestroyWindow(display, window)
+    win.XCloseDisplay(display)
+    @pf("window closed cleanly\n")
+    ret 0
+}
