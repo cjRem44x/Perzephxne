@@ -10,8 +10,8 @@
 | `przp build` | Compile (debug by default) |
 | `przp build -o=Name` | Compile and write a custom output binary |
 | `przp build --release` | Optimized release build |
-| `przp run` | Build and run |
-| `przp run --release` | Build and run with optimizations |
+| `przp run` | Build (if needed) and run — see [Incremental `run`](#incremental-run) |
+| `przp run --release` | Build (if needed) and run with optimizations |
 | `przp sac <files> -o=Name` | Stand-Alone Compiler — compile one or more files without a project |
 | `przp sac <files> --release -o=Name` | Stand-alone optimized build |
 
@@ -78,6 +78,16 @@ przp run            # builds ./MyProject, then runs it
 ```
 
 Stand-alone compilation defaults to `./out` unless `-o=Name` is provided.
+
+## Incremental `run`
+
+`przp run` skips recompiling when the existing binary is already newer than every file it depends on (the entry file and everything it transitively `import()`s), and only rebuilds when something is actually stale:
+
+- editing any source file that's part of the build (entry or an import) forces a rebuild
+- switching between `przp run` and `przp run --release` forces a rebuild, even with no source changes, since the two modes produce different binaries
+- deleting the binary forces a rebuild
+
+This tracking lives in a `<binary>.d` sidecar file written next to the binary after each successful build (a plain list of the files that build depended on) — safe to delete at any time, since its absence just means the next `run` rebuilds unconditionally. `przp build` always compiles unconditionally; the skip-if-fresh behavior is `run`-only, matching its "get me a running program" purpose rather than `build`'s "give me a fresh binary" one.
 
 ## Quick Start
 

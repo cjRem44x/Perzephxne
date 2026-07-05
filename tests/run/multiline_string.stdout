@@ -1,0 +1,11 @@
+hello there,
+this is a multiple-
+line string
+---
+hello there,
+this is a multiple-
+line string
+---
+len=45
+plain {literal braces} and 2 interpolated
+path with backslashes: C:\Users\test and "quotes"

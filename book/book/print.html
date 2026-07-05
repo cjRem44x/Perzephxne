@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-5efdff8f.js";
+            window.path_to_searchindex_js = "searchindex-1c34a8f7.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-e488213a.js"></script>
@@ -256,8 +256,8 @@ comment
 <tr><td><code>przp build</code></td><td>Compile (debug by default)</td></tr>
 <tr><td><code>przp build -o=Name</code></td><td>Compile and write a custom output binary</td></tr>
 <tr><td><code>przp build --release</code></td><td>Optimized release build</td></tr>
-<tr><td><code>przp run</code></td><td>Build and run</td></tr>
-<tr><td><code>przp run --release</code></td><td>Build and run with optimizations</td></tr>
+<tr><td><code>przp run</code></td><td>Build (if needed) and run — see <a href="#incremental-run">Incremental <code>run</code></a></td></tr>
+<tr><td><code>przp run --release</code></td><td>Build (if needed) and run with optimizations</td></tr>
 <tr><td><code>przp sac &lt;files&gt; -o=Name</code></td><td>Stand-Alone Compiler — compile one or more files without a project</td></tr>
 <tr><td><code>przp sac &lt;files&gt; --release -o=Name</code></td><td>Stand-alone optimized build</td></tr>
 </tbody>
@@ -312,6 +312,14 @@ przp build -o=app   # ./app
 przp run            # builds ./MyProject, then runs it
 </code></pre>
 <p>Stand-alone compilation defaults to <code>./out</code> unless <code>-o=Name</code> is provided.</p>
+<h2 id="incremental-run"><a class="header" href="#incremental-run">Incremental <code>run</code></a></h2>
+<p><code>przp run</code> skips recompiling when the existing binary is already newer than every file it depends on (the entry file and everything it transitively <code>import()</code>s), and only rebuilds when something is actually stale:</p>
+<ul>
+<li>editing any source file that’s part of the build (entry or an import) forces a rebuild</li>
+<li>switching between <code>przp run</code> and <code>przp run --release</code> forces a rebuild, even with no source changes, since the two modes produce different binaries</li>
+<li>deleting the binary forces a rebuild</li>
+</ul>
+<p>This tracking lives in a <code>&lt;binary&gt;.d</code> sidecar file written next to the binary after each successful build (a plain list of the files that build depended on) — safe to delete at any time, since its absence just means the next <code>run</code> rebuilds unconditionally. <code>przp build</code> always compiles unconditionally; the skip-if-fresh behavior is <code>run</code>-only, matching its “get me a running program” purpose rather than <code>build</code>’s “give me a fresh binary” one.</p>
 <h2 id="quick-start"><a class="header" href="#quick-start">Quick Start</a></h2>
 <pre><code class="language-sh">przp init myproject
 cd myproject
@@ -456,6 +464,21 @@ len: usize  = name.len
 first: char = name[0]    # indexing returns char
 </code></pre>
 <p>Concatenation and mutation require the standard library (<code>std/str</code>).</p>
+<h4 id="multi-line-strings"><a class="header" href="#multi-line-strings">Multi-Line Strings</a></h4>
+<p><code>"""..."""</code> is a <code>str</code> literal that can span multiple lines, for pasting a block of text (JSON, SQL, a paragraph of prose) without escaping every line break:</p>
+<pre><code>msg: str = """
+hello there,
+this is a multiple-
+line string
+"""
+@pf(msg)
+</code></pre>
+<p>It’s still an ordinary <code>str</code> — real <code>\n</code> bytes are embedded in the value, so it works anywhere a regular string does: passed to <code>@pf</code>/<code>@epf</code>/<code>@fmt</code>/<code>@cin</code>, <code>.len</code>, indexing, <code>{expr}</code> interpolation when used directly as a <code>@pf</code>/<code>@epf</code>/<code>@fmt</code> format string, and so on.</p>
+<p>Two things differ from a regular <code>"..."</code> string:</p>
+<ul>
+<li><strong>Content is raw</strong> — no <code>\n</code>/<code>\t</code>/<code>\"</code>-style escape processing, so backslashes (Windows paths, regexes, JSON with embedded escapes) come through literally.</li>
+<li><strong>Exactly one leading newline is dropped</strong> if the opening <code>"""</code> is immediately followed by one, so writing the opening delimiter on its own line (as in the example above) doesn’t leave a stray blank line at the start of the value. Everything else between the delimiters — including a trailing newline before the closing <code>"""</code> — is kept exactly as written.</li>
+</ul>
 <h3 id="fixed-arrays"><a class="header" href="#fixed-arrays">Fixed Arrays</a></h3>
 <p>Fixed-size arrays live on the stack. The size must be a compile-time constant.</p>
 <pre><code>N: usize : 5
