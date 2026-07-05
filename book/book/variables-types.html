@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-5efdff8f.js";
+            window.path_to_searchindex_js = "searchindex-1c34a8f7.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-e488213a.js"></script>
@@ -243,6 +243,21 @@ len: usize  = name.len
 first: char = name[0]    # indexing returns char
 </code></pre>
 <p>Concatenation and mutation require the standard library (<code>std/str</code>).</p>
+<h4 id="multi-line-strings"><a class="header" href="#multi-line-strings">Multi-Line Strings</a></h4>
+<p><code>"""..."""</code> is a <code>str</code> literal that can span multiple lines, for pasting a block of text (JSON, SQL, a paragraph of prose) without escaping every line break:</p>
+<pre><code>msg: str = """
+hello there,
+this is a multiple-
+line string
+"""
+@pf(msg)
+</code></pre>
+<p>It’s still an ordinary <code>str</code> — real <code>\n</code> bytes are embedded in the value, so it works anywhere a regular string does: passed to <code>@pf</code>/<code>@epf</code>/<code>@fmt</code>/<code>@cin</code>, <code>.len</code>, indexing, <code>{expr}</code> interpolation when used directly as a <code>@pf</code>/<code>@epf</code>/<code>@fmt</code> format string, and so on.</p>
+<p>Two things differ from a regular <code>"..."</code> string:</p>
+<ul>
+<li><strong>Content is raw</strong> — no <code>\n</code>/<code>\t</code>/<code>\"</code>-style escape processing, so backslashes (Windows paths, regexes, JSON with embedded escapes) come through literally.</li>
+<li><strong>Exactly one leading newline is dropped</strong> if the opening <code>"""</code> is immediately followed by one, so writing the opening delimiter on its own line (as in the example above) doesn’t leave a stray blank line at the start of the value. Everything else between the delimiters — including a trailing newline before the closing <code>"""</code> — is kept exactly as written.</li>
+</ul>
 <h3 id="fixed-arrays"><a class="header" href="#fixed-arrays">Fixed Arrays</a></h3>
 <p>Fixed-size arrays live on the stack. The size must be a compile-time constant.</p>
 <pre><code>N: usize : 5

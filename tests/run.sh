@@ -368,6 +368,91 @@ run_init_case() {
     fi
 }
 
+# `przp run` should skip recompiling when the binary is already newer than
+# every source file involved (entry + imports), and rebuild when it isn't —
+# on a source edit, an edit to an imported (non-entry) file, or a
+# debug/--release mode switch.
+run_freshness_case() {
+    local work="$TMP/freshness/proj"
+    local stdout="$TMP/out/freshness.stdout"
+    local stderr="$TMP/err/freshness.stderr"
+
+    printf 'run   run_freshness\n'
+    mkdir -p "$work/src"
+    cat > "$work/przp.toml" <<'EOF'
+[package]
+name = "freshness"
+version = "0.1.0"
+
+[build]
+entry = "src/main.przp"
+EOF
+    cat > "$work/src/helper.przp" <<'EOF'
+fn greet() -> str { ret "v1" }
+EOF
+    cat > "$work/src/main.przp" <<'EOF'
+import(h = "helper")
+fn main() -> i32 {
+    @pf("{h.greet()}\n")
+    ret 0
+}
+EOF
+
+    if ! (cd "$work" && PRZP_STDLIB="$STDLIB" "$PRZP" run >"$stdout" 2>"$stderr"); then
+        printf 'FAIL  run_freshness: initial run failed\n' >&2
+        sed -n '1,120p' "$stderr" >&2
+        failures=$((failures + 1))
+        return
+    fi
+    local mtime1
+    mtime1=$(stat -c '%Y' "$work/freshness")
+
+    sleep 1.1
+    if ! (cd "$work" && PRZP_STDLIB="$STDLIB" "$PRZP" run >"$stdout" 2>"$stderr"); then
+        printf 'FAIL  run_freshness: second run failed\n' >&2
+        failures=$((failures + 1))
+        return
+    fi
+    local mtime2
+    mtime2=$(stat -c '%Y' "$work/freshness")
+    if [ "$mtime1" != "$mtime2" ]; then
+        printf 'FAIL  run_freshness: unchanged sources triggered a rebuild\n' >&2
+        failures=$((failures + 1))
+        return
+    fi
+
+    sleep 1.1
+    cat > "$work/src/helper.przp" <<'EOF'
+fn greet() -> str { ret "v2" }
+EOF
+    if ! (cd "$work" && PRZP_STDLIB="$STDLIB" "$PRZP" run >"$stdout" 2>"$stderr"); then
+        printf 'FAIL  run_freshness: run after import edit failed\n' >&2
+        failures=$((failures + 1))
+        return
+    fi
+    if ! grep -Fq "v2" "$stdout"; then
+        printf 'FAIL  run_freshness: editing an imported file did not trigger a rebuild\n' >&2
+        sed -n '1,20p' "$stdout" >&2
+        failures=$((failures + 1))
+        return
+    fi
+
+    sleep 1.1
+    local mtime3
+    mtime3=$(stat -c '%Y' "$work/freshness")
+    if ! (cd "$work" && PRZP_STDLIB="$STDLIB" "$PRZP" run --release >"$stdout" 2>"$stderr"); then
+        printf 'FAIL  run_freshness: --release run failed\n' >&2
+        failures=$((failures + 1))
+        return
+    fi
+    local mtime4
+    mtime4=$(stat -c '%Y' "$work/freshness")
+    if [ "$mtime3" = "$mtime4" ]; then
+        printf 'FAIL  run_freshness: switching to --release did not force a rebuild\n' >&2
+        failures=$((failures + 1))
+    fi
+}
+
 for src in "$ROOT"/tests/run/*.przp; do
     [ -e "$src" ] || continue
     run_success_case "$src"
@@ -402,6 +487,7 @@ if run_x11_setup; then
 fi
 
 run_init_case
+run_freshness_case
 
 run_cli_fail unknown_command "unknown command 'nope'" "$PRZP" nope
 run_cli_fail sac_no_files "przp sac: no input files" "$PRZP" sac

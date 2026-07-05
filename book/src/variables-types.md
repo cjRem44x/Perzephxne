@@ -90,6 +90,26 @@ first: char = name[0]    # indexing returns char
 
 Concatenation and mutation require the standard library (`std/str`).
 
+#### Multi-Line Strings
+
+`"""..."""` is a `str` literal that can span multiple lines, for pasting a block of text (JSON, SQL, a paragraph of prose) without escaping every line break:
+
+```
+msg: str = """
+hello there,
+this is a multiple-
+line string
+"""
+@pf(msg)
+```
+
+It's still an ordinary `str` — real `\n` bytes are embedded in the value, so it works anywhere a regular string does: passed to `@pf`/`@epf`/`@fmt`/`@cin`, `.len`, indexing, `{expr}` interpolation when used directly as a `@pf`/`@epf`/`@fmt` format string, and so on.
+
+Two things differ from a regular `"..."` string:
+
+- **Content is raw** — no `\n`/`\t`/`\"`-style escape processing, so backslashes (Windows paths, regexes, JSON with embedded escapes) come through literally.
+- **Exactly one leading newline is dropped** if the opening `"""` is immediately followed by one, so writing the opening delimiter on its own line (as in the example above) doesn't leave a stray blank line at the start of the value. Everything else between the delimiters — including a trailing newline before the closing `"""` — is kept exactly as written.
+
 ### Fixed Arrays
 
 Fixed-size arrays live on the stack. The size must be a compile-time constant.

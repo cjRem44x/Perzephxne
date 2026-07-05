@@ -16,6 +16,10 @@ void lexer_init(Lexer *l, const char *src, uint32_t file_id, Arena *arena) {
 
 static char peek(Lexer *l)          { return *l->cur; }
 static char peek2(Lexer *l)         { return l->cur[1]; }
+/* only safe to call once peek2() has confirmed index 1 is not the NUL
+   terminator — a NUL-terminated buffer always has a byte at the next
+   offset in that case, even if that byte is itself the terminator */
+static char peek3(Lexer *l)         { return l->cur[2]; }
 
 static char advance(Lexer *l) {
     char c = *l->cur++;
@@ -96,6 +100,52 @@ static Token lex_string(Lexer *l, Pos start) {
         .kind = TOK_STR,
         .span = make_span(l, start),
         .sval = arena_strndup(l->arena, buf, len)
+    };
+}
+
+/* Multi-line string literal: """ ... """. Produces the same TOK_STR kind
+   as a regular string, so everything downstream (str typing, @pf/@epf/@fmt
+   {expr} interpolation desugaring, codegen) already handles it with no
+   further changes needed. Content is raw — no escape processing, since the
+   point of a multi-line literal is usually to paste a block of text (JSON,
+   regex, SQL, ASCII art) verbatim without fighting backslashes — and it
+   grows a heap buffer rather than sharing lex_string's fixed 4096-byte cap,
+   since a multi-line block is expected to often be bigger than that. */
+static Token lex_string3(Lexer *l, Pos start) {
+    /* opening '"""' already consumed */
+
+    /* drop exactly one leading newline right after the opening delimiter,
+       so a literal written as """\n...\n""" reads cleanly starting at the
+       first line of actual content */
+    if (peek(l) == '\n') advance(l);
+    else if (peek(l) == '\r' && peek2(l) == '\n') { advance(l); advance(l); }
+
+    size_t cap = 4096;
+    char *buf = malloc(cap);
+    size_t len = 0;
+    for (;;) {
+        if (!peek(l)) {
+            free(buf);
+            fatal_at(make_span(l, start), "unterminated multi-line string literal");
+        }
+        if (peek(l) == '"' && peek2(l) == '"' && peek3(l) == '"') {
+            advance(l); advance(l); advance(l); /* closing '"""' */
+            break;
+        }
+        if (len + 1 >= cap) {
+            cap *= 2;
+            char *grown = realloc(buf, cap);
+            if (!grown) fatal_at(make_span(l, start), "out of memory lexing multi-line string literal");
+            buf = grown;
+        }
+        buf[len++] = advance(l);
+    }
+    char *interned = arena_strndup(l->arena, buf, len);
+    free(buf);
+    return (Token){
+        .kind = TOK_STR,
+        .span = make_span(l, start),
+        .sval = interned
     };
 }
 
@@ -234,8 +284,14 @@ static Token lexer_next_inner(Lexer *l) {
                         .sval = arena_strndup(l->arena, beg, len) };
     }
 
-    /* string */
-    if (c == '"') return lex_string(l, start);
+    /* string, or """ multi-line string */
+    if (c == '"') {
+        if (peek(l) == '"' && peek2(l) == '"') {
+            advance(l); advance(l); /* consume the other two opening quotes */
+            return lex_string3(l, start);
+        }
+        return lex_string(l, start);
+    }
 
     /* char */
     if (c == '\'') return lex_char(l, start);

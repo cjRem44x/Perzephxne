@@ -59,6 +59,21 @@ static char *read_file_or_null(const char *path, char *err, size_t errsz) {
 /* stdlib root — resolved once at startup */
 static char g_stdlib_root[1024] = "";
 
+/* Every source file (entry + transitively imported) touched by the current
+   compile_file() call — recorded so `przp run` can later check whether all
+   of them are older than an already-built binary and skip recompiling. */
+#define MAX_DEP_FILES 256
+static char g_dep_files[MAX_DEP_FILES][1024];
+static int  g_n_dep_files = 0;
+
+static void record_dep_file(const char *path) {
+    for (int i = 0; i < g_n_dep_files; i++)
+        if (!strcmp(g_dep_files[i], path)) return; /* dedupe */
+    if (g_n_dep_files >= MAX_DEP_FILES) return;
+    snprintf(g_dep_files[g_n_dep_files], sizeof(g_dep_files[0]), "%s", path);
+    g_n_dep_files++;
+}
+
 static void stdlib_root_init(const char *argv0) {
     (void)argv0;
     const char *env = getenv("PRZP_STDLIB");
@@ -606,6 +621,7 @@ static int load_imports(Module *mod, const char *src_path, const char *src,
                 error_at(item->span, "cannot import '%s' (resolved to '%s'): %s", imp_path, full, err);
                 return 0;
             }
+            record_dep_file(full);
             error_init(full, imp_src);
             Module *imp = parse(imp_src, (uint32_t)(n_loading + 1), arena);
 
@@ -652,8 +668,65 @@ static int has_przp_ext(const char *path) {
     return n >= 5 && !strcmp(path + n - 5, ".przp");
 }
 
+/* Write the list of files this build depended on (entry + every resolved
+   import) to "<out_path>.d" — a "#release=0|1" header line followed by one
+   dependency path per line — read back by binary_is_fresh() to decide
+   whether `przp run` needs to recompile. */
+static void write_dep_file(const char *out_path, int release) {
+    char dep_path[1100];
+    snprintf(dep_path, sizeof(dep_path), "%s.d", out_path);
+    FILE *f = fopen(dep_path, "w");
+    if (!f) return; /* best-effort — worst case, run always rebuilds */
+    fprintf(f, "#release=%d\n", release);
+    for (int i = 0; i < g_n_dep_files; i++)
+        fprintf(f, "%s\n", g_dep_files[i]);
+    fclose(f);
+}
+
+/* True if `out_path` exists, has a matching "<out_path>.d" dependency list
+   from a previous successful build in the same (release/debug) mode, and
+   every file in that list is no newer than the binary — i.e. `przp run`
+   can skip recompiling. Missing binary, missing/unreadable dep file, a
+   mode mismatch, or any stale/missing dependency all conservatively return
+   false (rebuild). */
+static int binary_is_fresh(const char *out_path, int release) {
+    struct stat bin_st;
+    if (stat(out_path, &bin_st) != 0) return 0;
+
+    char dep_path[1100];
+    snprintf(dep_path, sizeof(dep_path), "%s.d", out_path);
+    FILE *f = fopen(dep_path, "r");
+    if (!f) return 0;
+
+    int fresh = 1;
+    int first = 1;
+    char line[1024];
+    while (fgets(line, sizeof(line), f)) {
+        size_t n = strlen(line);
+        while (n > 0 && (line[n-1] == '\n' || line[n-1] == '\r')) line[--n] = '\0';
+        if (first) {
+            first = 0;
+            char want[16];
+            snprintf(want, sizeof(want), "#release=%d", release);
+            if (strcmp(line, want) != 0) { fresh = 0; break; }
+            continue;
+        }
+        if (n == 0) continue;
+        struct stat dep_st;
+        if (stat(line, &dep_st) != 0 || dep_st.st_mtime > bin_st.st_mtime) {
+            fresh = 0;
+            break;
+        }
+    }
+    fclose(f);
+    return fresh;
+}
+
 static int compile_file(const char *src_path, const char *out_path, int release,
                          const char **extra_links, int n_extra) {
+    g_n_dep_files = 0;
+    record_dep_file(src_path);
+
     char err[256];
     char *src = read_file_or_null(src_path, err, sizeof(err));
     if (!src) {
@@ -701,7 +774,12 @@ static int compile_file(const char *src_path, const char *out_path, int release,
     snprintf(cmd + pos, sizeof(cmd) - (size_t)pos, " -o %s -lm -pthread", out_path);
     int ret = system(cmd);
     if (!getenv("PRZP_KEEP_IR")) remove(ll_path);
-    return (ret == 0) ? 0 : 1;
+    if (ret != 0) return 1;
+
+    /* record the dependency list so a later `przp run` can tell whether
+       this binary is still fresh without recompiling to find out */
+    write_dep_file(out_path, release);
+    return 0;
 }
 
 /* ── Sub-commands ─────────────────────────────────────────────────────────── */
@@ -1051,7 +1129,9 @@ static void cmd_run(int argc, char **argv) {
         link_argv[i] = link_flags[i];
     }
 
-    if (compile_file(manifest.entry, out_buf, release, link_argv, manifest.n_link_libs) != 0) exit(1);
+    if (!binary_is_fresh(out_buf, release)) {
+        if (compile_file(manifest.entry, out_buf, release, link_argv, manifest.n_link_libs) != 0) exit(1);
+    }
 
     char run_cmd[512];
     snprintf(run_cmd, sizeof(run_cmd), "./%s", out_buf);

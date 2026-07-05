@@ -3,6 +3,9 @@
 *.o
 *.out
 
+# przp run's incremental-build dependency sidecar (<binary>.d)
+*.d
+
 # build artifacts
 compiler/przp.dSYM/
 

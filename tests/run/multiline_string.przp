@@ -1,0 +1,26 @@
+fn takes_str(s: str) -> usize {
+    ret s.len
+}
+
+fn main() -> i32 {
+    msg: str = """
+hello there,
+this is a multiple-
+line string
+"""
+    @pf(msg)
+    @pf("---\n")
+    @pf("{msg}")
+    @pf("---\n")
+    @pf("len={takes_str(msg)}\n")
+
+    @pf("""
+plain {{literal braces}} and {1 + 1} interpolated
+""")
+
+    raw: str = """
+path with backslashes: C:\Users\test and "quotes"
+"""
+    @pf(raw)
+    ret 0
+}
