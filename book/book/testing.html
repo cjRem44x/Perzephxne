@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>Status &amp; Next Work - The Perzephxne Programming Language</title>
+        <title>Testing - The Perzephxne Programming Language</title>
 
 
         <!-- Custom HTML head -->
@@ -177,51 +177,84 @@
 
                 <div id="mdbook-content" class="content">
                     <main>
-                        <h1 id="status--next-work"><a class="header" href="#status--next-work">Status &amp; Next Work</a></h1>
-<p>Perzephxne is in beta. The book is intended to be the complete language reference for the current compiler and shipped standard library.</p>
-<p>The reference currently covers:</p>
-<ul>
-<li>source layout, project manifests, and <code>przp</code> commands</li>
-<li>literals, variables, primitive types, arrays, slices, strings, tuples, and failable types</li>
-<li>functions, first-class function pointers, extern declarations, inline functions, and return inference</li>
-<li>control flow, <code>when</code>, loops, labels, <code>break</code>, <code>continue</code>, <code>goto</code>, and <code>defer</code></li>
-<li>structs, <code>impl</code> methods, generic functions, generic structs, enums, plain unions, and tagged unions</li>
-<li>raw pointers, heap allocation, smart pointers, globals, platform constants, inline assembly, builtins, operators, and naming conventions</li>
-<li>all standard library modules shipped under <code>compiler/std</code></li>
-</ul>
-<h2 id="product-gaps"><a class="header" href="#product-gaps">Product Gaps</a></h2>
-<p>The core language surface is represented in the book and regression suite. The remaining work is mostly product hardening:</p>
+                        <h1 id="testing"><a class="header" href="#testing">Testing</a></h1>
+<p><code>test "name" { ... }</code> declares a test block. It’s a plain top-level item, written anywhere in a <code>.przp</code> file alongside the code it tests — no separate test files or special naming convention required.</p>
+<pre><code>fn add(a: i32, b: i32) -&gt; i32 {
+    ret a + b
+}
+
+test "addition works" {
+    @assert(add(2, 3) == 5)
+}
+
+fn main() -&gt; i32 {
+    @pf("real program\n")
+    ret 0
+}
+</code></pre>
+<p>Test blocks are invisible to <code>przp build</code>/<code>przp run</code>/<code>przp sac</code> — they compile (so they never silently bit-rot into something that doesn’t parse) but are never called from <code>fn main()</code> or anywhere else. Only <code>przp test</code> runs them.</p>
+<h2 id="running-tests"><a class="header" href="#running-tests">Running Tests</a></h2>
 <div class="table-wrapper">
 <table>
 <thead>
-<tr><th>Area</th><th>Next Work</th></tr>
+<tr><th>Command</th><th>Runs</th></tr>
 </thead>
 <tbody>
-<tr><td>Parser diagnostics</td><td>Add focused malformed-syntax regressions and improve messages for missing braces, bad signatures, and invalid generic declarations.</td></tr>
-<tr><td>Diagnostic consistency</td><td>Continue moving command, manifest, import, semantic, and codegen failures toward source-located errors where possible.</td></tr>
-<tr><td>Regression breadth</td><td>Add more edge-case tests for parser recovery, generic instantiation, failable destructuring, and unsafe pointer operations.</td></tr>
-<tr><td>Build/runtime portability</td><td>Keep Linux x86-64 as the current target, then audit assumptions before broadening platform support.</td></tr>
-<tr><td>Package dependencies</td><td><code>[deps]</code> is reserved. There is no external resolver yet; Core/Stdlib ships with the language. <code>[build].link</code> (see <a href="./build-system.html">Build System</a>) covers linking against system libraries the OS already ships (e.g. <code>link = ["X11", "GL"]</code>) — this is not a package resolver, just linker flags.</td></tr>
-<tr><td>Release UX</td><td>A future version command should be <code>przp version</code>, but versioning is intentionally deferred while beta work is moving quickly.</td></tr>
-<tr><td><code>any</code> type</td><td>Reserved keyword. Runtime-tagged values (boxing, type IDs, <code>when</code> dispatch on types) are designed but not implemented; removed from the reference until they exist.</td></tr>
-<tr><td>printf-style <code>%s</code></td><td><code>@pf("%s", s)</code> passes the fat pointer raw and crashes; use <code>{s}</code> interpolation. A fix should extract the data pointer (and handle non-NUL-terminated slices).</td></tr>
-<tr><td>Struct-by-value FFI, non-imported <code>extern fn</code></td><td><code>extern fn foo(v: Vector2) -&gt; Vector2</code> declared directly in a file (not reached via <code>import()</code>) fails to compile if it needs struct-by-value ABI handling — the wrapper mechanism needs an import alias to redirect call sites to (see <a href="./stdlib.html">Standard Library</a>). Move the declaration into its own module and <code>import()</code> it, which is fully supported.</td></tr>
-<tr><td><code>@bitcast</code> pointer type arguments</td><td><code>@bitcast(T, val)</code>’s type argument only accepts a bare type name (<code>u32</code>, <code>vec2</code>) — a compound type expression like <code>*u8</code> doesn’t parse. Not a practical limitation for pointer reinterpretation specifically, since a raw pointer already coerces to any other raw pointer type via plain assignment (see <a href="./pointers.html">Pointers &amp; Memory</a>), but the parser gap is real for anyone trying to <code>@bitcast</code> to e.g. a slice or smart-pointer type.</td></tr>
+<tr><td><code>przp test</code></td><td>every test block in the project (entry file and everything it <code>import()</code>s)</td></tr>
+<tr><td><code>przp test &lt;file&gt;</code></td><td>only the test blocks declared in <code>&lt;file&gt;</code></td></tr>
+<tr><td><code>przp test &lt;file&gt; &lt;name&gt;</code></td><td>the one test named <code>&lt;name&gt;</code> in <code>&lt;file&gt;</code></td></tr>
+<tr><td><code>przp test [...] --release</code></td><td>same, compiled in release mode instead of the default debug mode</td></tr>
 </tbody>
 </table>
 </div>
-<h2 id="documentation-rule"><a class="header" href="#documentation-rule">Documentation Rule</a></h2>
-<p>Any compiler feature that is added or changed should update both the book source and the generated <code>book/book</code> output in the same change. The book should remain the user-facing source of truth for the current language.</p>
+<pre><code>przp test                              # everything
+przp test src/math.przp                # just src/math.przp's tests
+przp test src/math.przp "addition works"  # just that one test
+</code></pre>
+<p>Each test runs in its own subprocess — a crash or <code>@panic</code> in one test can’t take any other test down with it or stop the run. Output looks like:</p>
+<pre><code>PASS  addition works
+FAIL  addition is wrong on purpose
+1 passed, 1 failed
+</code></pre>
+<p><code>przp test</code> exits <code>0</code> if every selected test passed, <code>1</code> if any failed — suitable for CI.</p>
+<h2 id="pass-and-fail"><a class="header" href="#pass-and-fail">Pass and Fail</a></h2>
+<p>A test that runs to completion without panicking has already passed — most tests need nothing beyond <code>@assert</code>:</p>
+<pre><code>test "division works" {
+    @assert(10 / 2 == 5)
+}
+</code></pre>
+<p>Two builtins make the result explicit when that’s useful:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Builtin</th><th>Effect</th></tr>
+</thead>
+<tbody>
+<tr><td><code>@pass()</code></td><td>stop the test immediately and mark it passed</td></tr>
+<tr><td><code>@fail(msg?)</code></td><td>stop the test immediately, print <code>msg</code> if given, and mark it failed</td></tr>
+</tbody>
+</table>
+</div>
+<pre><code>test "explicit pass and fail" {
+    if some_condition() {
+        @pass()   # done here, skip the rest of the test
+    }
+    @fail("some_condition() was never true")
+}
+</code></pre>
+<p><code>@fail</code> behaves like <code>@panic</code> — same “print and stop” shape — under a name that reads naturally inside a test.</p>
+<h2 id="debug-mode-by-default"><a class="header" href="#debug-mode-by-default">Debug Mode by Default</a></h2>
+<p><code>przp test</code> compiles in debug mode unless <code>--release</code> is passed, since <code>@assert</code> — the mechanism most tests rely on — is stripped out entirely in release builds (see <a href="./build-system.html#build-modes">Build System § Build Modes</a>). Pass <code>--release</code> explicitly if you specifically want to verify release-mode behavior.</p>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="naming.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="errors.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                             </a>
 
-                            <a rel="next prefetch" href="graphics.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="modules.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                             </a>
 
@@ -231,11 +264,11 @@
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="naming.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="errors.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                     </a>
 
-                    <a rel="next prefetch" href="graphics.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="modules.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                     </a>
             </nav>

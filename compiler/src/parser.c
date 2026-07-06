@@ -1833,6 +1833,24 @@ static Item *parse_item(Parser *p) {
         return item;
     }
 
+    /* test "name" { ... } */
+    if (check(p, TOK_TEST)) {
+        advance(p);
+        const char *test_name = expect(p, TOK_STR).sval;
+        StmtList body = parse_block(p);
+        static int test_counter = 0;
+        char buf[64];
+        snprintf(buf, sizeof(buf), "__przp_test_%d", test_counter++);
+        Item *item = ARENA_NEW(p->arena, Item);
+        item->kind          = ITEM_FN;
+        item->name          = arena_strdup(p->arena, buf);
+        item->span          = span_merge(span, cur(p).span);
+        item->fn.body       = body;
+        item->fn.is_test    = 1;
+        item->fn.test_name  = test_name;
+        return item;
+    }
+
     /* inline? fn */
     int is_inline = eat(p, TOK_INLINE);
 

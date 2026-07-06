@@ -19,6 +19,7 @@
 - [Pointers & Memory](./pointers.md)
 - [Smart Pointers](./smart-pointers.md)
 - [Error Handling](./errors.md)
+- [Testing](./testing.md)
 - [Modules](./modules.md)
 - [Platform Detection](./platform.md)
 - [Inline Assembly](./asm.md)
