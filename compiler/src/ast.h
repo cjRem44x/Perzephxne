@@ -277,6 +277,11 @@ struct Item {
             int          variadic;
             const char **type_params;
             size_t       n_type_params;
+            int          is_test;   /* test "name" { ... } block */
+            const char  *test_name; /* the quoted display name, if is_test */
+            const char  *test_file; /* source file path, stamped in main.c
+                                        right after parsing (the parser
+                                        itself has no path, only src text) */
         } fn;
 
         struct {

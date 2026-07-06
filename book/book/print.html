@@ -36,10 +36,10 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-a7d7e4c1.js";
+            window.path_to_searchindex_js = "searchindex-7332463e.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-e488213a.js"></script>
+        <script src="toc-4e58bc13.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -258,6 +258,7 @@ comment
 <tr><td><code>przp build --release</code></td><td>Optimized release build</td></tr>
 <tr><td><code>przp run</code></td><td>Build (if needed) and run — see <a href="#incremental-run">Incremental <code>run</code></a></td></tr>
 <tr><td><code>przp run --release</code></td><td>Build (if needed) and run with optimizations</td></tr>
+<tr><td><code>przp test [&lt;file&gt;] [&lt;name&gt;]</code></td><td>Run <code>test "..." { }</code> blocks — see <a href="#testing">Testing</a></td></tr>
 <tr><td><code>przp sac &lt;files&gt; -o=Name</code></td><td>Stand-Alone Compiler — compile one or more files without a project</td></tr>
 <tr><td><code>przp sac &lt;files&gt; --release -o=Name</code></td><td>Stand-alone optimized build</td></tr>
 </tbody>
@@ -1601,6 +1602,75 @@ bad, err2: !f64 = @f64("hello")        # bad=0.0        err2=1
 </code></pre>
 <p>In debug builds <code>@unreachable()</code> panics if reached. In release it is a hint to the optimizer.</p>
 <div style="break-before: page; page-break-before: always;"></div>
+<h1 id="testing"><a class="header" href="#testing">Testing</a></h1>
+<p><code>test "name" { ... }</code> declares a test block. It’s a plain top-level item, written anywhere in a <code>.przp</code> file alongside the code it tests — no separate test files or special naming convention required.</p>
+<pre><code>fn add(a: i32, b: i32) -&gt; i32 {
+    ret a + b
+}
+
+test "addition works" {
+    @assert(add(2, 3) == 5)
+}
+
+fn main() -&gt; i32 {
+    @pf("real program\n")
+    ret 0
+}
+</code></pre>
+<p>Test blocks are invisible to <code>przp build</code>/<code>przp run</code>/<code>przp sac</code> — they compile (so they never silently bit-rot into something that doesn’t parse) but are never called from <code>fn main()</code> or anywhere else. Only <code>przp test</code> runs them.</p>
+<h2 id="running-tests"><a class="header" href="#running-tests">Running Tests</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Command</th><th>Runs</th></tr>
+</thead>
+<tbody>
+<tr><td><code>przp test</code></td><td>every test block in the project (entry file and everything it <code>import()</code>s)</td></tr>
+<tr><td><code>przp test &lt;file&gt;</code></td><td>only the test blocks declared in <code>&lt;file&gt;</code></td></tr>
+<tr><td><code>przp test &lt;file&gt; &lt;name&gt;</code></td><td>the one test named <code>&lt;name&gt;</code> in <code>&lt;file&gt;</code></td></tr>
+<tr><td><code>przp test [...] --release</code></td><td>same, compiled in release mode instead of the default debug mode</td></tr>
+</tbody>
+</table>
+</div>
+<pre><code>przp test                              # everything
+przp test src/math.przp                # just src/math.przp's tests
+przp test src/math.przp "addition works"  # just that one test
+</code></pre>
+<p>Each test runs in its own subprocess — a crash or <code>@panic</code> in one test can’t take any other test down with it or stop the run. Output looks like:</p>
+<pre><code>PASS  addition works
+FAIL  addition is wrong on purpose
+1 passed, 1 failed
+</code></pre>
+<p><code>przp test</code> exits <code>0</code> if every selected test passed, <code>1</code> if any failed — suitable for CI.</p>
+<h2 id="pass-and-fail"><a class="header" href="#pass-and-fail">Pass and Fail</a></h2>
+<p>A test that runs to completion without panicking has already passed — most tests need nothing beyond <code>@assert</code>:</p>
+<pre><code>test "division works" {
+    @assert(10 / 2 == 5)
+}
+</code></pre>
+<p>Two builtins make the result explicit when that’s useful:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Builtin</th><th>Effect</th></tr>
+</thead>
+<tbody>
+<tr><td><code>@pass()</code></td><td>stop the test immediately and mark it passed</td></tr>
+<tr><td><code>@fail(msg?)</code></td><td>stop the test immediately, print <code>msg</code> if given, and mark it failed</td></tr>
+</tbody>
+</table>
+</div>
+<pre><code>test "explicit pass and fail" {
+    if some_condition() {
+        @pass()   # done here, skip the rest of the test
+    }
+    @fail("some_condition() was never true")
+}
+</code></pre>
+<p><code>@fail</code> behaves like <code>@panic</code> — same “print and stop” shape — under a name that reads naturally inside a test.</p>
+<h2 id="debug-mode-by-default"><a class="header" href="#debug-mode-by-default">Debug Mode by Default</a></h2>
+<p><code>przp test</code> compiles in debug mode unless <code>--release</code> is passed, since <code>@assert</code> — the mechanism most tests rely on — is stripped out entirely in release builds (see <a href="#build-modes">Build System § Build Modes</a>). Pass <code>--release</code> explicitly if you specifically want to verify release-mode behavior.</p>
+<div style="break-before: page; page-break-before: always;"></div>
 <h1 id="modules"><a class="header" href="#modules">Modules</a></h1>
 <p>A module is a source file. There are no header files and no separate declaration step.</p>
 <h2 id="importing"><a class="header" href="#importing">Importing</a></h2>
@@ -1965,6 +2035,8 @@ bits: u32 = @bitcast(u32, f)   # raw bit pattern — 0x3F800000
 <tr><td><code>@panic(msg)</code></td><td>unconditional panic with message</td></tr>
 <tr><td><code>@unreachable()</code></td><td>mark code path as unreachable</td></tr>
 <tr><td><code>@todo()</code></td><td>placeholder — panics at runtime</td></tr>
+<tr><td><code>@pass()</code></td><td>stop the current test immediately, marking it passed — see <a href="#testing">Testing</a></td></tr>
+<tr><td><code>@fail(msg?)</code></td><td>stop the current test immediately, marking it failed (same shape as <code>@panic</code>) — see <a href="#testing">Testing</a></td></tr>
 </tbody>
 </table>
 </div>

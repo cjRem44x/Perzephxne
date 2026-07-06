@@ -453,6 +453,98 @@ EOF
     fi
 }
 
+# `przp test` — test "name" { ... } blocks, discovered across the entry file
+# and an imported module, run in isolated per-test subprocesses (so a
+# crashing test can't take any other test down with it), with przp test /
+# przp test <file> / przp test <file> <name> filtering.
+run_test_cmd_case() {
+    local work="$TMP/test_cmd/proj"
+    local stdout="$TMP/out/test_cmd.stdout"
+    local stderr="$TMP/err/test_cmd.stderr"
+
+    printf 'run   test_cmd\n'
+    mkdir -p "$work/src"
+    cat > "$work/przp.toml" <<'EOF'
+[package]
+name = "test_cmd"
+version = "0.1.0"
+EOF
+    cat > "$work/src/helper.przp" <<'EOF'
+fn divide(a: i32, b: i32) -> i32 { ret a / b }
+
+test "helper division works" {
+    @assert(divide(10, 2) == 5)
+}
+
+test "helper crashes on purpose" {
+    x: *i32 = null
+    @pf("{x.*}\n")
+}
+EOF
+    cat > "$work/src/main.przp" <<'EOF'
+import(h = "helper")
+
+fn add(a: i32, b: i32) -> i32 { ret a + b }
+
+test "addition works" {
+    @assert(add(2, 3) == 5)
+    @pass()
+}
+
+test "addition is wrong on purpose" {
+    @assert(add(2, 3) == 999)
+}
+
+fn main() -> i32 {
+    @pf("real program\n")
+    ret 0
+}
+EOF
+
+    # all tests: 2 pass, 2 fail (one via @assert, one via a null-deref crash)
+    (cd "$work" && PRZP_STDLIB="$STDLIB" "$PRZP" test >"$stdout" 2>"$stderr")
+    local rc=$?
+    if [ "$rc" -ne 1 ]; then
+        printf 'FAIL  test_cmd: expected exit 1 with 2 failing tests, got %d\n' "$rc" >&2
+        sed -n '1,40p' "$stdout" "$stderr" >&2
+        failures=$((failures + 1))
+        return
+    fi
+    if ! grep -Fq "2 passed, 2 failed" "$stdout"; then
+        printf 'FAIL  test_cmd: expected "2 passed, 2 failed" summary\n' >&2
+        sed -n '1,40p' "$stdout" >&2
+        failures=$((failures + 1))
+        return
+    fi
+
+    # file filter: only helper.przp's two tests
+    (cd "$work" && PRZP_STDLIB="$STDLIB" "$PRZP" test src/helper.przp >"$stdout" 2>"$stderr")
+    if ! grep -Fq "1 passed, 1 failed" "$stdout"; then
+        printf 'FAIL  test_cmd: file filter did not select exactly helper.przp'"'"'s 2 tests\n' >&2
+        sed -n '1,40p' "$stdout" >&2
+        failures=$((failures + 1))
+        return
+    fi
+
+    # file + name filter: exactly one passing test
+    (cd "$work" && PRZP_STDLIB="$STDLIB" "$PRZP" test src/main.przp "addition works" >"$stdout" 2>"$stderr")
+    rc=$?
+    if [ "$rc" -ne 0 ] || ! grep -Fq "1 passed, 0 failed" "$stdout"; then
+        printf 'FAIL  test_cmd: file+name filter did not select exactly one passing test\n' >&2
+        sed -n '1,40p' "$stdout" >&2
+        failures=$((failures + 1))
+        return
+    fi
+
+    # przp run's own main is unaffected by the presence of test blocks
+    (cd "$work" && PRZP_STDLIB="$STDLIB" "$PRZP" run >"$stdout" 2>"$stderr")
+    if ! grep -Fq "real program" "$stdout"; then
+        printf 'FAIL  test_cmd: przp run did not execute the real fn main\n' >&2
+        sed -n '1,40p' "$stdout" >&2
+        failures=$((failures + 1))
+    fi
+}
+
 for src in "$ROOT"/tests/run/*.przp; do
     [ -e "$src" ] || continue
     run_success_case "$src"
@@ -488,6 +580,7 @@ fi
 
 run_init_case
 run_freshness_case
+run_test_cmd_case
 
 run_cli_fail unknown_command "unknown command 'nope'" "$PRZP" nope
 run_cli_fail sac_no_files "przp sac: no input files" "$PRZP" sac

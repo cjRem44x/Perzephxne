@@ -74,6 +74,22 @@ static void record_dep_file(const char *path) {
     g_n_dep_files++;
 }
 
+/* The parser has no notion of a file path (only source text + a file_id
+   used solely for span reporting), so `test "name" { ... }` blocks can't
+   record their own origin file at parse time — stamp it here, right after
+   each parse() call, for `przp test <file>` filtering later. `path` is
+   arena-copied since several call sites pass a stack-local buffer (e.g.
+   load_imports's per-iteration `full[1024]`) that doesn't outlive the loop
+   iteration it was built in. */
+static void stamp_test_files(Module *mod, const char *path, Arena *arena) {
+    const char *durable = arena_strdup(arena, path);
+    for (size_t i = 0; i < mod->items.len; i++) {
+        Item *item = mod->items.data[i];
+        if (item->kind == ITEM_FN && item->fn.is_test)
+            item->fn.test_file = durable;
+    }
+}
+
 static void stdlib_root_init(const char *argv0) {
     (void)argv0;
     const char *env = getenv("PRZP_STDLIB");
@@ -624,6 +640,7 @@ static int load_imports(Module *mod, const char *src_path, const char *src,
             record_dep_file(full);
             error_init(full, imp_src);
             Module *imp = parse(imp_src, (uint32_t)(n_loading + 1), arena);
+            stamp_test_files(imp, full, arena);
 
             /* recurse: handle imports inside the imported module */
             const char *new_loading[64];
@@ -723,7 +740,7 @@ static int binary_is_fresh(const char *out_path, int release) {
 }
 
 static int compile_file(const char *src_path, const char *out_path, int release,
-                         const char **extra_links, int n_extra) {
+                         const char **extra_links, int n_extra, int test_mode) {
     g_n_dep_files = 0;
     record_dep_file(src_path);
 
@@ -739,6 +756,7 @@ static int compile_file(const char *src_path, const char *out_path, int release,
 
     error_init(src_path, src);
     Module *mod = parse(src, 0, &arena);
+    stamp_test_files(mod, src_path, &arena);
 
     /* load and merge imported modules before sema */
     const char *loading[1] = { src_path };
@@ -757,7 +775,7 @@ static int compile_file(const char *src_path, const char *out_path, int release,
 
     FILE *ll_f = fopen(ll_path, "w");
     if (!ll_f) { fprintf(stderr, "przp: cannot write '%s'\n", ll_path); return 1; }
-    int ok = codegen(mod, ll_f, release);
+    int ok = codegen(mod, ll_f, release, test_mode, out_path);
     fclose(ll_f);
 
     arena_free(&arena);
@@ -806,7 +824,7 @@ static void cmd_sac(int argc, char **argv) {
     if (nfiles == 0) { fprintf(stderr, "przp sac: no input files\n"); free(files); free(extra_links); exit(1); }
 
     if (nfiles == 1) {
-        int rc = compile_file(files[0], out_name, release, extra_links, n_extra);
+        int rc = compile_file(files[0], out_name, release, extra_links, n_extra, 0);
         free(files);
         free(extra_links);
         exit(rc);
@@ -826,6 +844,7 @@ static void cmd_sac(int argc, char **argv) {
     }
     error_init(files[0], srcs[0]);
     Module *mod = parse(srcs[0], 0, &arena);
+    stamp_test_files(mod, files[0], &arena);
     const char *loading[1] = { files[0] };
     if (!load_imports(mod, files[0], srcs[0], &arena, loading, 1)) {
         arena_free(&arena);
@@ -845,6 +864,7 @@ static void cmd_sac(int argc, char **argv) {
         }
         error_init(files[fi], srcs[fi]);
         Module *extra = parse(srcs[fi], 0, &arena);
+        stamp_test_files(extra, files[fi], &arena);
         const char *extra_loading[1] = { files[fi] };
         if (!load_imports(extra, files[fi], srcs[fi], &arena, extra_loading, 1)) {
             arena_free(&arena);
@@ -867,7 +887,7 @@ static void cmd_sac(int argc, char **argv) {
     snprintf(ll_path, sizeof(ll_path), "/tmp/przp_%d.ll", (int)getpid());
     FILE *ll_f = fopen(ll_path, "w");
     if (!ll_f) { fprintf(stderr, "przp: cannot write '%s'\n", ll_path); exit(1); }
-    int ok = codegen(mod, ll_f, release);
+    int ok = codegen(mod, ll_f, release, 0, out_name);
     fclose(ll_f);
     arena_free(&arena);
     for (int fi = 0; fi < nfiles && fi < 256; fi++) free(srcs[fi]);
@@ -1105,7 +1125,7 @@ static void cmd_build(int argc, char **argv) {
         link_argv[i] = link_flags[i];
     }
 
-    int rc = compile_file(manifest.entry, out_buf, release, link_argv, manifest.n_link_libs);
+    int rc = compile_file(manifest.entry, out_buf, release, link_argv, manifest.n_link_libs, 0);
     exit(rc);
 }
 
@@ -1130,13 +1150,135 @@ static void cmd_run(int argc, char **argv) {
     }
 
     if (!binary_is_fresh(out_buf, release)) {
-        if (compile_file(manifest.entry, out_buf, release, link_argv, manifest.n_link_libs) != 0) exit(1);
+        if (compile_file(manifest.entry, out_buf, release, link_argv, manifest.n_link_libs, 0) != 0) exit(1);
     }
 
     char run_cmd[512];
     snprintf(run_cmd, sizeof(run_cmd), "./%s", out_buf);
     int rc = system(run_cmd);
     exit(WEXITSTATUS(rc));
+}
+
+static const char *path_basename(const char *path) {
+    const char *slash = strrchr(path, '/');
+    return slash ? slash + 1 : path;
+}
+
+/* one discovered `test "name" { ... }` block, read back from the
+   "<binary>.tests" sidecar codegen writes in test mode */
+typedef struct {
+    int         index;
+    char        name[192];
+    char        file[512];
+} TestCase;
+
+static int read_test_manifest(const char *bin_path, TestCase *out, int max) {
+    char path[1100];
+    snprintf(path, sizeof(path), "%s.tests", bin_path);
+    FILE *f = fopen(path, "r");
+    if (!f) return -1;
+    int n = 0;
+    char line[1024];
+    while (n < max && fgets(line, sizeof(line), f)) {
+        size_t len = strlen(line);
+        while (len > 0 && (line[len-1] == '\n' || line[len-1] == '\r')) line[--len] = '\0';
+        char *t1 = strchr(line, '\t');
+        if (!t1) continue;
+        *t1 = '\0';
+        char *t2 = strchr(t1 + 1, '\t');
+        if (!t2) continue;
+        *t2 = '\0';
+        out[n].index = atoi(line);
+        snprintf(out[n].name, sizeof(out[n].name), "%s", t1 + 1);
+        snprintf(out[n].file, sizeof(out[n].file), "%s", t2 + 1);
+        n++;
+    }
+    fclose(f);
+    return n;
+}
+
+/* przp test [<file>] [<test_name>]
+   przp test                    — run every discovered test
+   przp test <file>              — run every test declared in <file>
+   przp test <file> <test_name>  — run just that one test in <file> */
+static void cmd_test(int argc, char **argv) {
+    int release = 0;
+    const char *file_filter = NULL;
+    const char *name_filter = NULL;
+    for (int i = 0; i < argc; i++) {
+        if (!strcmp(argv[i], "--release")) { release = 1; continue; }
+        if (!file_filter)      file_filter = argv[i];
+        else if (!name_filter) name_filter = argv[i];
+    }
+
+    Manifest manifest;
+    int mf = read_manifest(&manifest);
+    if (mf == 0) { fprintf(stderr, "przp test: no przp.toml found\n"); exit(1); }
+    if (mf < 0) exit(1);
+
+    char bin_path[300];
+    snprintf(bin_path, sizeof(bin_path), "%s_test", manifest.package_name);
+
+    char link_flags[MANIFEST_MAX_LINK_LIBS][68];
+    const char *link_argv[MANIFEST_MAX_LINK_LIBS];
+    for (int i = 0; i < manifest.n_link_libs; i++) {
+        snprintf(link_flags[i], sizeof(link_flags[i]), "-l%s", manifest.link_libs[i]);
+        link_argv[i] = link_flags[i];
+    }
+
+    if (compile_file(manifest.entry, bin_path, release, link_argv, manifest.n_link_libs, 1) != 0)
+        exit(1);
+
+    TestCase cases[512];
+    int n = read_test_manifest(bin_path, cases, 512);
+    if (n < 0) {
+        fprintf(stderr, "przp test: could not read '%s.tests'\n", bin_path);
+        exit(1);
+    }
+
+    int run_idx[512];
+    int n_run = 0;
+    for (int i = 0; i < n; i++) {
+        if (file_filter) {
+            int match = !strcmp(cases[i].file, file_filter)
+                     || !strcmp(path_basename(cases[i].file), path_basename(file_filter));
+            if (!match) continue;
+        }
+        if (name_filter && strcmp(cases[i].name, name_filter) != 0) continue;
+        run_idx[n_run++] = i;
+    }
+
+    if (n_run == 0) {
+        if (file_filter || name_filter) {
+            fprintf(stderr, "przp test: no test matched%s%s%s%s\n",
+                    file_filter ? " file '" : "", file_filter ? file_filter : "",
+                    file_filter ? "'" : "", name_filter ? " (with that test name)" : "");
+            exit(1);
+        }
+        printf("no tests found\n");
+        exit(0);
+    }
+
+    int n_pass = 0, n_fail = 0;
+    for (int i = 0; i < n_run; i++) {
+        TestCase *tc = &cases[run_idx[i]];
+        char cmd[1400];
+        snprintf(cmd, sizeof(cmd), "./%s %d", bin_path, tc->index);
+        int status = system(cmd);
+        int ok = WIFEXITED(status) && WEXITSTATUS(status) == 0;
+        if (ok) {
+            n_pass++;
+            printf("PASS  %s\n", tc->name);
+        } else {
+            n_fail++;
+            if (WIFSIGNALED(status))
+                printf("FAIL  %s (terminated by signal %d)\n", tc->name, WTERMSIG(status));
+            else
+                printf("FAIL  %s\n", tc->name);
+        }
+    }
+    printf("%d passed, %d failed\n", n_pass, n_fail);
+    exit(n_fail > 0 ? 1 : 0);
 }
 
 /* ── Entry point ──────────────────────────────────────────────────────────── */
@@ -1149,6 +1291,9 @@ static void usage(void) {
         "  init [name]           Create a new project\n"
         "  build [--release]     Build the project\n"
         "  run   [--release]     Build and run the project\n"
+        "  test  [<file>] [<name>] [--release]\n"
+        "                        Run test \"...\" { } blocks: all, one file,\n"
+        "                        or one named test within one file\n"
         "  sac <files> [-o=Out]  Compile individual files\n"
     );
     exit(1);
@@ -1165,6 +1310,7 @@ int main(int argc, char **argv) {
     if (!strcmp(cmd, "init"))  cmd_init(argc, argv);
     if (!strcmp(cmd, "build")) cmd_build(argc, argv);
     if (!strcmp(cmd, "run"))   cmd_run(argc, argv);
+    if (!strcmp(cmd, "test"))  cmd_test(argc, argv);
     if (!strcmp(cmd, "sac"))   cmd_sac(argc, argv);
 
     fprintf(stderr, "przp: unknown command '%s'\n", cmd);

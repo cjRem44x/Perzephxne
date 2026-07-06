@@ -12,6 +12,7 @@
 | `przp build --release` | Optimized release build |
 | `przp run` | Build (if needed) and run — see [Incremental `run`](#incremental-run) |
 | `przp run --release` | Build (if needed) and run with optimizations |
+| `przp test [<file>] [<name>]` | Run `test "..." { }` blocks — see [Testing](./testing.md) |
 | `przp sac <files> -o=Name` | Stand-Alone Compiler — compile one or more files without a project |
 | `przp sac <files> --release -o=Name` | Stand-alone optimized build |
 

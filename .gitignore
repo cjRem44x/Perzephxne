@@ -6,6 +6,10 @@
 # przp run's incremental-build dependency sidecar (<binary>.d)
 *.d
 
+# przp test's compiled test binary and its discovered-test manifest
+*_test
+*.tests
+
 # build artifacts
 compiler/przp.dSYM/
 

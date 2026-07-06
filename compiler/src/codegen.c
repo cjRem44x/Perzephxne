@@ -1164,6 +1164,36 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                 return val_str("0");
             }
 
+            /* @pass — mark the current test passed and stop immediately;
+               a test that simply runs to completion already counts as a
+               pass, so this is for stopping a test early once its point
+               has been made, or for signaling a deliberately empty pass */
+            if (!strcmp(name, "pass")) {
+                emit(cg, "  call void @exit(i32 0)\n");
+                emit_br(cg, "  unreachable\n");
+                return val_str("0");
+            }
+
+            /* @fail(msg?) — mark the current test failed and stop
+               immediately, printing msg (if given). Same shape as @panic,
+               under a name that reads naturally inside a test block. */
+            if (!strcmp(name, "fail")) {
+                if (e->builtin.args.len > 0) {
+                    Type *msg_ty = NULL;
+                    Val msg = cg_expr(cg, e->builtin.args.data[0], &msg_ty);
+                    Val msg_ptr = msg;
+                    if (msg_ty && msg_ty->kind == TY_STR) {
+                        int sp = new_tmp(cg);
+                        emit(cg, "  %%t%d = extractvalue { ptr, i64 } %s, 0\n", sp, msg.buf);
+                        msg_ptr = val_tmp(sp);
+                    }
+                    emit(cg, "  call i32 (ptr, ...) @printf(ptr %s)\n", msg_ptr.buf);
+                }
+                emit(cg, "  call void @exit(i32 1)\n");
+                emit_br(cg, "  unreachable\n");
+                return val_str("0");
+            }
+
             /* @assert */
             if (!strcmp(name, "assert")) {
                 Val cond = cg_expr(cg, e->builtin.args.data[0], NULL);
@@ -5611,7 +5641,7 @@ static void cg_global(CG *cg, Item *item) {
 
 /* ── Module entry ─────────────────────────────────────────────────────────── */
 
-int codegen(Module *mod, FILE *out, int release) {
+int codegen(Module *mod, FILE *out, int release, int test_mode, const char *out_path) {
     CG cg = {0};
     cg.out     = out;
     cg.arena   = mod->arena;
@@ -5846,9 +5876,11 @@ int codegen(Module *mod, FILE *out, int release) {
         }
     }
 
-    /* functions — rename user's `main` to `__przp_main` */
+    /* functions — rename user's `main` to `__przp_main`; collect test blocks */
     int has_main = 0;
     int main_returns_i32 = 0;
+    const char **test_mangled = NULL, **test_display = NULL, **test_file = NULL;
+    size_t n_tests = 0, cap_tests = 0;
     for (size_t i = 0; i < mod->items.len; i++) {
         Item *item = mod->items.data[i];
         if (item->kind == ITEM_FN) {
@@ -5862,6 +5894,18 @@ int codegen(Module *mod, FILE *out, int release) {
             }
             cg_fn(&cg, item);
             if (!strcmp(item->name, "__przp_main")) item->name = "main"; /* restore */
+            if (item->fn.is_test) {
+                if (n_tests == cap_tests) {
+                    cap_tests = cap_tests ? cap_tests * 2 : 16;
+                    test_mangled = realloc((void *)test_mangled, cap_tests * sizeof(char *));
+                    test_display = realloc((void *)test_display, cap_tests * sizeof(char *));
+                    test_file    = realloc((void *)test_file,    cap_tests * sizeof(char *));
+                }
+                test_mangled[n_tests] = item->name;
+                test_display[n_tests] = item->fn.test_name;
+                test_file[n_tests]    = item->fn.test_file ? item->fn.test_file : "";
+                n_tests++;
+            }
         }
     }
 
@@ -5879,7 +5923,50 @@ int codegen(Module *mod, FILE *out, int release) {
     /* emit a real C main that stores argc/argv, auto-seeds the RNG, then
        calls __przp_main. Seeding from time^pid means @rng varies per run;
        an explicit @rng_seed(n) in user code runs later and overrides it. */
-    if (has_main) {
+    if (test_mode) {
+        /* Test binaries take exactly one argument: the numeric index of the
+           test to run (main.c's test runner invokes this binary once per
+           test, in its own subprocess, so a panicking test can't take any
+           other test down with it). No index, or an out-of-range one, is a
+           defensive error exit — the runner always passes a valid one. */
+        emit(&cg,
+            "define i32 @main(i32 %%argc, ptr %%argv) {\n"
+            "entry:\n"
+            "  %%argc_ok = icmp sge i32 %%argc, 2\n"
+            "  br i1 %%argc_ok, label %%parse, label %%noarg\n"
+            "noarg:\n"
+            "  ret i32 1\n"
+            "parse:\n"
+            "  %%argv1p = getelementptr ptr, ptr %%argv, i64 1\n"
+            "  %%argv1  = load ptr, ptr %%argv1p\n"
+            "  %%idx    = call i32 @atoi(ptr %%argv1)\n"
+            "  br label %%check0\n");
+        for (size_t i = 0; i < n_tests; i++) {
+            emit(&cg,
+                "check%zu:\n"
+                "  %%c%zu = icmp eq i32 %%idx, %zu\n"
+                "  br i1 %%c%zu, label %%run%zu, label %%check%zu\n"
+                "run%zu:\n"
+                "  call void @%s()\n"
+                "  ret i32 0\n",
+                i, i, i, i, i, i + 1, i, test_mangled[i]);
+        }
+        emit(&cg, "check%zu:\n  ret i32 1\n}\n\n", n_tests);
+
+        /* "<out_path>.tests": index<TAB>display name<TAB>source file, one
+           test per line — read back by main.c's test runner so it doesn't
+           need to re-parse the program to know what tests exist. */
+        if (out_path) {
+            char tests_path[1100];
+            snprintf(tests_path, sizeof(tests_path), "%s.tests", out_path);
+            FILE *tf = fopen(tests_path, "w");
+            if (tf) {
+                for (size_t i = 0; i < n_tests; i++)
+                    fprintf(tf, "%zu\t%s\t%s\n", i, test_display[i], test_file[i]);
+                fclose(tf);
+            }
+        }
+    } else if (has_main) {
         const char *seed_rng =
             "  %tsec = call i64 @time(ptr null)\n"
             "  %pid  = call i32 @getpid()\n"
@@ -5908,6 +5995,10 @@ int codegen(Module *mod, FILE *out, int release) {
                 "}\n\n", seed_rng);
         }
     }
+
+    free((void *)test_mangled);
+    free((void *)test_display);
+    free((void *)test_file);
 
     /* string constants */
     emit(&cg, "\n");

@@ -140,6 +140,8 @@ bits: u32 = @bitcast(u32, f)   # raw bit pattern — 0x3F800000
 | `@panic(msg)` | unconditional panic with message |
 | `@unreachable()` | mark code path as unreachable |
 | `@todo()` | placeholder — panics at runtime |
+| `@pass()` | stop the current test immediately, marking it passed — see [Testing](./testing.md) |
+| `@fail(msg?)` | stop the current test immediately, marking it failed (same shape as `@panic`) — see [Testing](./testing.md) |
 
 ## Compile-Time Info
 
