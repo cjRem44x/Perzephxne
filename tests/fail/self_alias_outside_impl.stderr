@@ -1,0 +1,1 @@
+'@self' can only be used inside an impl method's first (receiver) parameter

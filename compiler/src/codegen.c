@@ -2885,22 +2885,42 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                     Symbol *msym = lookup(cg, mangled);
                     if (msym && msym->ty && msym->ty->kind == TY_FN && msym->ty->fn.params.len > 0) {
                         Type *self_param_ty = msym->ty->fn.params.data[0];
-                        /* struct-typed self is now passed by ptr — keep self_llt="ptr" and
-                           pass the alloca pointer directly (no load needed) */
-                        if (self_param_ty && self_param_ty->kind == TY_NAMED
-                                && find_struct(cg, self_param_ty->named.name)) {
+                        if (self_param_ty && self_param_ty->is_self_alias) {
+                            /* self: @self — a reference view regardless of
+                               receiver kind, no copy. A value or *T receiver
+                               already produces the correct data pointer in
+                               self_val; a ^T receiver needs the 8-byte
+                               refcount header skipped first. */
                             self_llt = "ptr";
                             if (obj_ty && obj_ty->kind == TY_SMART_PTR) {
-                                /* receiver is ^T but self is by-value T: skip the
-                                   8-byte refcount header before treating the
-                                   pointer as the struct's data, same offset
-                                   EXPR_SMARTDEREF applies for struct inner types. */
                                 int dp = new_tmp(cg);
                                 emit(cg, "  %%t%d = getelementptr i8, ptr %s, i64 8\n",
                                      dp, self_val.buf);
                                 self_val = val_tmp(dp);
                             }
-                            /* self_val.buf is already the alloca ptr — pass as-is */
+                        } else if (self_param_ty && self_param_ty->kind == TY_NAMED
+                                && find_struct(cg, self_param_ty->named.name)) {
+                            /* self: T — genuinely by value. Get a pointer to the
+                               receiver's actual data (adapting for whichever
+                               kind the caller passed), then copy it into a
+                               fresh local so mutations inside the method never
+                               touch the caller's storage — matching every
+                               other by-value struct parameter. */
+                            self_llt = "ptr";
+                            Val src_ptr = self_val;
+                            if (obj_ty && obj_ty->kind == TY_SMART_PTR) {
+                                int dp = new_tmp(cg);
+                                emit(cg, "  %%t%d = getelementptr i8, ptr %s, i64 8\n",
+                                     dp, self_val.buf);
+                                src_ptr = val_tmp(dp);
+                            }
+                            const char *struct_llt = effective_llvm_type(cg, self_param_ty);
+                            int copy_alloca = new_tmp(cg);
+                            emit(cg, "  %%t%d = alloca %s\n", copy_alloca, struct_llt);
+                            int loaded = new_tmp(cg);
+                            emit(cg, "  %%t%d = load %s, ptr %s\n", loaded, struct_llt, src_ptr.buf);
+                            emit(cg, "  store %s %%t%d, ptr %%t%d\n", struct_llt, loaded, copy_alloca);
+                            self_val = val_tmp(copy_alloca);
                         } else if (self_param_ty && self_param_ty->kind != TY_PTR
                                 && self_param_ty->kind != TY_SMART_PTR) {
                             self_llt = effective_llvm_type(cg, self_param_ty);

@@ -1,0 +1,9 @@
+struct vec2 { x: i32, y: i32 }
+
+impl vec2 {
+    fn bad(k: i32, self: @self) { }
+}
+
+fn main() -> i32 {
+    ret 0
+}

@@ -984,7 +984,11 @@ static Type *check_expr(Sema *s, Expr *e) {
                         if (!is_static && np > 0) {
                             Type *self_ty = full->fn.params.data[0];
                             const char *tn = obj_ty->named.name;
-                            if (self_ty && self_ty->kind == TY_PTR && recv_kind == TY_SMART_PTR) {
+                            if (self_ty && self_ty->is_self_alias) {
+                                /* self: @self accepts a value, *T, or ^T
+                                   receiver interchangeably — no mismatch
+                                   check; codegen adapts per receiver kind */
+                            } else if (self_ty && self_ty->kind == TY_PTR && recv_kind == TY_SMART_PTR) {
                                 sema_error(s, e->span,
                                     "method '%s' expects a raw pointer receiver (*%s), "
                                     "but was called through a smart pointer (^%s) — "
@@ -2289,8 +2293,14 @@ static void register_item(Sema *s, Item *item) {
             if (item->fn.params.len > 0) {
                 ty->fn.params.data = ARENA_ALLOC(s->arena, Type *, item->fn.params.len);
                 ty->fn.params.len  = item->fn.params.len;
-                for (size_t i = 0; i < item->fn.params.len; i++)
-                    ty->fn.params.data[i] = item->fn.params.data[i].ty;
+                for (size_t i = 0; i < item->fn.params.len; i++) {
+                    Type *pty = item->fn.params.data[i].ty;
+                    if (pty && pty->kind == TY_SELF)
+                        sema_error(s, pty->span,
+                            "'@self' can only be used inside an impl method's first "
+                            "(receiver) parameter, not in a plain function");
+                    ty->fn.params.data[i] = pty;
+                }
             }
             define(s, item->span, item->name, ty, 0, 0);
             break;
@@ -2419,6 +2429,25 @@ static void register_item(Sema *s, Item *item) {
                         if (!param_ty && !strcmp(m->fn.params.data[j].name, "self")) {
                             param_ty = make_ty(s, TY_NAMED);
                             param_ty->named.name = item->impl.ty_name;
+                            m->fn.params.data[j].ty = param_ty;
+                        }
+                        /* self: @self — polymorphic self, resolved to a
+                           pointer to the impl'd struct but marked
+                           is_self_alias so it accepts a value, raw pointer,
+                           or smart pointer receiver interchangeably at each
+                           call site (see the method dispatch check in
+                           EXPR_FIELD and the self-binding codegen for
+                           EXPR_CALL). */
+                        if (param_ty && param_ty->kind == TY_SELF) {
+                            if (j != 0)
+                                sema_error(s, param_ty->span,
+                                    "'@self' can only be used as an impl method's first "
+                                    "(receiver) parameter, not parameter %zu", j + 1);
+                            Type *named = make_ty(s, TY_NAMED);
+                            named->named.name = item->impl.ty_name;
+                            Type *ptr = make_ptr(s, TY_PTR, named);
+                            ptr->is_self_alias = 1;
+                            param_ty = ptr;
                             m->fn.params.data[j].ty = param_ty;
                         }
                         ty->fn.params.data[j] = param_ty;

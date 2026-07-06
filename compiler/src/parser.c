@@ -227,6 +227,12 @@ static Type *parse_type(Parser *p) {
     Span  span = cur(p).span;
     Token t    = cur(p);
 
+    /* @self — polymorphic impl-method self parameter; resolved by sema */
+    if (t.kind == TOK_BUILTIN && !strcmp(t.sval, "self")) {
+        advance(p);
+        return mktype(p, TY_SELF, span);
+    }
+
     /* !T — failable */
     if (t.kind == TOK_BANG) {
         advance(p);

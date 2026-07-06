@@ -1,0 +1,32 @@
+struct vec2 { x: i32, y: i32 }
+
+impl vec2 {
+    fn new(x: i32, y: i32) -> vec2 { ret vec2{.x=x, .y=y} }
+    fn scale(self: @self, k: i32) {
+        self.x *= k
+        self.y *= k
+    }
+    fn print(self: @self) {
+        @pf("{self.x} {self.y}\n")
+    }
+}
+
+fn main() -> i32 {
+    # plain stack value — mutates through, since @self is a reference view
+    v := vec2.new(1, 2)
+    v.scale(2)
+    v.print()
+
+    # raw pointer
+    p: *vec2 = @alo(vec2)
+    p.* = vec2.new(3, 4)
+    p.scale(10)
+    p.print()
+
+    # smart pointer
+    q: ^vec2 = @new(vec2.new(5, 6))
+    q.scale(3)
+    q.print()
+
+    ret 0
+}

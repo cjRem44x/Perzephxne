@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-1c34a8f7.js";
+            window.path_to_searchindex_js = "searchindex-a7d7e4c1.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-e488213a.js"></script>
@@ -227,6 +227,45 @@ v: Vec2 = Vec2{.x=3.0, .y=4.0}
 v.scale(2.0)
 @pf("{v.x}\n")         # 6.0
 </code></pre>
+<h3 id="self-parameter-kinds"><a class="header" href="#self-parameter-kinds">Self Parameter Kinds</a></h3>
+<p>The first parameter’s declared kind decides both what it means and which receivers can call it:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Declaration</th><th>Meaning</th><th>Callable on</th></tr>
+</thead>
+<tbody>
+<tr><td><code>self: T</code></td><td>by value — a genuine copy; mutations inside the method never affect the caller’s value</td><td><code>T</code>, <code>*T</code>, or <code>^T</code> (all copy into the method)</td></tr>
+<tr><td><code>self: *T</code></td><td>raw pointer — mutations are visible to the caller</td><td><code>T</code> (auto-addressed) or <code>*T</code></td></tr>
+<tr><td><code>self: ^T</code></td><td>smart pointer — mutations are visible to the caller</td><td><code>^T</code> only (a plain <code>T</code> has no reference-count header to match against)</td></tr>
+<tr><td><code>self: @self</code></td><td>polymorphic reference — see below</td><td><code>T</code>, <code>*T</code>, or <code>^T</code>, uniformly by reference</td></tr>
+</tbody>
+</table>
+</div>
+<p>Calling a method through the wrong receiver kind for <code>*T</code>/<code>^T</code> self params is a compile error, not a silent misread — raw and smart pointers have different memory layouts (<code>^T</code> carries an 8-byte reference-count header <code>*T</code> doesn’t), so the compiler rejects mixing them rather than guessing.</p>
+<h3 id="self--receiver-agnostic-self"><a class="header" href="#self--receiver-agnostic-self"><code>@self</code> — Receiver-Agnostic Self</a></h3>
+<p><code>self: @self</code> accepts a value, <code>*T</code>, or <code>^T</code> receiver interchangeably — one method body instead of writing (or being limited to) one specific kind:</p>
+<pre><code>struct vec2 { x: i32, y: i32 }
+
+impl vec2 {
+    fn new(x: i32, y: i32) -&gt; vec2 { ret vec2{.x=x, .y=y} }
+    fn scale(self: @self, k: i32) {
+        self.x *= k
+        self.y *= k
+    }
+}
+
+v := vec2.new(1, 2)
+v.scale(2)                            # v is now (2, 4) — plain values are auto-referenced
+
+p: *vec2 = @alo(vec2)
+p.* = vec2.new(3, 4)
+p.scale(10)                           # (30, 40)
+
+q: ^vec2 = @new(vec2.new(5, 6))
+q.scale(3)                            # (15, 18)
+</code></pre>
+<p>Unlike <code>self: T</code>, <code>@self</code> is always a reference — calling it on a plain value still mutates that value, the same way <code>self: *T</code> would. Use <code>self: T</code> when you want a guaranteed copy and <code>self: @self</code> when the method should work uniformly no matter how callers happen to hold the struct. <code>@self</code> is only valid as an impl method’s first (receiver) parameter — using it elsewhere, or past the first parameter, is a compile error.</p>
 <h2 id="static-methods"><a class="header" href="#static-methods">Static Methods</a></h2>
 <p>Methods with no <code>self</code> parameter are static — called on the type directly:</p>
 <pre><code>impl Vec2 {

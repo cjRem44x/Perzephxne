@@ -36,11 +36,20 @@ typedef enum {
     TY_FAILABLE,     /* !T      */
     TY_GENERIC,      /* T (type param) */
     TY_TUPLE,        /* (T1, T2, ...) */
+    TY_SELF,         /* @self — pre-resolution marker, parser-only; sema
+                        rewrites an impl method's first parameter from this
+                        into *StructName with is_self_alias set below */
 } TypeKind;
 
 struct Type {
     TypeKind kind;
     Span     span;
+    /* set on the pointer-to-struct type sema resolves an impl method's
+       `self: @self` parameter into — marks it as accepting a value, raw
+       pointer, or smart pointer receiver interchangeably at each call
+       site, rather than requiring an exact kind match the way an
+       explicitly-declared self param does. */
+    int      is_self_alias;
     union {
         struct { Type *inner; }                       ptr;       /* PTR, SMART_PTR, SLICE, FAILABLE */
         struct { Type *inner; Expr *size; }           array;     /* ARRAY */
