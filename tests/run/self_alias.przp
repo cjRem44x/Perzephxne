@@ -12,21 +12,28 @@ impl vec2 {
 }
 
 fn main() -> i32 {
-    # plain stack value — mutates through, since @self is a reference view
-    v := vec2.new(1, 2)
+    # plain stack value, explicit T typing — mutates through, since @self
+    # is a reference view
+    v: vec2 = vec2.new(1, 2)
     v.scale(2)
     v.print()
 
-    # raw pointer
+    # raw pointer, explicit *T typing
     p: *vec2 = @alo(vec2)
     p.* = vec2.new(3, 4)
     p.scale(10)
     p.print()
 
-    # smart pointer
+    # smart pointer, explicit ^T typing
     q: ^vec2 = @new(vec2.new(5, 6))
     q.scale(3)
     q.print()
+
+    # same three kinds again via := inference, to confirm @self doesn't
+    # care how the receiver's own type annotation was written
+    v2 := vec2.new(7, 8)
+    v2.scale(2)
+    v2.print()
 
     ret 0
 }
