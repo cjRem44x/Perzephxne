@@ -69,6 +69,47 @@ v.scale(2.0)
 @pf("{v.x}\n")         # 6.0
 ```
 
+### Self Parameter Kinds
+
+The first parameter's declared kind decides both what it means and which receivers can call it:
+
+| Declaration | Meaning | Callable on |
+|---|---|---|
+| `self: T` | by value — a genuine copy; mutations inside the method never affect the caller's value | `T`, `*T`, or `^T` (all copy into the method) |
+| `self: *T` | raw pointer — mutations are visible to the caller | `T` (auto-addressed) or `*T` |
+| `self: ^T` | smart pointer — mutations are visible to the caller | `^T` only (a plain `T` has no reference-count header to match against) |
+| `self: @self` | polymorphic reference — see below | `T`, `*T`, or `^T`, uniformly by reference |
+
+Calling a method through the wrong receiver kind for `*T`/`^T` self params is a compile error, not a silent misread — raw and smart pointers have different memory layouts (`^T` carries an 8-byte reference-count header `*T` doesn't), so the compiler rejects mixing them rather than guessing.
+
+### `@self` — Receiver-Agnostic Self
+
+`self: @self` accepts a value, `*T`, or `^T` receiver interchangeably — one method body instead of writing (or being limited to) one specific kind:
+
+```
+struct vec2 { x: i32, y: i32 }
+
+impl vec2 {
+    fn new(x: i32, y: i32) -> vec2 { ret vec2{.x=x, .y=y} }
+    fn scale(self: @self, k: i32) {
+        self.x *= k
+        self.y *= k
+    }
+}
+
+v := vec2.new(1, 2)
+v.scale(2)                            # v is now (2, 4) — plain values are auto-referenced
+
+p: *vec2 = @alo(vec2)
+p.* = vec2.new(3, 4)
+p.scale(10)                           # (30, 40)
+
+q: ^vec2 = @new(vec2.new(5, 6))
+q.scale(3)                            # (15, 18)
+```
+
+Unlike `self: T`, `@self` is always a reference — calling it on a plain value still mutates that value, the same way `self: *T` would. Use `self: T` when you want a guaranteed copy and `self: @self` when the method should work uniformly no matter how callers happen to hold the struct. `@self` is only valid as an impl method's first (receiver) parameter — using it elsewhere, or past the first parameter, is a compile error.
+
 ## Static Methods
 
 Methods with no `self` parameter are static — called on the type directly:
