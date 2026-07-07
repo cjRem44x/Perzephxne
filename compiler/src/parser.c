@@ -494,6 +494,7 @@ static ExprList parse_args(Parser *p) {
    the interp list in order. */
 static ExprList desugar_pf_interp(Parser *p, ExprList orig) {
     const char *s = orig.data[0]->sval;
+    const char *sval_start = s; /* fixed reference for real-position mapping below */
     /* quick bail: nothing to do if no '{' and no '/}' */
     if (!strchr(s, '{') && !strstr(s, "/}")) return orig;
 
@@ -567,8 +568,27 @@ static ExprList desugar_pf_interp(Parser *p, ExprList orig) {
             memcpy(expr_text, content_start, expr_len);
             expr_text[expr_len] = '\0';
 
+            /* Map content_start back to a real source position, so errors
+               inside the interpolated expression (e.g. a privacy violation
+               or unknown field) point at the actual file location instead
+               of lexer_init's fresh 1:1 origin for the extracted substring.
+               Walk the decoded string from its start, counting newlines —
+               exact for a "" or a raw """ literal with no escapes before
+               this interpolation on the same line; a '\n'/'\t'/etc. escape
+               earlier on that line decodes to fewer characters than it
+               occupies in the source, so the column can drift slightly in
+               that case. Still line-accurate and vastly closer than always
+               reporting 1:1. */
+            Pos ipos = orig.data[0]->span.start;
+            ipos.col += 1; /* one column past the opening quote */
+            for (const char *c = sval_start; c < content_start; c++) {
+                if (*c == '\n') { ipos.line++; ipos.col = 1; }
+                else ipos.col++;
+            }
+
             Parser sub = {0};
             lexer_init(&sub.lexer, expr_text, orig.data[0]->span.file_id, p->arena);
+            sub.lexer.pos = ipos;
             sub.arena = p->arena;
             sub.cur   = lexer_next(&sub.lexer);
             sub.peek  = lexer_next(&sub.lexer);

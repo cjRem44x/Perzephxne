@@ -1,0 +1,1 @@
+interp_error_span.przp:8:18: error: type 'Foo' has no field or method 'zzz'

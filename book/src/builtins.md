@@ -27,6 +27,8 @@ Interpolated `bool` values are printed as C-style integers (`1` or `0`). Use
 
 Use `{{` and `}}` to emit literal braces.
 
+A compile error inside an interpolated expression (e.g. `{f.typo}` referencing a field that doesn't exist) is reported at its real line and column in the source file, mapped back from the position inside the format string literal — precise for a format string with no escape sequences before the interpolation on that line; an escape like `\n` or `\t` earlier on the same line can drift the reported column by a character or two, since it decodes to fewer characters than it occupies in the source, but the line is always exact.
+
 `@perr` reads the C runtime's `errno` and appends its message, for reporting failures from `extern fn` calls into C libraries the same way C code would:
 
 ```

@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-d3d3cbcd.js";
+            window.path_to_searchindex_js = "searchindex-b3a4d4a9.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-4e58bc13.js"></script>
@@ -1977,6 +1977,7 @@ greeting: str = @fmt("Hello, {name}!")
 <p>Interpolated <code>bool</code> values are printed as C-style integers (<code>1</code> or <code>0</code>). Use
 <code>@str(value)</code> when you need <code>"true"</code> or <code>"false"</code> text.</p>
 <p>Use <code>{{</code> and <code>}}</code> to emit literal braces.</p>
+<p>A compile error inside an interpolated expression (e.g. <code>{f.typo}</code> referencing a field that doesn’t exist) is reported at its real line and column in the source file, mapped back from the position inside the format string literal — precise for a format string with no escape sequences before the interpolation on that line; an escape like <code>\n</code> or <code>\t</code> earlier on the same line can drift the reported column by a character or two, since it decodes to fewer characters than it occupies in the source, but the line is always exact.</p>
 <p><code>@perr</code> reads the C runtime’s <code>errno</code> and appends its message, for reporting failures from <code>extern fn</code> calls into C libraries the same way C code would:</p>
 <pre><code>extern fn fopen(path: *u8, mode: *u8) -&gt; *u8
 

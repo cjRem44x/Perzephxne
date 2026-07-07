@@ -1,0 +1,10 @@
+# regression: errors inside a @pf/@epf {expr} interpolation used to always
+# report 1:1 (the sub-parser's fresh lexer origin) instead of the real
+# source location. This checks the reported line is the actual usage site.
+struct Foo { n: i32 }
+
+fn main() -> i32 {
+    f: Foo = Foo{.n=1}
+    @pf("value: {f.zzz}\n")
+    ret 0
+}
