@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-7332463e.js";
+            window.path_to_searchindex_js = "searchindex-cda4d93f.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-4e58bc13.js"></script>
@@ -2562,7 +2562,6 @@ r: f64 = m.sqrt(2.0)
 <tr><td>Package dependencies</td><td><code>[deps]</code> is reserved. There is no external resolver yet; Core/Stdlib ships with the language. <code>[build].link</code> (see <a href="#build-system-przp">Build System</a>) covers linking against system libraries the OS already ships (e.g. <code>link = ["X11", "GL"]</code>) — this is not a package resolver, just linker flags.</td></tr>
 <tr><td>Release UX</td><td>A future version command should be <code>przp version</code>, but versioning is intentionally deferred while beta work is moving quickly.</td></tr>
 <tr><td><code>any</code> type</td><td>Reserved keyword. Runtime-tagged values (boxing, type IDs, <code>when</code> dispatch on types) are designed but not implemented; removed from the reference until they exist.</td></tr>
-<tr><td>printf-style <code>%s</code></td><td><code>@pf("%s", s)</code> passes the fat pointer raw and crashes; use <code>{s}</code> interpolation. A fix should extract the data pointer (and handle non-NUL-terminated slices).</td></tr>
 <tr><td>Struct-by-value FFI, non-imported <code>extern fn</code></td><td><code>extern fn foo(v: Vector2) -&gt; Vector2</code> declared directly in a file (not reached via <code>import()</code>) fails to compile if it needs struct-by-value ABI handling — the wrapper mechanism needs an import alias to redirect call sites to (see <a href="#standard-library">Standard Library</a>). Move the declaration into its own module and <code>import()</code> it, which is fully supported.</td></tr>
 <tr><td><code>@bitcast</code> pointer type arguments</td><td><code>@bitcast(T, val)</code>’s type argument only accepts a bare type name (<code>u32</code>, <code>vec2</code>) — a compound type expression like <code>*u8</code> doesn’t parse. Not a practical limitation for pointer reinterpretation specifically, since a raw pointer already coerces to any other raw pointer type via plain assignment (see <a href="#pointers--memory">Pointers &amp; Memory</a>), but the parser gap is real for anyone trying to <code>@bitcast</code> to e.g. a slice or smart-pointer type.</td></tr>
 </tbody>

@@ -1,0 +1,7 @@
+hello world
+value: hello world and 42
+fmt says: hello world!
+slice: hello|
+explicit: hello world|
+raw: raw c string|
+mix: 7 text 3.500000
