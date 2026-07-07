@@ -705,6 +705,62 @@ static uint16_t double_to_half_bits(double d) {
     return (uint16_t)(sign | ((uint32_t)exp << 10) | (man >> 13));
 }
 
+/* @pf/@epf/@fmt pass str varargs to printf/sprintf as a length + pointer
+   pair ("%.*s" convention), since a str is a fat pointer that isn't
+   necessarily NUL-terminated — the length must be given explicitly rather
+   than relying on printf's own %s (which reads until a NUL byte and has
+   no way to know where the fat pointer's data actually ends). A literal
+   format string using plain "%s" for a str-typed argument doesn't match
+   that calling convention (printf expects one pointer arg for %s, but
+   gets sent length-then-pointer), and silently reads garbage or crashes.
+   Rewrite exactly this case — a bare "%s" whose corresponding vararg is a
+   str — into "%.*s" so the two conventions line up; every other specifier
+   (including an already-correct "%.*s", or "%s" paired with a non-str
+   argument such as a NUL-terminated *u8) passes through unchanged. Only
+   possible for a literal format string, since a runtime-built one can't
+   be inspected at compile time — same restriction {expr} interpolation
+   already has. */
+static const char *rewrite_pf_percent_s(CG *cg, const char *fmt, ExprList args) {
+    size_t len = strlen(fmt);
+    size_t cap = len * 4 + 1; /* headroom for %s -> %.*s expansion */
+    char *buf = malloc(cap);
+    size_t bi = 0;
+    size_t argi = 1; /* args.data[0] is the format string itself */
+    for (size_t i = 0; i < len; ) {
+        if (fmt[i] != '%') { buf[bi++] = fmt[i++]; continue; }
+        if (i + 1 < len && fmt[i+1] == '%') {
+            buf[bi++] = '%'; buf[bi++] = '%';
+            i += 2;
+            continue;
+        }
+        size_t start = i;
+        size_t j = i + 1;
+        while (j < len && strchr("-+ #0123456789.*lhqLjzt", fmt[j])) j++;
+        if (j >= len) { /* malformed trailing '%' — copy through verbatim */
+            for (size_t k = start; k < len; k++) buf[bi++] = fmt[k];
+            break;
+        }
+        char conv = fmt[j];
+        size_t spec_len = j - start + 1;
+        int is_bare_percent_s = (spec_len == 2 && conv == 's');
+        int arg_is_str = argi < args.len && args.data[argi]->ty
+                         && args.data[argi]->ty->kind == TY_STR;
+        if (is_bare_percent_s && arg_is_str) {
+            memcpy(buf + bi, "%.*s", 4);
+            bi += 4;
+        } else {
+            memcpy(buf + bi, fmt + start, spec_len);
+            bi += spec_len;
+        }
+        if (conv != '%') argi++;
+        i = j + 1;
+    }
+    buf[bi] = '\0';
+    const char *result = arena_strdup(cg->arena, buf);
+    free(buf);
+    return result;
+}
+
 /* C ABI: small int/float args to variadic functions must be widened */
 static Val promote_vararg(CG *cg, Val v, Type *ty, const char **llt_out) {
     if (ty && (ty->kind == TY_F32 || ty->kind == TY_F16)) {
@@ -1037,6 +1093,8 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                 }
 
                 /* Non-interpolated path: pass args directly to printf/fprintf */
+                if (fmt_arg->kind == EXPR_STR)
+                    fmt_arg->sval = rewrite_pf_percent_s(cg, fmt_arg->sval, e->builtin.args);
                 Val   *pf_vals  = malloc(sizeof(Val)    * na);
                 Val   *pf_final = malloc(sizeof(Val)    * na);
                 const char **pf_llts = malloc(sizeof(const char*) * na);
@@ -1340,6 +1398,8 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                     fatal_at(e->span, "@fmt requires a format string");
                 size_t na2 = e->builtin.args.len;
                 Expr *fmt_arg2 = e->builtin.args.data[0];
+                if (fmt_arg2->kind == EXPR_STR && !strchr(fmt_arg2->sval, '\x01'))
+                    fmt_arg2->sval = rewrite_pf_percent_s(cg, fmt_arg2->sval, e->builtin.args);
                 /* build the same format string as @pf */
                 Val   *fv      = malloc(sizeof(Val)   * na2);
                 Val   *fv_lens = malloc(sizeof(Val)   * na2);

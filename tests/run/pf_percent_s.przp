@@ -1,0 +1,25 @@
+extern fn strlen(s: *u8) -> i64
+
+fn main() -> i32 {
+    s: str = "hello world"
+    @pf("%s\n", s)
+    @pf("value: %s and %d\n", s, 42)
+    m: str = @fmt("fmt says: %s!", s)
+    @pf("{m}\n")
+
+    # slice — not NUL-terminated at its own end, must not overrun
+    big: str = "hello world extra tail data"
+    sl: str = big[0..5]
+    @pf("slice: %s|\n", sl)
+
+    # explicit %.*s (already correct) must still work
+    n: i64 = s.len
+    @pf("explicit: %.*s|\n", @i32(n), s.data)
+
+    # %s on a raw NUL-terminated *u8 (not str) must be untouched
+    cstr: *u8 = "raw c string".data
+    @pf("raw: %s|\n", cstr)
+
+    @pf("mix: %d %s %f\n", 7, "text", 3.5)
+    ret 0
+}
