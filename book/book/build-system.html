@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-cda4d93f.js";
+            window.path_to_searchindex_js = "searchindex-a7d21cfe.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-4e58bc13.js"></script>
@@ -210,7 +210,10 @@ if @release { @pf("release build\n") }
   przp.toml        # project manifest
   src/
     main.przp      # default entry point
+  tests/
+    example_test.przp   # przp test discovers every *.przp file placed here
 </code></pre>
+<p><code>przp init</code> scaffolds all of the above, including a <code>tests/example_test.przp</code> example. <code>tests/</code> is discovered by <code>przp test</code> independently of what <code>src/main.przp</code> imports — see <a href="./testing.html#test-discovery">Testing § Test Discovery</a>.</p>
 <h2 id="przptoml"><a class="header" href="#przptoml"><code>przp.toml</code></a></h2>
 <p>The manifest is intentionally small while the language ships only its core compiler and standard library.</p>
 <pre><code class="language-toml">[package]

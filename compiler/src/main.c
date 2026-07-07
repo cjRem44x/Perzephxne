@@ -12,6 +12,7 @@
 #include <sys/wait.h>
 #include <sys/stat.h>
 #include <ctype.h>
+#include <dirent.h>
 
 /* explicit POSIX declaration for readlink (required under -std=c11 -Wpedantic) */
 extern ssize_t readlink(const char *path, char *buf, size_t bufsiz);
@@ -739,8 +740,50 @@ static int binary_is_fresh(const char *out_path, int release) {
     return fresh;
 }
 
+/* Merge every "*.przp" file directly under `tests_dir` into `mod`, even if
+   nothing imports them — this is what lets `przp test` find tests placed
+   in ./tests/ independently of whatever the entry file's own import graph
+   reaches. Each file gets its own load_imports pass (so a tests/ file can
+   import a module under test), then merges in via merge_items. Missing or
+   unreadable tests_dir is not an error — it's just an empty test set. */
+static int merge_tests_dir(Module *mod, const char *tests_dir, Arena *arena) {
+    DIR *td = opendir(tests_dir);
+    if (!td) return 1;
+
+    struct dirent *de;
+    while ((de = readdir(td))) {
+        if (!has_przp_ext(de->d_name)) continue;
+        char full[600];
+        path_join(full, sizeof(full), tests_dir, de->d_name);
+
+        char terr[256];
+        char *tsrc = read_file_or_null(full, terr, sizeof(terr));
+        if (!tsrc) {
+            fprintf(stderr, "przp: cannot open '%s': %s\n", full, terr);
+            closedir(td);
+            return 0;
+        }
+        record_dep_file(full);
+        error_init(full, tsrc);
+        Module *extra = parse(tsrc, 0, arena);
+        stamp_test_files(extra, full, arena);
+
+        const char *extra_loading[1] = { full };
+        if (!load_imports(extra, full, tsrc, arena, extra_loading, 1)) {
+            free(tsrc);
+            closedir(td);
+            return 0;
+        }
+        merge_items(mod, extra);
+        free(tsrc);
+    }
+    closedir(td);
+    return 1;
+}
+
 static int compile_file(const char *src_path, const char *out_path, int release,
-                         const char **extra_links, int n_extra, int test_mode) {
+                         const char **extra_links, int n_extra, int test_mode,
+                         const char *tests_dir) {
     g_n_dep_files = 0;
     record_dep_file(src_path);
 
@@ -761,6 +804,11 @@ static int compile_file(const char *src_path, const char *out_path, int release,
     /* load and merge imported modules before sema */
     const char *loading[1] = { src_path };
     if (!load_imports(mod, src_path, src, &arena, loading, 1)) {
+        arena_free(&arena);
+        free(src);
+        return 1;
+    }
+    if (tests_dir && !merge_tests_dir(mod, tests_dir, &arena)) {
         arena_free(&arena);
         free(src);
         return 1;
@@ -824,7 +872,7 @@ static void cmd_sac(int argc, char **argv) {
     if (nfiles == 0) { fprintf(stderr, "przp sac: no input files\n"); free(files); free(extra_links); exit(1); }
 
     if (nfiles == 1) {
-        int rc = compile_file(files[0], out_name, release, extra_links, n_extra, 0);
+        int rc = compile_file(files[0], out_name, release, extra_links, n_extra, 0, NULL);
         free(files);
         free(extra_links);
         exit(rc);
@@ -950,6 +998,31 @@ static void cmd_init(int argc, char **argv) {
         fclose(f);
     } else {
         fprintf(stderr, "przp init: cannot write '%s': %s\n", main_path, strerror(errno));
+        exit(1);
+    }
+
+    /* tests/ — `przp test` discovers every *.przp file placed directly here
+       on its own, independent of what src/main.przp imports. */
+    char tests_dir[512];
+    path_join(tests_dir, sizeof(tests_dir), dir, "tests");
+    if (mkdir(tests_dir, 0755) != 0 && errno != EEXIST) {
+        fprintf(stderr, "przp init: cannot create '%s': %s\n", tests_dir, strerror(errno));
+        exit(1);
+    }
+
+    char example_test_path[600];
+    path_join(example_test_path, sizeof(example_test_path), tests_dir, "example_test.przp");
+    f = fopen(example_test_path, "w");
+    if (f) {
+        fprintf(f,
+            "test \"example\" {\n"
+            "    x: i32 = 2 + 2\n"
+            "    if x != 4 { @fail(\"math is broken\") }\n"
+            "    @pass()\n"
+            "}\n");
+        fclose(f);
+    } else {
+        fprintf(stderr, "przp init: cannot write '%s': %s\n", example_test_path, strerror(errno));
         exit(1);
     }
 
@@ -1125,7 +1198,7 @@ static void cmd_build(int argc, char **argv) {
         link_argv[i] = link_flags[i];
     }
 
-    int rc = compile_file(manifest.entry, out_buf, release, link_argv, manifest.n_link_libs, 0);
+    int rc = compile_file(manifest.entry, out_buf, release, link_argv, manifest.n_link_libs, 0, NULL);
     exit(rc);
 }
 
@@ -1150,7 +1223,7 @@ static void cmd_run(int argc, char **argv) {
     }
 
     if (!binary_is_fresh(out_buf, release)) {
-        if (compile_file(manifest.entry, out_buf, release, link_argv, manifest.n_link_libs, 0) != 0) exit(1);
+        if (compile_file(manifest.entry, out_buf, release, link_argv, manifest.n_link_libs, 0, NULL) != 0) exit(1);
     }
 
     char run_cmd[512];
@@ -1197,6 +1270,41 @@ static int read_test_manifest(const char *bin_path, TestCase *out, int max) {
     return n;
 }
 
+/* Remove stale test binaries plus their .tests/.d sidecars left in
+   `tests_dir` by previous runs or renamed packages — everything except the
+   artifacts we're about to (re)write for `keep_bin` (e.g. "tests/foo_test").
+   Without this, every renamed package or rebuild would leave dead binaries
+   accumulating in tests/ forever. Anything ending in ".przp" is a test
+   source file and is never touched, even if its name happens to contain
+   "_test" (e.g. "login_test.przp"). */
+static void cleanup_stale_test_artifacts(const char *tests_dir, const char *keep_bin) {
+    DIR *td = opendir(tests_dir);
+    if (!td) return;
+
+    char keep_base[300];
+    snprintf(keep_base, sizeof(keep_base), "%s", path_basename(keep_bin));
+    char keep_manifest[320], keep_dep[320];
+    snprintf(keep_manifest, sizeof(keep_manifest), "%s.tests", keep_base);
+    snprintf(keep_dep, sizeof(keep_dep), "%s.d", keep_base);
+
+    struct dirent *de;
+    while ((de = readdir(td))) {
+        const char *name = de->d_name;
+        if (has_przp_ext(name)) continue;
+
+        const char *p = strstr(name, "_test");
+        int is_generated = p && (p[5] == '\0' || p[5] == '.');
+        if (!is_generated) continue;
+        if (!strcmp(name, keep_base) || !strcmp(name, keep_manifest) || !strcmp(name, keep_dep))
+            continue;
+
+        char full[600];
+        path_join(full, sizeof(full), tests_dir, name);
+        remove(full);
+    }
+    closedir(td);
+}
+
 /* przp test [<file>] [<test_name>]
    przp test                    — run every discovered test
    przp test <file>              — run every test declared in <file>
@@ -1216,8 +1324,15 @@ static void cmd_test(int argc, char **argv) {
     if (mf == 0) { fprintf(stderr, "przp test: no przp.toml found\n"); exit(1); }
     if (mf < 0) exit(1);
 
+    const char *tests_dir = "tests";
+    if (mkdir(tests_dir, 0755) != 0 && errno != EEXIST) {
+        fprintf(stderr, "przp test: cannot create '%s': %s\n", tests_dir, strerror(errno));
+        exit(1);
+    }
+
     char bin_path[300];
-    snprintf(bin_path, sizeof(bin_path), "%s_test", manifest.package_name);
+    snprintf(bin_path, sizeof(bin_path), "%s/%s_test", tests_dir, manifest.package_name);
+    cleanup_stale_test_artifacts(tests_dir, bin_path);
 
     char link_flags[MANIFEST_MAX_LINK_LIBS][68];
     const char *link_argv[MANIFEST_MAX_LINK_LIBS];
@@ -1226,7 +1341,7 @@ static void cmd_test(int argc, char **argv) {
         link_argv[i] = link_flags[i];
     }
 
-    if (compile_file(manifest.entry, bin_path, release, link_argv, manifest.n_link_libs, 1) != 0)
+    if (compile_file(manifest.entry, bin_path, release, link_argv, manifest.n_link_libs, 1, tests_dir) != 0)
         exit(1);
 
     TestCase cases[512];

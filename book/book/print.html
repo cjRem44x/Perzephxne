@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-cda4d93f.js";
+            window.path_to_searchindex_js = "searchindex-a7d21cfe.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-4e58bc13.js"></script>
@@ -276,7 +276,10 @@ if @release { @pf("release build\n") }
   przp.toml        # project manifest
   src/
     main.przp      # default entry point
+  tests/
+    example_test.przp   # przp test discovers every *.przp file placed here
 </code></pre>
+<p><code>przp init</code> scaffolds all of the above, including a <code>tests/example_test.przp</code> example. <code>tests/</code> is discovered by <code>przp test</code> independently of what <code>src/main.przp</code> imports — see <a href="#test-discovery">Testing § Test Discovery</a>.</p>
 <h2 id="przptoml"><a class="header" href="#przptoml"><code>przp.toml</code></a></h2>
 <p>The manifest is intentionally small while the language ships only its core compiler and standard library.</p>
 <pre><code class="language-toml">[package]
@@ -1618,6 +1621,19 @@ fn main() -&gt; i32 {
 }
 </code></pre>
 <p>Test blocks are invisible to <code>przp build</code>/<code>przp run</code>/<code>przp sac</code> — they compile (so they never silently bit-rot into something that doesn’t parse) but are never called from <code>fn main()</code> or anywhere else. Only <code>przp test</code> runs them.</p>
+<h2 id="test-discovery"><a class="header" href="#test-discovery">Test Discovery</a></h2>
+<p><code>przp test</code> finds tests two ways:</p>
+<ul>
+<li><strong>Inline</strong>, following the entry file’s own <code>import()</code> graph — any <code>test "..." { }</code> block in the entry file or anything it (transitively) imports, exactly like the example above.</li>
+<li><strong><code>tests/</code></strong> — every <code>*.przp</code> file placed directly under the project’s <code>tests/</code> directory is compiled in too, <em>whether or not anything imports it</em>. This is the place for tests that don’t belong next to any particular module, or that exercise a module without wanting that module to declare its own test-only imports. A <code>tests/</code> file can still <code>import()</code> the module it’s testing:</li>
+</ul>
+<pre><code>import(math = "src/math")
+
+test "add negative numbers" {
+    @assert(math.add(-2, -3) == -5)
+}
+</code></pre>
+<p><code>przp init</code> scaffolds <code>tests/example_test.przp</code> as a starting point.</p>
 <h2 id="running-tests"><a class="header" href="#running-tests">Running Tests</a></h2>
 <div class="table-wrapper">
 <table>
@@ -1670,6 +1686,9 @@ FAIL  addition is wrong on purpose
 <p><code>@fail</code> behaves like <code>@panic</code> — same “print and stop” shape — under a name that reads naturally inside a test.</p>
 <h2 id="debug-mode-by-default"><a class="header" href="#debug-mode-by-default">Debug Mode by Default</a></h2>
 <p><code>przp test</code> compiles in debug mode unless <code>--release</code> is passed, since <code>@assert</code> — the mechanism most tests rely on — is stripped out entirely in release builds (see <a href="#build-modes">Build System § Build Modes</a>). Pass <code>--release</code> explicitly if you specifically want to verify release-mode behavior.</p>
+<h2 id="test-artifacts"><a class="header" href="#test-artifacts">Test Artifacts</a></h2>
+<p><code>przp test</code> writes its compiled binary and manifest sidecar into <code>tests/</code> rather than the project root — <code>tests/&lt;package&gt;_test</code> and <code>tests/&lt;package&gt;_test.tests</code>, plus a <code>tests/&lt;package&gt;_test.d</code> dependency sidecar (see <a href="#incremental-run">Build System § Incremental <code>run</code></a> for what <code>.d</code> files are; <code>test</code> doesn’t currently use it to skip rebuilds, it’s just written for consistency). All three are gitignored.</p>
+<p>Before compiling, <code>przp test</code> sweeps <code>tests/</code> and deletes any leftover <code>*_test</code>/<code>*_test.tests</code>/<code>*_test.d</code> files that don’t match the binary it’s about to (re)write — so renaming <code>[package].name</code>, or accumulating artifacts across many <code>sac</code>/manual runs, doesn’t leave dead binaries behind. This sweep never touches <code>*.przp</code> source files, even ones named like <code>login_test.przp</code> that happen to contain <code>_test</code> themselves.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="modules"><a class="header" href="#modules">Modules</a></h1>
 <p>A module is a source file. There are no header files and no separate declaration step.</p>
@@ -2564,9 +2583,33 @@ r: f64 = m.sqrt(2.0)
 <tr><td><code>any</code> type</td><td>Reserved keyword. Runtime-tagged values (boxing, type IDs, <code>when</code> dispatch on types) are designed but not implemented; removed from the reference until they exist.</td></tr>
 <tr><td>Struct-by-value FFI, non-imported <code>extern fn</code></td><td><code>extern fn foo(v: Vector2) -&gt; Vector2</code> declared directly in a file (not reached via <code>import()</code>) fails to compile if it needs struct-by-value ABI handling — the wrapper mechanism needs an import alias to redirect call sites to (see <a href="#standard-library">Standard Library</a>). Move the declaration into its own module and <code>import()</code> it, which is fully supported.</td></tr>
 <tr><td><code>@bitcast</code> pointer type arguments</td><td><code>@bitcast(T, val)</code>’s type argument only accepts a bare type name (<code>u32</code>, <code>vec2</code>) — a compound type expression like <code>*u8</code> doesn’t parse. Not a practical limitation for pointer reinterpretation specifically, since a raw pointer already coerces to any other raw pointer type via plain assignment (see <a href="#pointers--memory">Pointers &amp; Memory</a>), but the parser gap is real for anyone trying to <code>@bitcast</code> to e.g. a slice or smart-pointer type.</td></tr>
+<tr><td>Encapsulation (<code>@opaque</code>, <code>pub</code>)</td><td>Struct field/method visibility is designed but not implemented — see <a href="#future-language-sketches">Future Language Sketches</a> below. Every struct today is fully public: every field and every <code>impl</code> method is visible to any caller that can see the struct itself.</td></tr>
 </tbody>
 </table>
 </div>
+<h2 id="future-language-sketches"><a class="header" href="#future-language-sketches">Future Language Sketches</a></h2>
+<p>Design sketches for features under active consideration, captured here so the intent is on record before implementation starts. <strong>None of the syntax below works in the current compiler</strong> — this is not a reference section.</p>
+<h3 id="opaque-structs-and-pubprivate-impl-visibility"><a class="header" href="#opaque-structs-and-pubprivate-impl-visibility"><code>@opaque</code> structs and <code>pub</code>/private <code>impl</code> visibility</a></h3>
+<p>The idea: an <code>@opaque</code> struct hides its fields from anything outside its own <code>impl</code> block — the fields still exist (this is encapsulation, not removal), they’re just inaccessible to outside code, the same shape as a C++ <code>private</code> section or Rust’s default field privacy. Inside that <code>impl</code> block, methods are private (hidden from outside callers) by default, and <code>pub fn</code> marks the ones meant as the struct’s public API:</p>
+<pre><code>@opaque              # hides fields from code outside the impl block
+struct Foo {
+    ...
+}
+impl Foo {            # impl always has access to the fields regardless of @opaque
+    pub fn bar() {}          # visible outside the impl — the public API surface
+
+    fn baz(slf: @self) {}    # hidden by default — private to the impl
+}
+</code></pre>
+<p>On an ordinary (non-<code>@opaque</code>) struct, every field and method is already public, so <code>pub</code> would be meaningless there — a no-op rather than an error, since it doesn’t contradict the struct’s existing fully-open default:</p>
+<pre><code>struct X {
+    ...
+}
+impl X {
+    fn y() {}   # `pub` doesn't apply here — everything is already public
+                # on a standard struct
+}
+</code></pre>
 <h2 id="documentation-rule"><a class="header" href="#documentation-rule">Documentation Rule</a></h2>
 <p>Any compiler feature that is added or changed should update both the book source and the generated <code>book/book</code> output in the same change. The book should remain the user-facing source of truth for the current language.</p>
 <div style="break-before: page; page-break-before: always;"></div>
@@ -2626,8 +2669,8 @@ r: f64 = m.sqrt(2.0)
 <p>Three pieces, each a thin, dumb layer — no idiomatic naming, no safety wrapping, so advanced users can always drop to the raw calls when a higher layer doesn’t cover something yet:</p>
 <ul>
 <li><strong><code>std/graphics/window</code></strong> — open a window and pump its event queue via the platform’s native windowing API (X11 first, since that’s universally available even under Wayland’s XWayland compatibility layer; a native Wayland backend and, eventually, Win32/Cocoa backends follow the same shape behind one Perzephxne-facing surface). <strong>Implemented</strong> — see below.</li>
-<li><strong>The backend contract</strong> — not a library binding at all, but a fixed set of Perzephxne function signatures (or a struct of function pointers) that any GPU backend must implement: <code>backend_init()</code>, <code>backend_clear(color)</code>, <code>backend_submit(vertices, indices)</code>, <code>backend_upload_texture(pixels, w, h) -&gt; u32</code>, <code>backend_bind_shader(id)</code>, and a small, deliberately minimal set beyond that. This contract is designed once, before any backend implements it. Not yet designed.</li>
-<li><strong><code>std/graphics/gl</code></strong> — the OpenGL implementation of that contract. Since GL functions beyond 1.1 are resolved at runtime (<code>glXGetProcAddress</code> on Linux, not link-time symbols), this layer is a loader plus a table of function pointers, not a flat <code>extern fn</code> list against a link-time library the way the windowing layer is. Not yet built.</li>
+<li><strong>The backend contract</strong> — not a library binding at all, but a fixed set of Perzephxne function signatures (or a struct of function pointers) that any GPU backend must implement: <code>backend_init()</code>, <code>backend_clear(color)</code>, <code>backend_submit(vertices, indices)</code>, <code>backend_upload_texture(pixels, w, h) -&gt; u32</code>, <code>backend_bind_shader(id)</code>, and a small, deliberately minimal set beyond that. This contract is designed once, before any backend implements it. Not yet designed — <code>std/graphics/gl</code> (below) currently exposes its own ad hoc functions directly rather than conforming to a settled contract, since the contract itself is still prerequisite #1, unfinished.</li>
+<li><strong><code>std/graphics/gl</code></strong> — the OpenGL implementation of that contract. <strong>Partially implemented</strong> — see below. GL functions beyond 1.1 are resolved at runtime (<code>glXGetProcAddress</code> on Linux, not link-time symbols); that loader is still needed the moment shader-based rendering (GL 2.0+) is attempted, and isn’t built yet.</li>
 </ul>
 <h3 id="stdgraphicswindow--implemented"><a class="header" href="#stdgraphicswindow--implemented"><code>std/graphics/window</code> — implemented</a></h3>
 <p>Open, title, and cleanly close an X11 window, linked via <code>[build].link = ["X11"]</code> (see <a href="#build-system-przp">Build System</a>). Real <code>extern fn</code> bindings, not a sketch — see <code>compiler/std/graphics/window.przp</code> and the regression test <code>tests/x11/window_close</code>:</p>
@@ -2661,6 +2704,21 @@ struct Vector3   { x: f32, y: f32, z: f32 }
 struct Color     { r: u8, g: u8, b: u8, a: u8 }
 struct Rectangle { x: f32, y: f32, width: f32, height: f32 }
 </code></pre>
+<h3 id="stdgraphicsgl--partially-implemented"><a class="header" href="#stdgraphicsgl--partially-implemented"><code>std/graphics/gl</code> — partially implemented</a></h3>
+<p>GLX context creation plus a handful of core GL 1.1 entry points, linked via <code>[build].link = ["X11", "GL"]</code>. Real <code>extern fn</code> bindings, not a sketch — see <code>compiler/std/graphics/gl.przp</code> and the regression test <code>tests/gl/clear_and_read_pixel</code>:</p>
+<pre><code>extern fn glXChooseVisual(display: *u8, screen: i32, attribs: *i32) -&gt; *u8
+extern fn glXCreateContext(display: *u8, vis: *u8, share: *u8, direct: i32) -&gt; *u8
+extern fn glXMakeCurrent(display: *u8, drawable: u64, ctx: *u8) -&gt; i32
+extern fn glXSwapBuffers(display: *u8, drawable: u64)
+extern fn glXDestroyContext(display: *u8, ctx: *u8)
+
+extern fn glClearColor(r: f32, g: f32, b: f32, a: f32)
+extern fn glClear(mask: u32)
+extern fn glGetError() -&gt; u32
+extern fn glReadPixels(x: i32, y: i32, w: i32, h: i32, format: u32, ty: u32, data: *u8)
+</code></pre>
+<p><code>choose_visual</code>/<code>create_context</code>/<code>clear</code>/<code>swap</code>/<code>destroy_context</code> wrap these into the same shape <code>window.przp</code> uses for X11. One notable finding from building this: <code>create_context</code>’s <code>glXMakeCurrent</code> is called against the window <code>window.przp</code>’s <code>XCreateSimpleWindow</code> returns — which carries the <em>default</em> X visual, not necessarily the one <code>glXChooseVisual</code> picked. A stricter GLX implementation might reject that mismatch (requiring the heavier <code>XCreateWindow</code> attributes-struct API and a matching colormap instead), but Mesa’s GLX accepted it in testing under Xvfb, so the existing simple window-creation path is reused as-is rather than adding that complexity preemptively. If a target GLX implementation ever rejects the mismatch, that’s the fallback.</p>
+<p>This is explicitly <em>not</em> the backend contract from prerequisite #1 — it’s core GL 1.1 calls exposed close to raw, functionally providing “clear the screen” ahead of the contract being designed, not a stand-in for it. Getting a triangle rasterized (vertex buffers, <code>glDrawArrays</code>/<code>glDrawElements</code>) and anything past GL 1.1 (shaders, VBOs) both still need the runtime <code>glXGetProcAddress</code> loader from prerequisite #2, which doesn’t exist yet.</p>
 <h3 id="layer-2--stdgraphics-the-shared-foundation"><a class="header" href="#layer-2--stdgraphics-the-shared-foundation">Layer 2 — <code>std/graphics</code>, the shared foundation</a></h3>
 <p><code>std/graphics</code> turns the backend contract and windowing layer into something that reads like the rest of the standard library and, deliberately, like raylib’s call-level ergonomics: <code>snake_case</code> names, <code>enum</code> constants instead of bare integers, tuples instead of output parameters, and <code>!T</code> for anything that can fail. This is the layer both <code>gdev</code> and <code>guix</code> import — window lifecycle, input, and 2D drawing primitives live here exactly once, not duplicated in each consumer:</p>
 <pre><code>enum Key {
@@ -2787,7 +2845,7 @@ fn main() -&gt; i32 {
 </thead>
 <tbody>
 <tr><td>1</td><td><strong>Backend contract design.</strong> The fixed interface <code>std/graphics</code> calls through (init, clear, submit, upload texture, bind shader) needs to be designed and settled <em>before</em> the GL backend is written against it — this is what makes future Vulkan/Metal/D3D12 backends additive instead of a rewrite.</td><td></td></tr>
-<tr><td>2</td><td><strong>GL function loading.</strong> Nothing beyond OpenGL 1.1 is available as a link-time symbol — every modern GL entry point (shaders, buffers, textures beyond the basics) has to be resolved at runtime via <code>glXGetProcAddress</code> and called through a function pointer. This needs a small runtime loader written once, not per-project.</td><td></td></tr>
+<tr><td>2</td><td><strong>GL function loading.</strong> Nothing beyond OpenGL 1.1 is available as a link-time symbol — every modern GL entry point (shaders, buffers, textures beyond the basics) has to be resolved at runtime via <code>glXGetProcAddress</code> and called through a function pointer. This needs a small runtime loader written once, not per-project. <strong>Not started</strong> — <code>std/graphics/gl</code> so far only uses real link-time GL 1.1 symbols (<code>glClear</code>, <code>glClearColor</code>, <code>glGetError</code>, <code>glReadPixels</code>), which don’t need this loader.</td><td></td></tr>
 <tr><td>3</td><td><strong>Windowing backend.</strong> X11 first (works everywhere on Linux, including under Wayland via XWayland); a native Wayland backend, then Win32/Cocoa, come later behind the same <code>std/graphics/window</code> surface so <code>std/graphics</code>, <code>gdev</code>, and <code>guix</code> never have to change per platform. <strong>Partially done</strong>: open/title/close (including the <code>WM_DELETE_WINDOW</code> handshake) is implemented and tested. Still needed: resize reporting, keyboard/mouse input events.</td><td></td></tr>
 <tr><td>4</td><td><strong>Image and audio codecs.</strong> No bundled renderer means no bundled codecs either — PNG/JPEG decoding (for <code>guix</code> icons and <code>gdev</code> textures alike) and audio file loading (for <code>gdev</code>) need their own (likely also hand-written or minimally-bound) implementations, deferred until the 2D primitives above them are solid.</td><td></td></tr>
 <tr><td>5</td><td><strong>Text layout.</strong> <code>guix</code> needs real text shaping/layout (cursor positioning, line wrapping, at minimum) to be a credible native-app toolkit; <code>gdev</code> only needs simple bitmap-font text draw calls. This is a <code>guix</code>-specific investment, not a <code>std/graphics</code> one.</td><td></td></tr>
@@ -2800,7 +2858,7 @@ fn main() -&gt; i32 {
 <ol>
 <li>Design the backend contract (prerequisite #1) before writing any GL code — settle the smallest set of operations <code>std/graphics</code> needs (clear, submit a batch, upload a texture, bind a shader) so the GL backend is written <em>against</em> a fixed interface, not the interface being reverse-engineered out of GL calls after the fact.</li>
 <li>Write the windowing backend (<code>std/graphics/window</code>, X11) for the smallest usable slice: open a window, pump events, report close/resize. <strong>Open + title + close is done</strong>; resize and input events are still open.</li>
-<li>Write <code>std/graphics/gl</code> as the first implementation of the backend contract, and get a single triangle or cleared background on screen — this is the point where “a window exists” becomes “a frame can be drawn.”</li>
+<li>Write <code>std/graphics/gl</code> as the first implementation of the backend contract, and get a single triangle or cleared background on screen — this is the point where “a window exists” becomes “a frame can be drawn.” <strong>Partially done</strong>: GLX context creation plus <code>glClear</code>/<code>glReadPixels</code> gets a cleared background on screen (verified via pixel readback, see <code>tests/gl/clear_and_read_pixel</code>) — ahead of, not against, the still-undesigned backend contract (prerequisite #1). Rasterizing an actual triangle, and everything past GL 1.1, still needs the loader (prerequisite #2).</li>
 <li>Write layer 2 (<code>std/graphics</code>) over that same small surface: 2D shapes, keyboard/mouse input, then texture loading once an image codec exists. Resist building out the full raylib-equivalent surface up front.</li>
 <li>Write a regression test per wrapped function group (window, shapes, input, textures), following the existing <code>tests/run/std_*.przp</code> convention, to the extent a windowing/GPU-dependent test can run headlessly in CI.</li>
 <li>Split into <code>gdev</code> and <code>guix</code> once <code>std/graphics</code>’s 2D primitives, input, and texture loading are solid — from here the two can proceed independently, since neither depends on the other, only on <code>std/graphics</code>.</li>

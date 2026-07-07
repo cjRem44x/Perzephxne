@@ -294,6 +294,41 @@ run_x11_case() {
     fi
 }
 
+# OpenGL tests (std/graphics/gl), gated separately on libGL — reuses the
+# same Xvfb instance run_x11_setup already started, so it only runs when
+# both X11 and GL are available.
+run_gl_case() {
+    local src_dir="$1"
+    local name
+    name="$(basename "$src_dir")"
+    local bin="$TMP/bin/$name.gl"
+    local actual="$TMP/out/$name.gl.stdout"
+    local compile_err="$TMP/err/$name.gl.compile.stderr"
+    local run_err="$TMP/err/$name.gl.run.stderr"
+    local expected="$src_dir/stdout"
+
+    printf 'gl    %s\n' "$name"
+    if ! PRZP_STDLIB="$STDLIB" "$PRZP" sac "$src_dir/main.przp" -lX11 -lGL -o="$bin" \
+            >"$TMP/out/$name.gl.compile.stdout" 2>"$compile_err"; then
+        printf 'FAIL  %s: gl compile failed\n' "$name" >&2
+        sed -n '1,120p' "$compile_err" >&2
+        failures=$((failures + 1))
+        return
+    fi
+
+    if ! DISPLAY="$X11_DISPLAY" timeout 10 "$bin" >"$actual" 2>"$run_err"; then
+        printf 'FAIL  %s: gl run failed\n' "$name" >&2
+        sed -n '1,120p' "$run_err" >&2
+        failures=$((failures + 1))
+        return
+    fi
+
+    if ! diff -u "$expected" "$actual"; then
+        printf 'FAIL  %s: gl stdout mismatch\n' "$name" >&2
+        failures=$((failures + 1))
+    fi
+}
+
 run_cli_fail() {
     local name="$1"
     local expected="$2"
@@ -545,6 +580,69 @@ EOF
     fi
 }
 
+# `przp test` discovers tests/*.przp on its own, independent of what
+# src/main.przp imports; its build artifacts land under tests/, and a stale
+# artifact from a previous/renamed build gets swept away without touching
+# a *.przp source file whose name happens to contain "_test".
+run_tests_dir_case() {
+    local work="$TMP/tests_dir/proj"
+    local stdout="$TMP/out/tests_dir.stdout"
+    local stderr="$TMP/err/tests_dir.stderr"
+
+    printf 'run   tests_dir\n'
+    mkdir -p "$work/src" "$work/tests"
+    cat > "$work/przp.toml" <<'EOF'
+[package]
+name = "tdir"
+version = "0.1.0"
+EOF
+    cat > "$work/src/main.przp" <<'EOF'
+fn main() -> i32 {
+    @pf("real program\n")
+    ret 0
+}
+EOF
+    # not imported by src/main.przp anywhere — discovery must not depend on imports
+    cat > "$work/tests/standalone_test.przp" <<'EOF'
+test "standalone discovered" {
+    @assert(1 + 1 == 2)
+}
+EOF
+    # a legitimate source file whose name itself contains "_test"
+    cat > "$work/tests/login_test.przp" <<'EOF'
+test "login source survives cleanup" {
+    @pass()
+}
+EOF
+    # simulate leftover artifacts from a prior/renamed build
+    touch "$work/tests/oldpkg_test" "$work/tests/oldpkg_test.tests" "$work/tests/oldpkg_test.d"
+
+    (cd "$work" && PRZP_STDLIB="$STDLIB" "$PRZP" test >"$stdout" 2>"$stderr")
+    local rc=$?
+    if [ "$rc" -ne 0 ] || ! grep -Fq "2 passed, 0 failed" "$stdout"; then
+        printf 'FAIL  tests_dir: expected both tests/ files discovered and passing\n' >&2
+        sed -n '1,40p' "$stdout" "$stderr" >&2
+        failures=$((failures + 1))
+        return
+    fi
+
+    if [ ! -x "$work/tests/tdir_test" ] || [ ! -f "$work/tests/tdir_test.tests" ]; then
+        printf 'FAIL  tests_dir: compiled test binary/manifest not placed under tests/\n' >&2
+        failures=$((failures + 1))
+        return
+    fi
+    if [ -e "$work/tests/oldpkg_test" ] || [ -e "$work/tests/oldpkg_test.tests" ] || [ -e "$work/tests/oldpkg_test.d" ]; then
+        printf 'FAIL  tests_dir: stale oldpkg_test artifacts were not cleaned up\n' >&2
+        failures=$((failures + 1))
+        return
+    fi
+    if [ ! -f "$work/tests/login_test.przp" ]; then
+        printf 'FAIL  tests_dir: cleanup deleted a *.przp source file named like an artifact\n' >&2
+        failures=$((failures + 1))
+        return
+    fi
+}
+
 for src in "$ROOT"/tests/run/*.przp; do
     [ -e "$src" ] || continue
     run_success_case "$src"
@@ -575,12 +673,21 @@ if run_x11_setup; then
         [ -d "$dir" ] || continue
         run_x11_case "$dir"
     done
+    if ldconfig -p 2>/dev/null | grep -q "libGL\.so"; then
+        for dir in "$ROOT"/tests/gl/*; do
+            [ -d "$dir" ] || continue
+            run_gl_case "$dir"
+        done
+    else
+        printf 'skip  gl tests: libGL not installed\n'
+    fi
     run_x11_teardown
 fi
 
 run_init_case
 run_freshness_case
 run_test_cmd_case
+run_tests_dir_case
 
 run_cli_fail unknown_command "unknown command 'nope'" "$PRZP" nope
 run_cli_fail sac_no_files "przp sac: no input files" "$PRZP" sac
