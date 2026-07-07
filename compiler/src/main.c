@@ -393,6 +393,14 @@ static void mangle_items(Module *mod, const char *alias, Arena *arena) {
                 rw_type(item->struct_.fields.data[j].ty, all_orig, n_all_orig, alias, arena);
         } else if (item->kind == ITEM_GLOBAL) {
             rw_type(item->global.ty, all_orig, n_all_orig, alias, arena);
+            /* a global's initializer can itself reference other items in this
+               module — a struct-literal type name, a bare function reference
+               for a fn-pointer field, ... — and needs the same alias__
+               rewriting a function body gets, or a re-imported module's own
+               re-mangled global would reference stale, single-mangled names
+               (e.g. "be__Backend" instead of "gl__be__Backend" once gl.przp
+               is itself imported under the alias "gl"). */
+            rw_ident_expr(item->global.init, orig, n_orig, alias, arena);
         } else if (item->kind == ITEM_IMPL) {
             for (size_t j = 0; j < item->impl.methods.len; j++) {
                 Item *m = item->impl.methods.data[j];

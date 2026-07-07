@@ -64,7 +64,7 @@ The tradeoff is honest either way: this is a much bigger undertaking than bindin
 Three pieces, each a thin, dumb layer — no idiomatic naming, no safety wrapping, so advanced users can always drop to the raw calls when a higher layer doesn't cover something yet:
 
 - **`std/graphics/window`** — open a window and pump its event queue via the platform's native windowing API (X11 first, since that's universally available even under Wayland's XWayland compatibility layer; a native Wayland backend and, eventually, Win32/Cocoa backends follow the same shape behind one Perzephxne-facing surface). **Implemented** — see below.
-- **The backend contract** — not a library binding at all, but a fixed set of Perzephxne function signatures (or a struct of function pointers) that any GPU backend must implement: `backend_init()`, `backend_clear(color)`, `backend_submit(vertices, indices)`, `backend_upload_texture(pixels, w, h) -> u32`, `backend_bind_shader(id)`, and a small, deliberately minimal set beyond that. This contract is designed once, before any backend implements it. Not yet designed — `std/graphics/gl` (below) currently exposes its own ad hoc functions directly rather than conforming to a settled contract, since the contract itself is still prerequisite #1, unfinished.
+- **The backend contract** — not a library binding at all, but a fixed set of Perzephxne function signatures (or a struct of function pointers) that any GPU backend must implement: init, clear, present, shutdown today, with submit/upload-texture/bind-shader named for later. **Implemented, at the scope today's capabilities can back for real** — see `std/graphics/backend` below. Perzephxne has no trait/interface mechanism, so the contract is a concrete `struct` of function pointers (`Backend`) rather than an abstract type — see [Functions § First-Class Functions](./functions.md#first-class-functions), which is what makes this possible with no new compiler feature.
 - **`std/graphics/gl`** — the OpenGL implementation of that contract. **Partially implemented** — see below. GL functions beyond 1.1 are resolved at runtime (`glXGetProcAddress` on Linux, not link-time symbols); that loader is still needed the moment shader-based rendering (GL 2.0+) is attempted, and isn't built yet.
 
 ### `std/graphics/window` — implemented
@@ -110,6 +110,25 @@ struct Color     { r: u8, g: u8, b: u8, a: u8 }
 struct Rectangle { x: f32, y: f32, width: f32, height: f32 }
 ```
 
+### The backend contract — implemented (`std/graphics/backend`)
+
+`std/graphics/backend` defines one `Backend` struct: four function-pointer fields, populated once by each backend module and then called through uniformly, without the caller needing to know which backend produced the value:
+
+```
+struct Backend {
+    init:     fn(*u8, u64) -> *u8,   # (display, window) -> opaque ctx, or null on failure
+    clear:    fn(*u8, f32, f32, f32, f32),  # (ctx, r, g, b, a)
+    present:  fn(*u8),                # (ctx)
+    shutdown: fn(*u8),                # (ctx)
+}
+```
+
+`init` returns an opaque, backend-owned context handle; every other field takes that handle back, so backend-specific setup (GLX visual selection, a future Vulkan surface/device, ...) happens entirely inside `init` and is never exposed above it — this is the seam that lets a Vulkan/Metal/D3D12 backend satisfy the same contract later without `std/graphics`, `gdev`, or `guix` changing at all, which is the whole reason this chapter insists on designing the contract before writing more GL code against it.
+
+Deliberately out of scope for now: `submit`/`upload_texture`/`bind_shader` from the original design sketch aren't struct fields yet — a real implementation needs the runtime GL-function loader (prerequisite #2, still not built), and a field pointing at nothing callable would be worse than not having the field. Adding them once they mean something is an ordinary, non-breaking struct extension this early in the language's life.
+
+`init`'s `(display: *u8, window: u64)` shape mirrors `std/graphics/window`'s current X11-only handles — it'll need revisiting the day a second windowing backend (Wayland, Win32, ...) exists behind a portable window handle instead, since neither of those concepts is Vulkan/Win32-shaped either.
+
 ### `std/graphics/gl` — partially implemented
 
 GLX context creation plus a handful of core GL 1.1 entry points, linked via `[build].link = ["X11", "GL"]`. Real `extern fn` bindings, not a sketch — see `compiler/std/graphics/gl.przp` and the regression test `tests/gl/clear_and_read_pixel`:
@@ -127,9 +146,23 @@ extern fn glGetError() -> u32
 extern fn glReadPixels(x: i32, y: i32, w: i32, h: i32, format: u32, ty: u32, data: *u8)
 ```
 
-`choose_visual`/`create_context`/`clear`/`swap`/`destroy_context` wrap these into the same shape `window.przp` uses for X11. One notable finding from building this: `create_context`'s `glXMakeCurrent` is called against the window `window.przp`'s `XCreateSimpleWindow` returns — which carries the *default* X visual, not necessarily the one `glXChooseVisual` picked. A stricter GLX implementation might reject that mismatch (requiring the heavier `XCreateWindow` attributes-struct API and a matching colormap instead), but Mesa's GLX accepted it in testing under Xvfb, so the existing simple window-creation path is reused as-is rather than adding that complexity preemptively. If a target GLX implementation ever rejects the mismatch, that's the fallback.
+`choose_visual`/`create_context`/`clear`/`swap`/`destroy_context` wrap these into the same shape `window.przp` uses for X11 — a thin, dumb layer with no safety wrapping, there for anyone who wants to drop below the contract. One notable finding from building this: `create_context`'s `glXMakeCurrent` is called against the window `window.przp`'s `XCreateSimpleWindow` returns — which carries the *default* X visual, not necessarily the one `glXChooseVisual` picked. A stricter GLX implementation might reject that mismatch (requiring the heavier `XCreateWindow` attributes-struct API and a matching colormap instead), but Mesa's GLX accepted it in testing under Xvfb, so the existing simple window-creation path is reused as-is rather than adding that complexity preemptively. If a target GLX implementation ever rejects the mismatch, that's the fallback.
 
-This is explicitly *not* the backend contract from prerequisite #1 — it's core GL 1.1 calls exposed close to raw, functionally providing "clear the screen" ahead of the contract being designed, not a stand-in for it. Getting a triangle rasterized (vertex buffers, `glDrawArrays`/`glDrawElements`) and anything past GL 1.1 (shaders, VBOs) both still need the runtime `glXGetProcAddress` loader from prerequisite #2, which doesn't exist yet.
+On top of those raw calls, `gl.przp` also builds `GL_BACKEND: backend.Backend` — the module's actual conformance to the contract above, wiring `gl_backend_init`/`gl_backend_clear`/`gl_backend_present`/`gl_backend_shutdown` into a `Backend` value. `gl_backend_init` bundles the GLX context together with the display/window it was created against into one internal `GLBackendCtx`, so every other field only ever needs the opaque handle `init` returns — no X11 type leaks into a caller going through `GL_BACKEND` rather than the raw functions:
+
+```
+import(win = "std/graphics/window")
+import(gl  = "std/graphics/gl")
+
+# ... open display/window via win.* as usual ...
+ctx: *u8 = gl.GL_BACKEND.init(display, window)
+gl.GL_BACKEND.clear(ctx, 0.1, 0.2, 0.3, 1.0)
+# ... draw ...
+gl.GL_BACKEND.present(ctx)
+gl.GL_BACKEND.shutdown(ctx)
+```
+
+`tests/gl/backend_contract` verifies this path end to end (clear through `GL_BACKEND`, then read the pixel back), alongside `tests/gl/clear_and_read_pixel` for the raw functions. Getting a triangle rasterized (vertex buffers, `glDrawArrays`/`glDrawElements`) and anything past GL 1.1 (shaders, VBOs) both still need the runtime `glXGetProcAddress` loader from prerequisite #2, which doesn't exist yet — so `Backend.clear`/`present` are real today, but there's no `submit` to call yet.
 
 ### Layer 2 — `std/graphics`, the shared foundation
 
@@ -266,14 +299,17 @@ Both of the compiler defects this chapter originally surfaced have since been fi
 - **`!StructName` failable returns.** `fn make() -> !Point { ret @ok(Point{...}) }` now works for any struct, tagged union, or array — see `tests/run/failable_struct.przp`.
 - **Struct-by-value FFI ABI.** An `extern fn` reached via `import()` that takes or returns a plain struct by value (e.g. `Vector2 { f32, f32 }`) now follows the x86-64 System V ABI, verified by linking against independently-compiled C code — see [Functions § Struct-by-Value Parameters and Returns](./functions.md#struct-by-value-parameters-and-returns) and `tests/ffi/struct_abi`. The one scoped limitation: this only works when the `extern fn` is declared in a module reached through `import()` — a struct-by-value `extern fn` declared directly in a file with no import fails to compile with a clear diagnostic rather than silently miscompiling.
 - **Linker flags / native library dependencies.** `[build].link` in `przp.toml` now declares system libraries to link against (`link = ["X11", "GL"]` → `-lX11 -lGL` on the final link step, for both `przp build` and `przp run`) — see [Build System](./build-system.md) and `tests/project/link_libs`. This is not a package resolver (`[deps]` is still reserved and unimplemented, see [Status & Next Work](./status-next.md)) — it only covers linking against libraries the OS already ships, which is exactly what the windowing (`libX11`) and GPU (`libGL`) layers below need.
+- **Global constant initializers ignored struct/array literals and function references.** Found while wiring `std/graphics/gl`'s `GL_BACKEND` constant: a global declared with a struct-literal initializer (`Backend{...}`) compiled silently but always came back zero-initialized — codegen's constant emitter didn't recognize the expression kind and fell back to `zeroinitializer` with no diagnostic. Fixed: global initializers now support struct/array literals (recursively) and bare function references as compile-time constants, and anything genuinely non-constant is a compile error instead of silent zeroing — see [Global Variables § Immutable Globals](./globals.md#immutable-globals-constants) and `tests/run/global_const_struct`.
+- **`p.* = <struct or array literal>` stored the wrong value.** Also found while wiring `GL_BACKEND`'s `init`: assigning a struct or array literal through a pointer dereference stored the literal's alloca address itself rather than its bytes, corrupting the target in a way that happened to segfault reliably rather than silently. Fixed — see [Pointers & Memory § Allocation](./pointers.md#allocation) and `tests/run/derefassign_struct_array`.
+- **A module importing another module's types in a global initializer broke under re-import.** `std/graphics/gl` importing `std/graphics/backend` and using `backend.Backend` in its own global (`GL_BACKEND: backend.Backend : backend.Backend{...}`) compiled fine on its own, but failed once something else imported `gl` itself — the re-mangling pass that rewrites a module's own names when it's imported under a new alias rewrote a global's declared type but not its initializer expression, so the two ended up with mismatched (single- vs. double-mangled) type names. Fixed in the import-mangling pass — this is what makes `std/graphics/gl` importing `std/graphics/backend` (the first time one `std/graphics` module has imported a sibling module) actually work.
 
-This means the FFI mechanics and linking layer 1 depends on (struct-by-value calls, failable returns for loaders, linking against system libraries) are no longer blocked on compiler/toolchain work — the remaining prerequisites below are about what actually has to be written (a renderer, a windowing backend, the backend contract), not missing tooling.
+This means the FFI mechanics and linking layer 1 depends on (struct-by-value calls, failable returns for loaders, linking against system libraries) are no longer blocked on compiler/toolchain work — the remaining prerequisites below are about what actually has to be written (a renderer, a windowing backend), not missing tooling.
 
 ## Open engineering prerequisites
 
 | # | Prerequisite | Status |
 |---|---|---|
-| 1 | **Backend contract design.** The fixed interface `std/graphics` calls through (init, clear, submit, upload texture, bind shader) needs to be designed and settled *before* the GL backend is written against it — this is what makes future Vulkan/Metal/D3D12 backends additive instead of a rewrite. |
+| 1 | **Backend contract design.** The fixed interface `std/graphics` calls through needs to be designed and settled *before* the GL backend is written against it — this is what makes future Vulkan/Metal/D3D12 backends additive instead of a rewrite. **Done, at today's scope**: `std/graphics/backend`'s `Backend` struct fixes `init`/`clear`/`present`/`shutdown`; `submit`/`upload_texture`/`bind_shader` are deliberately not fields yet (see `std/graphics/backend` above) until prerequisite #2 makes a real implementation possible. |
 | 2 | **GL function loading.** Nothing beyond OpenGL 1.1 is available as a link-time symbol — every modern GL entry point (shaders, buffers, textures beyond the basics) has to be resolved at runtime via `glXGetProcAddress` and called through a function pointer. This needs a small runtime loader written once, not per-project. **Not started** — `std/graphics/gl` so far only uses real link-time GL 1.1 symbols (`glClear`, `glClearColor`, `glGetError`, `glReadPixels`), which don't need this loader. |
 | 3 | **Windowing backend.** X11 first (works everywhere on Linux, including under Wayland via XWayland); a native Wayland backend, then Win32/Cocoa, come later behind the same `std/graphics/window` surface so `std/graphics`, `gdev`, and `guix` never have to change per platform. **Partially done**: open/title/close (including the `WM_DELETE_WINDOW` handshake) is implemented and tested. Still needed: resize reporting, keyboard/mouse input events. |
 | 4 | **Image and audio codecs.** No bundled renderer means no bundled codecs either — PNG/JPEG decoding (for `guix` icons and `gdev` textures alike) and audio file loading (for `gdev`) need their own (likely also hand-written or minimally-bound) implementations, deferred until the 2D primitives above them are solid. |
@@ -283,9 +319,9 @@ This means the FFI mechanics and linking layer 1 depends on (struct-by-value cal
 
 ## Suggested build order
 
-1. Design the backend contract (prerequisite #1) before writing any GL code — settle the smallest set of operations `std/graphics` needs (clear, submit a batch, upload a texture, bind a shader) so the GL backend is written *against* a fixed interface, not the interface being reverse-engineered out of GL calls after the fact.
+1. Design the backend contract (prerequisite #1) before writing any GL code — settle the smallest set of operations `std/graphics` needs so the GL backend is written *against* a fixed interface, not the interface being reverse-engineered out of GL calls after the fact. **Done, at today's scope**: see `std/graphics/backend` above.
 2. Write the windowing backend (`std/graphics/window`, X11) for the smallest usable slice: open a window, pump events, report close/resize. **Open + title + close is done**; resize and input events are still open.
-3. Write `std/graphics/gl` as the first implementation of the backend contract, and get a single triangle or cleared background on screen — this is the point where "a window exists" becomes "a frame can be drawn." **Partially done**: GLX context creation plus `glClear`/`glReadPixels` gets a cleared background on screen (verified via pixel readback, see `tests/gl/clear_and_read_pixel`) — ahead of, not against, the still-undesigned backend contract (prerequisite #1). Rasterizing an actual triangle, and everything past GL 1.1, still needs the loader (prerequisite #2).
+3. Write `std/graphics/gl` as the first implementation of the backend contract, and get a single triangle or cleared background on screen — this is the point where "a window exists" becomes "a frame can be drawn." **Partially done**: `GL_BACKEND`'s `init`/`clear`/`present`/`shutdown` conform to the contract and get a cleared background on screen (verified via pixel readback, see `tests/gl/backend_contract`). Rasterizing an actual triangle, and everything past GL 1.1, still needs the loader (prerequisite #2).
 4. Write layer 2 (`std/graphics`) over that same small surface: 2D shapes, keyboard/mouse input, then texture loading once an image codec exists. Resist building out the full raylib-equivalent surface up front.
 5. Write a regression test per wrapped function group (window, shapes, input, textures), following the existing `tests/run/std_*.przp` convention, to the extent a windowing/GPU-dependent test can run headlessly in CI.
 6. Split into `gdev` and `guix` once `std/graphics`'s 2D primitives, input, and texture loading are solid — from here the two can proceed independently, since neither depends on the other, only on `std/graphics`.

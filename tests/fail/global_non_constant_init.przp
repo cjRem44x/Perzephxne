@@ -1,0 +1,5 @@
+# regression: a global initializer that isn't a compile-time constant used
+# to silently zero-initialize the global instead of erroring.
+fn compute() -> i32 { ret 42 }
+BAD: i32 : compute()
+fn main() -> i32 { ret 0 }

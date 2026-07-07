@@ -4447,6 +4447,21 @@ static void cg_stmt(CG *cg, Stmt *s) {
                 Type *inner_ty = (ptr_ty && ptr_ty->kind == TY_PTR) ? ptr_ty->ptr.inner : NULL;
                 Type *vty = NULL;
                 Val rhs = cg_expr(cg, s->assign.val, &vty);
+                /* struct/array rhs from EXPR_IDENT/EXPR_STRUCT_LIT/EXPR_ARRAY_LIT comes
+                   back as a ptr to the aggregate (see the "struct value = ptr
+                   convention" comment on the .^ = assign target below) — load it
+                   before storing the value; otherwise "p.* = Foo{...}" stores the
+                   literal's alloca pointer itself instead of the struct's bytes. */
+                int rhs_is_aggregate_ptr =
+                    (vty && vty->kind == TY_NAMED && !find_enum(cg, vty->named.name)
+                        && (s->assign.val->kind == EXPR_IDENT || s->assign.val->kind == EXPR_STRUCT_LIT))
+                    || (vty && vty->kind == TY_ARRAY
+                        && (s->assign.val->kind == EXPR_IDENT || s->assign.val->kind == EXPR_ARRAY_LIT));
+                if (rhs_is_aggregate_ptr) {
+                    int loaded = new_tmp(cg);
+                    emit(cg, "  %%t%d = load %s, ptr %s\n", loaded, llvm_type(vty), rhs.buf);
+                    rhs = val_tmp(loaded);
+                }
                 /* prefer the pointer's inner type so narrowing stores (e.g. *u8 = 0) use i8 */
                 const char *store_ty = inner_ty ? llvm_type(inner_ty)
                                                 : (vty ? llvm_type(vty) : "i32");
@@ -5624,6 +5639,79 @@ static void cg_extern_fn(CG *cg, Item *item) {
     emit(cg, ")\n");
 }
 
+/* Emit an LLVM constant expression for a global's initializer. A global
+   initializer has to be a compile-time constant — literals, arrays/structs
+   built purely from constants (recursively), or a bare reference to a
+   top-level function (for a fn-pointer-typed field/element). Anything else
+   is a compile error: this used to silently fall back to zeroinitializer
+   for any initializer expression kind it didn't recognize (EXPR_STRUCT_LIT
+   among them), which meant a global declared with a struct-literal
+   initializer just silently got zeroed memory instead. */
+static void emit_const_init(CG *cg, Expr *e, Type *ty) {
+    switch (e->kind) {
+        case EXPR_INT:   emit(cg, "%" PRIu64, e->ival); return;
+        case EXPR_FLOAT: {
+            union { double d; uint64_t u; } bits; bits.d = e->fval;
+            emit(cg, "0x%016" PRIX64, bits.u);
+            return;
+        }
+        case EXPR_BOOL:  emit(cg, "%d", e->bval); return;
+        case EXPR_NULL:  emit(cg, "null"); return;
+        case EXPR_UNDEF: emit(cg, "undef"); return;
+        case EXPR_IDENT: {
+            Symbol *sym = lookup(cg, e->ident.name);
+            if (sym && sym->is_fn_ref) { emit(cg, "%s", sym->llvm_name); return; }
+            break; /* not a function reference — fall through to the error below */
+        }
+        case EXPR_ARRAY_LIT: {
+            Type *ety = ty && ty->kind == TY_ARRAY ? ty->array.inner : NULL;
+            const char *ellt = ety ? llvm_type(ety) : "i32";
+            emit(cg, "[");
+            for (size_t i = 0; i < e->array_lit.len; i++) {
+                if (i) emit(cg, ", ");
+                emit(cg, "%s ", ellt);
+                emit_const_init(cg, e->array_lit.data[i], ety);
+            }
+            emit(cg, "]");
+            return;
+        }
+        case EXPR_STRUCT_LIT: {
+            StructInfo *si = find_struct(cg, e->struct_lit.ty_name);
+            /* plain (untagged) unions share one raw-byte storage slot across
+               all fields ({ [N x i8] }), and tagged unions aren't tracked in
+               the struct registry at all — neither shape matches the
+               one-LLVM-value-per-field layout below, so fall through to the
+               error rather than emit constant data for the wrong layout. */
+            if (!si || is_plain_union(cg, e->struct_lit.ty_name)) break;
+            /* no type-name prefix here: the caller (cg_global's top-level
+               "type value", or this function's own array/field recursion
+               just above) already emitted "<elemtype> " right before this
+               call — repeating the struct's type name here would be a
+               second, redundant type annotation LLVM rejects in this
+               position ("invalid use of function-local name"). */
+            emit(cg, "{ ");
+            for (size_t i = 0; i < si->fields.len; i++) {
+                if (i) emit(cg, ", ");
+                Field *f = &si->fields.data[i];
+                emit(cg, "%s ", effective_llvm_type(cg, f->ty));
+                Expr *fval = NULL;
+                for (size_t j = 0; j < e->struct_lit.fields.len; j++) {
+                    if (!strcmp(e->struct_lit.fields.data[j].name, f->name)) {
+                        fval = e->struct_lit.fields.data[j].val;
+                        break;
+                    }
+                }
+                if (!fval || fval->kind == EXPR_UNDEF) emit(cg, "undef");
+                else emit_const_init(cg, fval, f->ty);
+            }
+            emit(cg, "}");
+            return;
+        }
+        default: break;
+    }
+    fatal_at(e->span, "global initializer must be a compile-time constant");
+}
+
 static void cg_global(CG *cg, Item *item) {
     const char *llt = llvm_type(item->global.ty);
     /* LLVM syntax: @name = [constant|global] type value */
@@ -5654,40 +5742,7 @@ static void cg_global(CG *cg, Item *item) {
 
     emit(cg, "@%s = %s %s ", item->name, linkage, llt);
     if (item->global.init) {
-        switch (item->global.init->kind) {
-            case EXPR_INT:  emit(cg, "%" PRIu64, item->global.init->ival); break;
-            case EXPR_FLOAT: {
-                union { double d; uint64_t u; } bits; bits.d = item->global.init->fval;
-                emit(cg, "0x%016" PRIX64, bits.u);
-                break;
-            }
-            case EXPR_BOOL: emit(cg, "%d", item->global.init->bval); break;
-            case EXPR_ARRAY_LIT: {
-                /* [N x T] [T v0, T v1, ...] */
-                Expr *al = item->global.init;
-                Type *ety = item->global.ty && item->global.ty->kind == TY_ARRAY
-                          ? item->global.ty->array.inner : NULL;
-                const char *ellt = ety ? llvm_type(ety) : "i32";
-                emit(cg, "[");
-                for (size_t ei = 0; ei < al->array_lit.len; ei++) {
-                    if (ei) emit(cg, ", ");
-                    Expr *elem = al->array_lit.data[ei];
-                    emit(cg, "%s ", ellt);
-                    switch (elem->kind) {
-                        case EXPR_INT:   emit(cg, "%" PRIu64, elem->ival); break;
-                        case EXPR_FLOAT: {
-                            union { double d; uint64_t u; } b2; b2.d = elem->fval;
-                            emit(cg, "0x%016" PRIX64, b2.u); break;
-                        }
-                        case EXPR_BOOL:  emit(cg, "%d", elem->bval); break;
-                        default:         emit(cg, "0"); break;
-                    }
-                }
-                emit(cg, "]");
-                break;
-            }
-            default:        emit(cg, "zeroinitializer"); break;
-        }
+        emit_const_init(cg, item->global.init, item->global.ty);
     } else {
         emit(cg, "zeroinitializer");
     }
@@ -5875,16 +5930,10 @@ int codegen(Module *mod, FILE *out, int release, int test_mode, const char *out_
     }
     emit(&cg, "\n");
 
-    /* globals and externs */
-    for (size_t i = 0; i < mod->items.len; i++) {
-        Item *item = mod->items.data[i];
-        if (item->kind == ITEM_GLOBAL)     cg_global(&cg, item);
-        if (item->kind == ITEM_EXTERN_FN)  cg_extern_fn(&cg, item);
-    }
-    emit(&cg, "\n");
-
     /* register all functions and extern fns in the global scope so they can be
-       used as first-class values (fn pointers) inside function bodies */
+       used as first-class values (fn pointers) inside function bodies — and,
+       just below, inside a global's own constant initializer, which is why
+       this now runs before the globals/externs loop rather than after it. */
     for (size_t i = 0; i < mod->items.len; i++) {
         Item *item = mod->items.data[i];
         if (item->kind == ITEM_FN && item->fn.n_type_params == 0) {
@@ -5935,6 +5984,14 @@ int codegen(Module *mod, FILE *out, int release, int test_mode, const char *out_
             define_fn_sym(&cg, m->name, ty);
         }
     }
+
+    /* globals and externs */
+    for (size_t i = 0; i < mod->items.len; i++) {
+        Item *item = mod->items.data[i];
+        if (item->kind == ITEM_GLOBAL)     cg_global(&cg, item);
+        if (item->kind == ITEM_EXTERN_FN)  cg_extern_fn(&cg, item);
+    }
+    emit(&cg, "\n");
 
     /* functions — rename user's `main` to `__przp_main`; collect test blocks */
     int has_main = 0;

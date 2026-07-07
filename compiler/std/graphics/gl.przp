@@ -1,10 +1,14 @@
 # std/graphics/gl — OpenGL backend (first implementation of the backend
-# contract; see book/graphics.md). GLX handles context creation and
-# presenting a frame; core GL 1.1 entry points (glClear, glViewport, ...)
-# are real exported libGL.so symbols, so no runtime function loading is
-# needed yet. That changes the moment shader-based rendering needs GL 2.0+
-# entry points (glCreateShader and friends aren't link-time symbols) — see
-# book/graphics.md's open prerequisites for the loader that unblocks that.
+# contract; see book/graphics.md and std/graphics/backend). GLX handles
+# context creation and presenting a frame; core GL 1.1 entry points
+# (glClear, glViewport, ...) are real exported libGL.so symbols, so no
+# runtime function loading is needed yet. That changes the moment
+# shader-based rendering needs GL 2.0+ entry points (glCreateShader and
+# friends aren't link-time symbols) — see book/graphics.md's open
+# prerequisites for the loader that unblocks that.
+
+import(win = "window")
+import(be  = "backend")
 
 extern fn glXChooseVisual(display: *u8, screen: i32, attribs: *i32) -> *u8
 extern fn glXCreateContext(display: *u8, vis: *u8, share: *u8, direct: i32) -> *u8
@@ -61,4 +65,49 @@ fn swap(display: *u8, window: u64) {
 
 fn destroy_context(display: *u8, ctx: *u8) {
     glXDestroyContext(display, ctx)
+}
+
+# ── Backend contract conformance ────────────────────────────────────────────
+# GLBackendCtx bundles the GLX context together with the display/window it
+# was created against, so every std/graphics/backend.Backend call after
+# gl_backend_init needs only the opaque `ctx` handle it returns — X11-
+# specific concepts (Display*, Window id) never leak above this file, which
+# is the whole point of the contract (see std/graphics/backend).
+
+struct GLBackendCtx {
+    display: *u8,
+    window:  u64,
+    ctx:     *u8,
+}
+
+fn gl_backend_init(display: *u8, window: u64) -> *u8 {
+    screen: i32 = win.XDefaultScreen(display)
+    vis: *u8 = choose_visual(display, screen)
+    if vis == null { ret null }
+    raw_ctx: *u8 = create_context(display, window, vis)
+    if raw_ctx == null { ret null }
+    bctx: *GLBackendCtx = @alo(GLBackendCtx)
+    bctx.* = GLBackendCtx{.display=display, .window=window, .ctx=raw_ctx}
+    ret bctx
+}
+
+fn gl_backend_clear(ctx: *u8, r: f32, g: f32, b: f32, a: f32) {
+    clear(r, g, b, a)
+}
+
+fn gl_backend_present(ctx: *u8) {
+    bctx: *GLBackendCtx = ctx
+    swap(bctx.display, bctx.window)
+}
+
+fn gl_backend_shutdown(ctx: *u8) {
+    bctx: *GLBackendCtx = ctx
+    destroy_context(bctx.display, bctx.ctx)
+}
+
+GL_BACKEND: be.Backend : be.Backend{
+    .init     = gl_backend_init,
+    .clear    = gl_backend_clear,
+    .present  = gl_backend_present,
+    .shutdown = gl_backend_shutdown,
 }

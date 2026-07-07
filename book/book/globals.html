@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-b3a4d4a9.js";
+            window.path_to_searchindex_js = "searchindex-455664e0.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-4e58bc13.js"></script>
@@ -202,6 +202,15 @@ buf: [256]u8  # all zeros
 MASK:    u32   : 0xFF00FF00
 PREFIX:  str   : "api/v2/"
 </code></pre>
+<p>A constant initializer isn’t limited to a single literal — struct and array literals count too, built recursively from other constants, and a bare function name is a valid constant for a fn-pointer-typed field (handy for building a fixed table of operations, like <code>std/graphics/gl</code>’s <code>GL_BACKEND</code>):</p>
+<pre><code>struct Vec2 { x: f32, y: f32 }
+ORIGIN: Vec2 : Vec2{.x=0.0, .y=0.0}
+
+struct Ops { double: fn(i32) -&gt; i32 }
+fn doubler(x: i32) -&gt; i32 { ret x * 2 }
+MY_OPS: Ops : Ops{.double = doubler}
+</code></pre>
+<p>Anything else — a function call, a reference to another variable, an arithmetic expression on a non-constant — isn’t a compile-time constant and is a compile error rather than a silently zero-initialized global.</p>
 <h2 id="mutable-globals"><a class="header" href="#mutable-globals">Mutable Globals</a></h2>
 <p>Mutable globals persist for the lifetime of the process:</p>
 <pre><code>request_count: u64 = 0
