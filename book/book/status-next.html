@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-a7d21cfe.js";
+            window.path_to_searchindex_js = "searchindex-d3d3cbcd.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-4e58bc13.js"></script>
@@ -206,33 +206,9 @@
 <tr><td><code>any</code> type</td><td>Reserved keyword. Runtime-tagged values (boxing, type IDs, <code>when</code> dispatch on types) are designed but not implemented; removed from the reference until they exist.</td></tr>
 <tr><td>Struct-by-value FFI, non-imported <code>extern fn</code></td><td><code>extern fn foo(v: Vector2) -&gt; Vector2</code> declared directly in a file (not reached via <code>import()</code>) fails to compile if it needs struct-by-value ABI handling — the wrapper mechanism needs an import alias to redirect call sites to (see <a href="./stdlib.html">Standard Library</a>). Move the declaration into its own module and <code>import()</code> it, which is fully supported.</td></tr>
 <tr><td><code>@bitcast</code> pointer type arguments</td><td><code>@bitcast(T, val)</code>’s type argument only accepts a bare type name (<code>u32</code>, <code>vec2</code>) — a compound type expression like <code>*u8</code> doesn’t parse. Not a practical limitation for pointer reinterpretation specifically, since a raw pointer already coerces to any other raw pointer type via plain assignment (see <a href="./pointers.html">Pointers &amp; Memory</a>), but the parser gap is real for anyone trying to <code>@bitcast</code> to e.g. a slice or smart-pointer type.</td></tr>
-<tr><td>Encapsulation (<code>@opaque</code>, <code>pub</code>)</td><td>Struct field/method visibility is designed but not implemented — see <a href="#future-language-sketches">Future Language Sketches</a> below. Every struct today is fully public: every field and every <code>impl</code> method is visible to any caller that can see the struct itself.</td></tr>
 </tbody>
 </table>
 </div>
-<h2 id="future-language-sketches"><a class="header" href="#future-language-sketches">Future Language Sketches</a></h2>
-<p>Design sketches for features under active consideration, captured here so the intent is on record before implementation starts. <strong>None of the syntax below works in the current compiler</strong> — this is not a reference section.</p>
-<h3 id="opaque-structs-and-pubprivate-impl-visibility"><a class="header" href="#opaque-structs-and-pubprivate-impl-visibility"><code>@opaque</code> structs and <code>pub</code>/private <code>impl</code> visibility</a></h3>
-<p>The idea: an <code>@opaque</code> struct hides its fields from anything outside its own <code>impl</code> block — the fields still exist (this is encapsulation, not removal), they’re just inaccessible to outside code, the same shape as a C++ <code>private</code> section or Rust’s default field privacy. Inside that <code>impl</code> block, methods are private (hidden from outside callers) by default, and <code>pub fn</code> marks the ones meant as the struct’s public API:</p>
-<pre><code>@opaque              # hides fields from code outside the impl block
-struct Foo {
-    ...
-}
-impl Foo {            # impl always has access to the fields regardless of @opaque
-    pub fn bar() {}          # visible outside the impl — the public API surface
-
-    fn baz(slf: @self) {}    # hidden by default — private to the impl
-}
-</code></pre>
-<p>On an ordinary (non-<code>@opaque</code>) struct, every field and method is already public, so <code>pub</code> would be meaningless there — a no-op rather than an error, since it doesn’t contradict the struct’s existing fully-open default:</p>
-<pre><code>struct X {
-    ...
-}
-impl X {
-    fn y() {}   # `pub` doesn't apply here — everything is already public
-                # on a standard struct
-}
-</code></pre>
 <h2 id="documentation-rule"><a class="header" href="#documentation-rule">Documentation Rule</a></h2>
 <p>Any compiler feature that is added or changed should update both the book source and the generated <code>book/book</code> output in the same change. The book should remain the user-facing source of truth for the current language.</p>
 

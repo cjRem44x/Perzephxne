@@ -1,0 +1,15 @@
+@opaque
+struct Counter {
+    n: i32,
+}
+
+impl Counter {
+    pub fn new(start: i32) -> Counter { ret Counter{.n=start} }
+    fn bump(self: *Counter) { self.*.n += 1 }
+}
+
+fn main() -> i32 {
+    c: Counter = Counter.new(10)
+    c.bump()
+    ret 0
+}

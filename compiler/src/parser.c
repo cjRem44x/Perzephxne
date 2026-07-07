@@ -1736,6 +1736,9 @@ static AttrList parse_attrs(Parser *p) {
             expect(p, TOK_RPAREN);
             Attr a = { .kind = ATTR_ALIGN, .arg = arg };
             SLICE_PUSH(p->arena, &attrs, Attr, a);
+        } else if (!strcmp(name, "opaque")) {
+            Attr a = { .kind = ATTR_OPAQUE, .arg = NULL };
+            SLICE_PUSH(p->arena, &attrs, Attr, a);
         }
         /* unknown builtins before struct are silently skipped */
     }
@@ -1748,7 +1751,7 @@ static Item *parse_item(Parser *p) {
     /* collect struct attrs before keywords */
     AttrList attrs = {0};
     if (check(p, TOK_BUILTIN) &&
-        (!strcmp(cur(p).sval, "packed") || !strcmp(cur(p).sval, "align")))
+        (!strcmp(cur(p).sval, "packed") || !strcmp(cur(p).sval, "align") || !strcmp(cur(p).sval, "opaque")))
     {
         attrs = parse_attrs(p);
     }
@@ -1851,7 +1854,9 @@ static Item *parse_item(Parser *p) {
         return item;
     }
 
-    /* inline? fn */
+    /* pub? inline? fn — `pub` only has effect inside an @opaque struct's
+       impl block; sema treats it as a no-op everywhere else. */
+    int is_pub    = eat(p, TOK_PUB);
     int is_inline = eat(p, TOK_INLINE);
 
     if (check(p, TOK_FN)) {
@@ -1919,6 +1924,7 @@ static Item *parse_item(Parser *p) {
         item->fn.ret             = ret;
         item->fn.body            = body;
         item->fn.is_inline       = is_inline;
+        item->fn.is_pub          = is_pub;
         item->fn.variadic        = variadic;
         item->fn.type_params     = type_params;
         item->fn.n_type_params   = n_type_params;
@@ -1927,6 +1933,8 @@ static Item *parse_item(Parser *p) {
 
     if (is_inline)
         fatal_at(span, "'inline' must be followed by 'fn'");
+    if (is_pub)
+        fatal_at(span, "'pub' must be followed by 'fn'");
 
     /* struct */
     if (check(p, TOK_STRUCT)) {

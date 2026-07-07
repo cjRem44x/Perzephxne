@@ -13,6 +13,8 @@ typedef struct Sym {
     Type       *ty;
     int         is_mut;    /* 0 = immutable (imu), 1 = mutable */
     int         is_type;   /* entry is a type name (struct/enum/alias) */
+    int         is_pub;    /* impl method declared `pub` — only enforced when
+                               the owning struct is @opaque (see StructEntry.hidden) */
 } Sym;
 
 typedef struct Scope {
@@ -26,6 +28,8 @@ typedef struct StructEntry {
     struct StructEntry *next;
     const char         *name;
     FieldList          *fields; /* points into the Item's field list */
+    int                 hidden; /* @opaque — fields/methods are private
+                                    outside this struct's own impl block */
 } StructEntry;
 
 /* ── Enum variant table ───────────────────────────────────────────────────── */
@@ -78,6 +82,11 @@ typedef struct {
     UnionInfo        *unions;    /* name → tagged union variant table */
     GenericTemplate  *generics;  /* uninstantiated generic templates */
     GenericImplTemplate *impl_generics; /* uninstantiated generic impl blocks */
+    const char       *cur_impl_struct; /* name of the struct whose impl method
+                                           body is currently being checked, or
+                                           NULL — impl always has access to its
+                                           own struct's fields/methods, @opaque
+                                           or not (see check_impl) */
     /* built-in types — interned once */
     Type   *ty_void, *ty_bool, *ty_i8, *ty_i16, *ty_i32, *ty_i64;
     Type   *ty_u8,   *ty_u16,  *ty_u32, *ty_u64, *ty_usize;
@@ -950,8 +959,10 @@ static Type *check_expr(Sema *s, Expr *e) {
                     }
                 }
                 /* struct field access */
+                StructEntry *matched_se = NULL;
                 for (StructEntry *se = s->structs; se; se = se->next) {
                     if (!strcmp(se->name, obj_ty->named.name)) {
+                        matched_se = se;
                         for (size_t i = 0; i < se->fields->len; i++) {
                             if (!strcmp(se->fields->data[i].name, e->field.field)) {
                                 e->ty = se->fields->data[i].ty;
@@ -961,6 +972,16 @@ static Type *check_expr(Sema *s, Expr *e) {
                         break;
                     }
                 }
+                /* @opaque: a field is only visible from inside its own
+                   struct's impl block — everywhere else it's private,
+                   regardless of how the receiver was obtained (value,
+                   *T, or ^T all resolve to the same obj_ty here). */
+                if (e->ty && matched_se && matched_se->hidden &&
+                    (!s->cur_impl_struct || strcmp(s->cur_impl_struct, matched_se->name) != 0)) {
+                    sema_error(s, e->span,
+                        "field '%s' is private on opaque struct '%s'",
+                        e->field.field, matched_se->name);
+                }
                 if (!e->ty) {
                     /* impl method lookup: try "StructName__field" */
                     char mangled[256];
@@ -968,6 +989,15 @@ static Type *check_expr(Sema *s, Expr *e) {
                              obj_ty->named.name, e->field.field);
                     Sym *method_sym = lookup(s, mangled);
                     if (method_sym && method_sym->ty && method_sym->ty->kind == TY_FN) {
+                        /* @opaque: a non-pub method is only callable from
+                           inside its own struct's impl block */
+                        if (matched_se && matched_se->hidden && !method_sym->is_pub &&
+                            (!s->cur_impl_struct || strcmp(s->cur_impl_struct, matched_se->name) != 0)) {
+                            sema_error(s, e->span,
+                                "method '%s' is private on opaque struct '%s' — mark it "
+                                "'pub' to call it from outside its impl block",
+                                e->field.field, matched_se->name);
+                        }
                         Type *full = method_sym->ty;
                         size_t np = full->fn.params.len;
                         /* detect static call: obj is a type-name identifier */
@@ -1190,6 +1220,17 @@ static Type *check_expr(Sema *s, Expr *e) {
             /* validate struct field names and types */
             for (StructEntry *se = s->structs; se; se = se->next) {
                 if (strcmp(se->name, e->struct_lit.ty_name)) continue;
+                /* @opaque: field-literal construction bypasses the field
+                   privacy check entirely (it names fields directly), so it's
+                   only allowed from inside the struct's own impl block —
+                   everywhere else must go through a pub constructor method */
+                if (se->hidden &&
+                    (!s->cur_impl_struct || strcmp(s->cur_impl_struct, se->name) != 0)) {
+                    sema_error(s, e->span,
+                        "cannot construct opaque struct '%s' with field-literal syntax "
+                        "outside its impl block — use a 'pub' constructor method instead",
+                        se->name);
+                }
                 for (size_t i = 0; i < e->struct_lit.fields.len; i++) {
                     const char *fname = e->struct_lit.fields.data[i].name;
                     Type *val_ty = e->struct_lit.fields.data[i].val->ty;
@@ -1731,9 +1772,12 @@ static void check_union(Sema *s, Item *item) {
 
 static void check_impl(Sema *s, Item *item) {
     /* check each method as a function */
+    const char *prev_impl_struct = s->cur_impl_struct;
+    s->cur_impl_struct = item->impl.ty_name;
     for (size_t i = 0; i < item->impl.methods.len; i++)
         if (item->impl.methods.data[i]->kind == ITEM_FN)
             check_fn(s, item->impl.methods.data[i]);
+    s->cur_impl_struct = prev_impl_struct;
 }
 
 static void check_global(Sema *s, Item *item) {
@@ -2324,6 +2368,8 @@ static void register_item(Sema *s, Item *item) {
             StructEntry *se = ARENA_NEW(s->arena, StructEntry);
             se->name   = item->name;
             se->fields = &item->struct_.fields;
+            for (size_t i = 0; i < item->struct_.attrs.len; i++)
+                if (item->struct_.attrs.data[i].kind == ATTR_OPAQUE) { se->hidden = 1; break; }
             se->next   = s->structs;
             s->structs = se;
             break;
@@ -2456,6 +2502,8 @@ static void register_item(Sema *s, Item *item) {
                     }
                 }
                 define(s, m->span, m->name, ty, 0, 0);
+                Sym *msym = lookup(s, m->name);
+                if (msym) msym->is_pub = m->fn.is_pub;
             }
             break;
         }
