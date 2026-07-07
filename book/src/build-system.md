@@ -36,7 +36,11 @@ MyProject/
   przp.toml        # project manifest
   src/
     main.przp      # default entry point
+  tests/
+    example_test.przp   # przp test discovers every *.przp file placed here
 ```
+
+`przp init` scaffolds all of the above, including a `tests/example_test.przp` example. `tests/` is discovered by `przp test` independently of what `src/main.przp` imports — see [Testing § Test Discovery](./testing.md#test-discovery).
 
 ## `przp.toml`
 

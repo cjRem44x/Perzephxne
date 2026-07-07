@@ -261,6 +261,7 @@ static TokenKind keyword_or_ident(const char *s) {
     if (!strcmp(s, "asm"))      return TOK_ASM;
     if (!strcmp(s, "goto"))     return TOK_GOTO;
     if (!strcmp(s, "test"))     return TOK_TEST;
+    if (!strcmp(s, "pub"))      return TOK_PUB;
     if (!strcmp(s, "_"))        return TOK_UNDER;
     return TOK_IDENT;
 }
@@ -421,6 +422,7 @@ const char *tok_kind_str(TokenKind k) {
         case TOK_ASM:        return "'asm'";
         case TOK_GOTO:       return "'goto'";
         case TOK_TEST:       return "'test'";
+        case TOK_PUB:        return "'pub'";
         case TOK_IDENT:      return "identifier";
         case TOK_BUILTIN:  return "builtin";
         case TOK_UNDER:    return "'_'";

@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-cda4d93f.js";
+            window.path_to_searchindex_js = "searchindex-b3a4d4a9.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-4e58bc13.js"></script>
@@ -193,6 +193,19 @@ fn main() -&gt; i32 {
 }
 </code></pre>
 <p>Test blocks are invisible to <code>przp build</code>/<code>przp run</code>/<code>przp sac</code> — they compile (so they never silently bit-rot into something that doesn’t parse) but are never called from <code>fn main()</code> or anywhere else. Only <code>przp test</code> runs them.</p>
+<h2 id="test-discovery"><a class="header" href="#test-discovery">Test Discovery</a></h2>
+<p><code>przp test</code> finds tests two ways:</p>
+<ul>
+<li><strong>Inline</strong>, following the entry file’s own <code>import()</code> graph — any <code>test "..." { }</code> block in the entry file or anything it (transitively) imports, exactly like the example above.</li>
+<li><strong><code>tests/</code></strong> — every <code>*.przp</code> file placed directly under the project’s <code>tests/</code> directory is compiled in too, <em>whether or not anything imports it</em>. This is the place for tests that don’t belong next to any particular module, or that exercise a module without wanting that module to declare its own test-only imports. A <code>tests/</code> file can still <code>import()</code> the module it’s testing:</li>
+</ul>
+<pre><code>import(math = "src/math")
+
+test "add negative numbers" {
+    @assert(math.add(-2, -3) == -5)
+}
+</code></pre>
+<p><code>przp init</code> scaffolds <code>tests/example_test.przp</code> as a starting point.</p>
 <h2 id="running-tests"><a class="header" href="#running-tests">Running Tests</a></h2>
 <div class="table-wrapper">
 <table>
@@ -245,6 +258,9 @@ FAIL  addition is wrong on purpose
 <p><code>@fail</code> behaves like <code>@panic</code> — same “print and stop” shape — under a name that reads naturally inside a test.</p>
 <h2 id="debug-mode-by-default"><a class="header" href="#debug-mode-by-default">Debug Mode by Default</a></h2>
 <p><code>przp test</code> compiles in debug mode unless <code>--release</code> is passed, since <code>@assert</code> — the mechanism most tests rely on — is stripped out entirely in release builds (see <a href="./build-system.html#build-modes">Build System § Build Modes</a>). Pass <code>--release</code> explicitly if you specifically want to verify release-mode behavior.</p>
+<h2 id="test-artifacts"><a class="header" href="#test-artifacts">Test Artifacts</a></h2>
+<p><code>przp test</code> writes its compiled binary and manifest sidecar into <code>tests/</code> rather than the project root — <code>tests/&lt;package&gt;_test</code> and <code>tests/&lt;package&gt;_test.tests</code>, plus a <code>tests/&lt;package&gt;_test.d</code> dependency sidecar (see <a href="./build-system.html#incremental-run">Build System § Incremental <code>run</code></a> for what <code>.d</code> files are; <code>test</code> doesn’t currently use it to skip rebuilds, it’s just written for consistency). All three are gitignored.</p>
+<p>Before compiling, <code>przp test</code> sweeps <code>tests/</code> and deletes any leftover <code>*_test</code>/<code>*_test.tests</code>/<code>*_test.d</code> files that don’t match the binary it’s about to (re)write — so renaming <code>[package].name</code>, or accumulating artifacts across many <code>sac</code>/manual runs, doesn’t leave dead binaries behind. This sweep never touches <code>*.przp</code> source files, even ones named like <code>login_test.przp</code> that happen to contain <code>_test</code> themselves.</p>
 
                     </main>
 

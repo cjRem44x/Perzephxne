@@ -19,6 +19,23 @@ fn main() -> i32 {
 
 Test blocks are invisible to `przp build`/`przp run`/`przp sac` — they compile (so they never silently bit-rot into something that doesn't parse) but are never called from `fn main()` or anywhere else. Only `przp test` runs them.
 
+## Test Discovery
+
+`przp test` finds tests two ways:
+
+- **Inline**, following the entry file's own `import()` graph — any `test "..." { }` block in the entry file or anything it (transitively) imports, exactly like the example above.
+- **`tests/`** — every `*.przp` file placed directly under the project's `tests/` directory is compiled in too, *whether or not anything imports it*. This is the place for tests that don't belong next to any particular module, or that exercise a module without wanting that module to declare its own test-only imports. A `tests/` file can still `import()` the module it's testing:
+
+```
+import(math = "src/math")
+
+test "add negative numbers" {
+    @assert(math.add(-2, -3) == -5)
+}
+```
+
+`przp init` scaffolds `tests/example_test.przp` as a starting point.
+
 ## Running Tests
 
 | Command | Runs |
@@ -75,3 +92,9 @@ test "explicit pass and fail" {
 ## Debug Mode by Default
 
 `przp test` compiles in debug mode unless `--release` is passed, since `@assert` — the mechanism most tests rely on — is stripped out entirely in release builds (see [Build System § Build Modes](./build-system.md#build-modes)). Pass `--release` explicitly if you specifically want to verify release-mode behavior.
+
+## Test Artifacts
+
+`przp test` writes its compiled binary and manifest sidecar into `tests/` rather than the project root — `tests/<package>_test` and `tests/<package>_test.tests`, plus a `tests/<package>_test.d` dependency sidecar (see [Build System § Incremental `run`](./build-system.md#incremental-run) for what `.d` files are; `test` doesn't currently use it to skip rebuilds, it's just written for consistency). All three are gitignored.
+
+Before compiling, `przp test` sweeps `tests/` and deletes any leftover `*_test`/`*_test.tests`/`*_test.d` files that don't match the binary it's about to (re)write — so renaming `[package].name`, or accumulating artifacts across many `sac`/manual runs, doesn't leave dead binaries behind. This sweep never touches `*.przp` source files, even ones named like `login_test.przp` that happen to contain `_test` themselves.

@@ -124,6 +124,49 @@ impl Vec2 {
 sum: Vec2 = Vec2.add(v, Vec2{.x=1.0, .y=0.0})
 ```
 
+## Encapsulation: `@opaque` and `pub`
+
+By default every struct field and every `impl` method is public — visible to any code that can see the struct itself. `@opaque` on a struct changes that: its fields (and, inside its `impl` block, its methods) become private outside that struct's own `impl` block. `pub fn` marks the methods meant as the deliberate public API surface:
+
+```
+@opaque
+struct Counter {
+    n: i32,
+}
+
+impl Counter {
+    pub fn new(start: i32) -> Counter { ret Counter{.n=start} }
+    pub fn value(self: Counter) -> i32 { ret self.n }
+
+    pub fn increment(self: *Counter) {
+        self.bump()      # impl always has access to its own struct's private members
+    }
+
+    fn bump(self: *Counter) {    # no `pub` — private outside this impl block
+        self.*.n += 1
+    }
+}
+
+c: Counter = Counter.new(10)
+c.increment()
+@pf("{c.value()}\n")     # 11
+
+c.n           # compile error: field 'n' is private on opaque struct 'Counter'
+c.bump()      # compile error: method 'bump' is private ... — mark it 'pub' to call it from outside its impl block
+Counter{.n=5} # compile error: cannot construct opaque struct 'Counter' with field-literal syntax outside its impl block
+```
+
+Rules:
+
+- **Fields** are private outside `@opaque`'s own `impl` block, full stop — there's no per-field `pub` for fields, only for methods.
+- **Field-literal construction** (`Counter{.n=5}`) also requires being inside the matching `impl` block, since it names fields directly — this is what makes a `pub fn new(...)` constructor the actual entry point from outside, rather than a bypassable convention.
+- **Methods** without `pub` are private outside the `impl` block the same way fields are; `pub fn` methods are callable from anywhere the struct itself is visible, the same as on an ordinary struct.
+- **Inside** the matching `impl` block, everything is accessible regardless of `pub` — one method can freely call another private method or read/write private fields on `self` or on another instance of the same struct.
+- A **different** struct's `impl` block is still "outside" — `@opaque struct A`'s fields stay private even from `impl B`'s methods.
+- On an **ordinary** (non-`@opaque`) struct, `pub` is accepted but has no effect — every field and method there is already public, matching the struct's normal fully-open default.
+
+Use `@opaque` when a struct's internal representation is something callers shouldn't depend on (so it can change later without breaking them) and you want the compiler to enforce that instead of relying on a naming convention.
+
 ## Packed Structs
 
 ```

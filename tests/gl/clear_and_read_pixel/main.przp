@@ -1,0 +1,47 @@
+import(win = "std/graphics/window")
+import(gl = "std/graphics/gl")
+
+fn main() -> i32 {
+    display: *u8 = win.XOpenDisplay(null)
+    if display == null {
+        @perr("XOpenDisplay")
+        ret 1
+    }
+
+    screen: i32 = win.XDefaultScreen(display)
+    root: u64 = win.XRootWindow(display, screen)
+    window: u64 = win.XCreateSimpleWindow(display, root, 0, 0, 320u32, 240u32, 1u32, 0u64, 0u64)
+    win.XMapWindow(display, window)
+    win.XFlush(display)
+
+    vis: *u8 = gl.choose_visual(display, screen)
+    if vis == null {
+        @epf("no GL-capable visual\n")
+        ret 1
+    }
+
+    ctx: *u8 = gl.create_context(display, window, vis)
+    if ctx == null {
+        @epf("failed to create/make-current GL context\n")
+        ret 1
+    }
+
+    gl.clear(0.1, 0.2, 0.3, 1.0)
+
+    err: u32 = gl.glGetError()
+    if err != gl.GL_NO_ERROR {
+        @epf("GL error after clear: {err}\n")
+        ret 1
+    }
+
+    pixel: [4]u8 = undef
+    gl.glReadPixels(10, 10, 1, 1, gl.GL_RGBA, gl.GL_UNSIGNED_BYTE, &pixel[0])
+    @pf("pixel: {pixel[0]} {pixel[1]} {pixel[2]} {pixel[3]}\n")
+
+    gl.swap(display, window)
+    gl.destroy_context(display, ctx)
+    win.XDestroyWindow(display, window)
+    win.XCloseDisplay(display)
+    @pf("done\n")
+    ret 0
+}

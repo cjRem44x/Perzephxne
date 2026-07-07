@@ -1,0 +1,64 @@
+# std/graphics/gl — OpenGL backend (first implementation of the backend
+# contract; see book/graphics.md). GLX handles context creation and
+# presenting a frame; core GL 1.1 entry points (glClear, glViewport, ...)
+# are real exported libGL.so symbols, so no runtime function loading is
+# needed yet. That changes the moment shader-based rendering needs GL 2.0+
+# entry points (glCreateShader and friends aren't link-time symbols) — see
+# book/graphics.md's open prerequisites for the loader that unblocks that.
+
+extern fn glXChooseVisual(display: *u8, screen: i32, attribs: *i32) -> *u8
+extern fn glXCreateContext(display: *u8, vis: *u8, share: *u8, direct: i32) -> *u8
+extern fn glXMakeCurrent(display: *u8, drawable: u64, ctx: *u8) -> i32
+extern fn glXSwapBuffers(display: *u8, drawable: u64)
+extern fn glXDestroyContext(display: *u8, ctx: *u8)
+
+extern fn glClearColor(r: f32, g: f32, b: f32, a: f32)
+extern fn glClear(mask: u32)
+extern fn glViewport(x: i32, y: i32, w: i32, h: i32)
+extern fn glGetError() -> u32
+extern fn glReadPixels(x: i32, y: i32, w: i32, h: i32, format: u32, ty: u32, data: *u8)
+
+GL_COLOR_BUFFER_BIT: u32 = 0x00004000
+GL_RGBA: u32 = 0x1908
+GL_UNSIGNED_BYTE: u32 = 0x1401
+GL_NO_ERROR: u32 = 0
+
+GLX_RGBA: i32 = 4
+GLX_DEPTH_SIZE: i32 = 12
+GLX_DOUBLEBUFFER: i32 = 5
+
+# Choose an RGBA, double-buffered, 24-bit-depth-buffer visual. Returns null
+# (a GLXChooseVisual failure) if the display can't offer one.
+fn choose_visual(display: *u8, screen: i32) -> *u8 {
+    attribs: [5]i32 = [GLX_RGBA, GLX_DEPTH_SIZE, 24, GLX_DOUBLEBUFFER, 0]
+    ret glXChooseVisual(display, screen, &attribs[0])
+}
+
+# Create a GL context and make it current on `window`. `window` is expected
+# to come from std/graphics/window's XCreateSimpleWindow (the default
+# visual, not necessarily the one `vis` describes) — Mesa's GLX accepted
+# that mismatch in testing under Xvfb; a stricter GLX implementation might
+# not, at which point the window would need creating with `vis` directly
+# via XCreateWindow's fuller, attributes-struct API instead of
+# XCreateSimpleWindow. Returns null on failure (bad context, or a visual
+# mismatch glXMakeCurrent refuses).
+fn create_context(display: *u8, window: u64, vis: *u8) -> *u8 {
+    ctx: *u8 = glXCreateContext(display, vis, null, 1)
+    if ctx == null { ret null }
+    ok: i32 = glXMakeCurrent(display, window, ctx)
+    if ok == 0 { ret null }
+    ret ctx
+}
+
+fn clear(r: f32, g: f32, b: f32, a: f32) {
+    glClearColor(r, g, b, a)
+    glClear(GL_COLOR_BUFFER_BIT)
+}
+
+fn swap(display: *u8, window: u64) {
+    glXSwapBuffers(display, window)
+}
+
+fn destroy_context(display: *u8, ctx: *u8) {
+    glXDestroyContext(display, ctx)
+}

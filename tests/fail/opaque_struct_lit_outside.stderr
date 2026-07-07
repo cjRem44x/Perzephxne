@@ -1,0 +1,1 @@
+cannot construct opaque struct 'Counter' with field-literal syntax outside its impl block

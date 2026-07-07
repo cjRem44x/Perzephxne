@@ -247,6 +247,7 @@ typedef struct { ImportEntry *data; size_t len; } ImportList;
 typedef enum {
     ATTR_PACKED,
     ATTR_ALIGN,
+    ATTR_OPAQUE,   /* @opaque — hides a struct's fields/methods outside its own impl block */
 } AttrKind;
 
 typedef struct { AttrKind kind; Expr *arg; } Attr;
@@ -282,6 +283,10 @@ struct Item {
             const char  *test_file; /* source file path, stamped in main.c
                                         right after parsing (the parser
                                         itself has no path, only src text) */
+            int          is_pub;   /* pub fn — only meaningful inside an
+                                       @opaque struct's impl block; a no-op
+                                       everywhere else (plain functions, or
+                                       impl methods of a non-@opaque struct) */
         } fn;
 
         struct {

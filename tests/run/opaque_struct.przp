@@ -1,0 +1,45 @@
+# @opaque hides a struct's fields/methods outside its own impl block;
+# `pub` marks the deliberate public API surface. A non-@opaque struct is
+# unaffected — `pub` there is a no-op, everything stays fully public.
+
+@opaque
+struct Counter {
+    n: i32,
+}
+
+impl Counter {
+    pub fn new(start: i32) -> Counter {
+        ret Counter{.n=start}
+    }
+
+    pub fn value(self: Counter) -> i32 {
+        ret self.n
+    }
+
+    pub fn increment(self: *Counter) {
+        self.bump()   # impl always has access to its own private methods/fields
+    }
+
+    fn bump(self: *Counter) {
+        self.*.n += 1
+    }
+}
+
+struct Plain {
+    x: i32,
+}
+
+impl Plain {
+    pub fn double(self: Plain) -> i32 { ret self.x * 2 }
+    fn triple(self: Plain) -> i32 { ret self.x * 3 }  # pub has no effect here
+}
+
+fn main() -> i32 {
+    c: Counter = Counter.new(10)
+    c.increment()
+    @pf("counter: {c.value()}\n")
+
+    p: Plain = Plain{.x=5}
+    @pf("plain: {p.x} double={p.double()} triple={p.triple()}\n")
+    ret 0
+}

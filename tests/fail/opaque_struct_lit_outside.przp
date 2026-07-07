@@ -1,0 +1,13 @@
+@opaque
+struct Counter {
+    n: i32,
+}
+
+impl Counter {
+    pub fn new(start: i32) -> Counter { ret Counter{.n=start} }
+}
+
+fn main() -> i32 {
+    c: Counter = Counter{.n=99}
+    ret 0
+}
