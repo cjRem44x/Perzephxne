@@ -1,0 +1,16 @@
+import(t = "../src/logic")
+
+test "fizzbuzz" {
+    @assert(t.fizzbuzz(3) == "fizz")
+    @assert(t.fizzbuzz(5) == "buzz")
+    @assert(t.fizzbuzz(15) == "fizzbuzz")
+    @assert(t.fizzbuzz(7) == "7")
+}
+
+test "classify_temp" {
+    @assert(t.classify_temp(-5) == "freezing")
+    @assert(t.classify_temp(10) == "cold")
+    @assert(t.classify_temp(20) == "mild")
+    @assert(t.classify_temp(30) == "warm")
+    @assert(t.classify_temp(40) == "hot")
+}

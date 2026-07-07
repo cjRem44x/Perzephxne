@@ -1,0 +1,23 @@
+import(t = "../src/logic")
+
+test "stack is LIFO" {
+    s: t.Stack<i32> = t.Stack<i32>.new()
+    s.push(1)
+    s.push(2)
+    s.push(3)
+    @assert(s.pop() == 3)
+    @assert(s.pop() == 2)
+    @assert(s.pop() == 1)
+    @assert(s.is_empty())
+}
+
+test "queue is FIFO" {
+    q: t.Queue<i32> = t.Queue<i32>.new()
+    q.enqueue(1)
+    q.enqueue(2)
+    q.enqueue(3)
+    @assert(q.dequeue() == 1)
+    @assert(q.dequeue() == 2)
+    @assert(q.dequeue() == 3)
+    @assert(q.is_empty())
+}

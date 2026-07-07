@@ -1,0 +1,34 @@
+# An in-memory to-do list: a fixed-capacity array of Task structs, showing
+# structs + a growable collection working together for a realistic-shaped
+# use case (add, complete, list).
+
+struct Task {
+    title: str,
+    done:  bool,
+}
+
+struct TodoList {
+    tasks: [64]Task,
+    len:   usize,
+}
+
+impl TodoList {
+    fn new() -> TodoList { ret TodoList{.len=0} }
+
+    fn add(self: *TodoList, title: str) {
+        self.tasks[self.len] = Task{.title=title, .done=false}
+        self.len += 1
+    }
+
+    fn complete(self: *TodoList, i: usize) {
+        self.tasks[i].done = true
+    }
+
+    fn pending_count(self: TodoList) -> usize {
+        n: usize = 0
+        for i => 0..self.len {
+            if !self.tasks[i].done { n += 1 }
+        }
+        ret n
+    }
+}

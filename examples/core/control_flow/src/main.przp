@@ -1,0 +1,43 @@
+# examples/core/control_flow — if/elif/else, loops, when, and goto.
+# Run it with: przp run   (from this directory)
+
+import(logic = "logic")
+
+fn main() -> i32 {
+    @pf("-- fizzbuzz 1..15 --\n")
+    for n => 1..=15 {
+        @pf("{n}: {logic.fizzbuzz(n)}\n")
+    }
+
+    @pf("\n-- when over a range --\n")
+    for c => [-10, 5, 20, 30, 40] {
+        @pf("{c}C is {logic.classify_temp(c)}\n")
+    }
+
+    @pf("\n-- while + break/continue --\n")
+    i: i32 = 0
+    while i < 20 {
+        i += 1
+        if i % 2 == 0 { continue }   # skip evens
+        if i > 9 { break }           # stop after printing 9
+        @pf("{i} ")
+    }
+    @pf("\n")
+
+    @pf("\n-- loop (infinite, explicit break) --\n")
+    count: i32 = 0
+    loop {
+        if count >= 3 { break }
+        @pf("tick {count}\n")
+        count += 1
+    }
+
+    @pf("\n-- goto --\n")
+    attempts: i32 = 0
+    retry:
+    attempts += 1
+    if attempts < 3 { goto retry }
+    @pf("gave up after {attempts} tries\n")
+
+    ret 0
+}

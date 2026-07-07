@@ -1,0 +1,25 @@
+# regression: assigning a struct literal into an array element by index
+# ("arr[i] = Foo{...}") had the same bug as ".* = Foo{...}" once did —
+# storing the literal's alloca address into the element instead of its
+# bytes, since the EXPR_INDEX assign-target path was missing the same
+# "struct/array rhs comes back as a ptr, load it first" step the deref and
+# field-assign paths already had.
+
+struct Task {
+    title: str,
+    done:  bool,
+}
+
+fn main() -> i32 {
+    tasks: [3]Task = undef
+    tasks[0] = Task{.title="a", .done=false}
+    tasks[1] = Task{.title="b", .done=true}
+    tasks[2] = Task{.title="c", .done=false}
+
+    for i => 0..3 {
+        status: str = "pending"
+        if tasks[i].done { status = "done" }
+        @pf("{tasks[i].title}: {status}\n")
+    }
+    ret 0
+}

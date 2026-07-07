@@ -1,0 +1,14 @@
+# A couple of small pointer-based helpers pulled out for testing.
+
+fn swap(a: *i32, b: *i32) {
+    tmp: i32 = a.*
+    a.* = b.*
+    b.* = tmp
+}
+
+struct Point { x: i32, y: i32 }
+
+fn translate(p: *Point, dx: i32, dy: i32) {
+    p.x += dx
+    p.y += dy
+}

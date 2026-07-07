@@ -1,0 +1,14 @@
+struct Box<T> {
+    value: T,
+}
+
+impl Box<T> {
+    fn new(v: T) -> Box<T> { ret Box<T>{.value=v} }
+    fn get(self: *Box<T>) -> T { ret self.value }
+    fn set(self: *Box<T>, v: T) { self.value = v }
+}
+
+struct Pair<A, B> {
+    first:  A,
+    second: B,
+}

@@ -1,0 +1,12 @@
+# examples/core/hello_world — the smallest real Perzephxne program.
+# Run it with: przp run   (from this directory)
+
+fn main() -> i32 {
+    @pf("Hello, Perzephxne!\n")
+
+    name: str = "World"
+    @pf("Hello, {name}!\n")            # {expr} interpolation
+    @pf("2 + 2 = {2 + 2}\n")            # any expression works inside {}
+
+    ret 0
+}

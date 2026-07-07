@@ -1,0 +1,35 @@
+# A generic singly linked list, built from raw pointers — the standard
+# "pointer to next, or null" shape (see book/pointers.md's "Linked list
+# node" pattern), generalized over T.
+
+struct Node<T> {
+    value: T,
+    next:  *Node<T>,
+}
+
+struct List<T> {
+    head: *Node<T>,
+    len:  usize,
+}
+
+impl List<T> {
+    fn new() -> List<T> { ret List<T>{.head=null, .len=0} }
+
+    fn push_front(self: *List<T>, v: T) {
+        n: *Node<T> = @alo(Node<T>)
+        n.* = Node<T>{.value=v, .next=self.head}
+        self.head = n
+        self.len += 1
+    }
+
+    fn pop_front(self: *List<T>) -> T {
+        n: *Node<T> = self.head
+        v: T = n.value
+        self.head = n.next
+        self.len -= 1
+        @free(n)
+        ret v
+    }
+
+    fn is_empty(self: *List<T>) -> bool { ret self.head == null }
+}

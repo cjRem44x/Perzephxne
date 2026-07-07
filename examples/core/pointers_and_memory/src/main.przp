@@ -1,0 +1,51 @@
+# examples/core/pointers_and_memory — raw pointers, pointer arithmetic,
+# heap allocation (@alo/@free), and reference-counted smart pointers
+# (@new/@release). No garbage collector: you manage this, or a ^T does.
+# Run it with: przp run   (from this directory)
+
+import(logic = "logic")
+
+fn main() -> i32 {
+    @pf("-- raw pointers --\n")
+    x: i32 = 42
+    p: *i32 = &x
+    @pf("*p = {p.*}\n")
+    p.* = 100
+    @pf("x is now {x}\n")
+
+    @pf("\n-- swap through pointers --\n")
+    a: i32 = 1
+    b: i32 = 2
+    logic.swap(&a, &b)
+    @pf("a={a} b={b}\n")
+
+    @pf("\n-- struct field access through a pointer --\n")
+    pt: logic.Point = logic.Point{.x=1, .y=1}
+    logic.translate(&pt, 4, 5)
+    @pf("pt = ({pt.x}, {pt.y})\n")
+
+    @pf("\n-- pointer arithmetic --\n")
+    arr: [5]i32 = [1, 2, 3, 4, 5]
+    ap: *i32 = &arr[0]
+    q: *i32 = ap + 2
+    @pf("arr[2] via pointer arithmetic = {q.*}\n")
+
+    @pf("\n-- nullable pointers --\n")
+    np: *i32 = null
+    if np != null { @pf("unreachable\n") } else { @pf("np is null, as expected\n") }
+
+    @pf("\n-- heap allocation (@alo/@free) --\n")
+    hp: *i32 = @alo(i32)
+    hp.* = 7
+    @pf("heap value = {hp.*}\n")
+    @free(hp)
+
+    @pf("\n-- reference-counted smart pointer (@new/@release) --\n")
+    sp: ^i32 = @new(i32)
+    sp.^ = 99                                   # .^ for ^T, not .* (that's for *T)
+    @pf("smart pointer value = {sp.^}\n")
+    @release(sp)   # RC drop; frees when the count reaches 0
+
+    @pf("\ndone\n")
+    ret 0
+}

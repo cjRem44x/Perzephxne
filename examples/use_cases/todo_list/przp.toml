@@ -1,0 +1,6 @@
+[package]
+name = "todo_list"
+version = "0.1.0"
+
+[build]
+entry = "src/main.przp"

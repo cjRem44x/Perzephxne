@@ -1,0 +1,15 @@
+# regression: an extern fn re-exported through a module that itself gets
+# imported by another file (std/collections' malloc/realloc/free/memcpy
+# through any module that imports std/collections and is itself imported,
+# e.g. dsa/binary_search_tree's use of it) failed to link — the second
+# mangling pass overwrote the saved real C symbol name with the first
+# pass's already-mangled item name, so codegen declared/called the wrong,
+# nonexistent symbol instead of the real libc one.
+
+import(w = "helpers/extern_wrapper")
+
+fn main() -> i32 {
+    n: i64 = w.wrapped_strlen("hello".data)
+    @pf("{n}\n")
+    ret 0
+}

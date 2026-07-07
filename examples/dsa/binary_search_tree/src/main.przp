@@ -1,0 +1,28 @@
+# examples/dsa/binary_search_tree — recursive BST insert/contains, plus an
+# in-order traversal (visits values in sorted order).
+# Run it with: przp run   (from this directory)
+
+import(logic = "logic")
+import(collections = "std/collections")
+
+fn main() -> i32 {
+    t: logic.Tree = logic.Tree.new()
+    values: [7]i32 = [5, 3, 8, 1, 4, 7, 9]
+    for v => values {
+        t.insert(v)
+    }
+
+    @pf("contains 4? {t.contains(4)}\n")
+    @pf("contains 6? {t.contains(6)}\n")
+
+    out: collections.Vec = collections.Vec.new()
+    logic.in_order(t.root, &out)
+    @pf("in-order: ")
+    for i => 0..out.len_of() {
+        @pf("{out.get(i)} ")
+    }
+    @pf("\n")
+
+    @pf("done\n")
+    ret 0
+}

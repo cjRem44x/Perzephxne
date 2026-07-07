@@ -1,0 +1,30 @@
+# examples/dsa/stack_and_queue — fixed-capacity generic Stack<T> (LIFO) and
+# Queue<T> (FIFO), array-backed.
+# Run it with: przp run   (from this directory)
+
+import(logic = "logic")
+
+fn main() -> i32 {
+    @pf("-- stack (LIFO) --\n")
+    s: logic.Stack<i32> = logic.Stack<i32>.new()
+    s.push(1)
+    s.push(2)
+    s.push(3)
+    while !s.is_empty() {
+        @pf("{s.pop()} ")
+    }
+    @pf("\n")
+
+    @pf("\n-- queue (FIFO) --\n")
+    q: logic.Queue<i32> = logic.Queue<i32>.new()
+    q.enqueue(1)
+    q.enqueue(2)
+    q.enqueue(3)
+    while !q.is_empty() {
+        @pf("{q.dequeue()} ")
+    }
+    @pf("\n")
+
+    @pf("\ndone\n")
+    ret 0
+}

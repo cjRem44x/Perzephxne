@@ -1,0 +1,14 @@
+# regression: "t: Task = tasks[i]" (copying a struct out of an array by
+# index into a fresh local) stored the array element's address itself into
+# t instead of copying its bytes — EXPR_INDEX was missing from the set of
+# expression kinds STMT_LET's codegen knows return a pointer-to-struct
+# rather than an already-loaded value.
+
+struct Task { title: str, done: bool }
+
+fn main() -> i32 {
+    tasks: [2]Task = [Task{.title="a", .done=false}, Task{.title="b", .done=true}]
+    t: Task = tasks[0]
+    @pf("{t.title} {t.done}\n")
+    ret 0
+}

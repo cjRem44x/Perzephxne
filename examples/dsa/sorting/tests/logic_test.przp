@@ -1,0 +1,27 @@
+import(t = "../src/logic")
+
+test "bubble_sort sorts and is_sorted agrees" {
+    a: [5]i32 = [5, 4, 3, 2, 1]
+    t.bubble_sort(a)
+    @assert(t.is_sorted(a))
+    @assert(a[0] == 1)
+    @assert(a[4] == 5)
+}
+
+test "quicksort sorts and is_sorted agrees" {
+    a: [5]i32 = [5, 4, 3, 2, 1]
+    t.quicksort(a)
+    @assert(t.is_sorted(a))
+    @assert(a[0] == 1)
+    @assert(a[4] == 5)
+}
+
+test "is_sorted on already-sorted input" {
+    a: [3]i32 = [1, 2, 3]
+    @assert(t.is_sorted(a))
+}
+
+test "is_sorted on unsorted input" {
+    a: [3]i32 = [3, 1, 2]
+    @assert(!t.is_sorted(a))
+}

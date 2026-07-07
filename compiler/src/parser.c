@@ -1044,6 +1044,68 @@ static Expr *parse_postfix(Parser *p, Expr *e) {
                 continue;
             }
             Token fname = expect(p, TOK_IDENT);
+            /* qualified generic type: alias.Name<T,...>{ ... } or alias.Name<T,...>.method(...)
+               Mirrors the bare Name<T,...> handling in parse_primary, but the
+               mangled base is "alias__Name" — that's the name the imported
+               module's own generic template ends up registered under, since
+               mangle_items() already ran on it during import resolution. */
+            if (e->kind == EXPR_IDENT && check(p, TOK_LT) && looks_like_generic_args(p)) {
+                advance(p); /* consume '<' */
+                char base_buf[256];
+                snprintf(base_buf, sizeof(base_buf), "%s__%s", e->ident.name, fname.sval);
+                char mangled_buf[512];
+                snprintf(mangled_buf, sizeof(mangled_buf), "%s", base_buf);
+                Type **args = NULL;
+                size_t n_args = 0;
+                while (!check(p, TOK_GT) && !check(p, TOK_EOF)) {
+                    Type *arg = parse_type(p);
+                    const char *arg_str = type_to_str(arg, p->arena);
+                    size_t curlen = strlen(mangled_buf);
+                    snprintf(mangled_buf + curlen, sizeof(mangled_buf) - curlen, "__%s", arg_str);
+                    Type **new_args = arena_alloc(p->arena, (n_args + 1) * sizeof(Type *));
+                    if (n_args) memcpy(new_args, args, n_args * sizeof(Type *));
+                    new_args[n_args++] = arg;
+                    args = new_args;
+                    eat(p, TOK_COMMA);
+                }
+                expect(p, TOK_GT);
+                const char *base    = arena_strdup(p->arena, base_buf);
+                const char *mangled = arena_strdup(p->arena, mangled_buf);
+                record_gen_inst(p, mangled, base, args, n_args);
+                if (!p->no_struct_lit && check(p, TOK_LBRACE) && peek(p).kind == TOK_DOT) {
+                    /* qualified generic struct literal */
+                    advance(p); /* consume '{' */
+                    FieldInitList fields = {0};
+                    while (!check(p, TOK_RBRACE) && !check(p, TOK_EOF)) {
+                        expect(p, TOK_DOT);
+                        Token fn = expect(p, TOK_IDENT);
+                        Expr *val;
+                        if (eat(p, TOK_EQ)) {
+                            val = parse_expr(p);
+                        } else {
+                            val = mkexpr(p, EXPR_UNDEF, fn.span);
+                        }
+                        FieldInit fi = { .name = fn.sval, .val = val };
+                        SLICE_PUSH(p->arena, &fields, FieldInit, fi);
+                        eat(p, TOK_COMMA);
+                    }
+                    Span end = cur(p).span;
+                    expect(p, TOK_RBRACE);
+                    Expr *sl = mkexpr(p, EXPR_STRUCT_LIT, span_merge(span, end));
+                    sl->struct_lit.ty_name = mangled;
+                    sl->struct_lit.fields  = fields;
+                    e = sl;
+                } else {
+                    /* qualified generic type reference / static call, e.g.
+                       alias.Name<T>.method(...) — same shape as the bare-name
+                       case: emit the mangled identifier and let the rest of
+                       this postfix loop chain .method(...) off of it. */
+                    Expr *ie = mkexpr(p, EXPR_IDENT, span);
+                    ie->ident.name = mangled;
+                    e = ie;
+                }
+                continue;
+            }
             /* qualified struct literal: alias.TypeName { .x = ... } */
             if (!p->no_struct_lit && e->kind == EXPR_IDENT
                     && check(p, TOK_LBRACE) && peek(p).kind == TOK_DOT) {
@@ -1339,6 +1401,17 @@ static Stmt *parse_stmt(Parser *p) {
             s->while_.label = lname;
             return s;
         }
+        if (check(p, TOK_LOOP)) {
+            advance(p);
+            StmtList body = parse_block(p);
+            Expr *always_true = mkexpr(p, EXPR_BOOL, span);
+            always_true->bval = 1;
+            Stmt *s = mkstmt(p, STMT_WHILE, span);
+            s->while_.cond  = always_true;
+            s->while_.body  = body;
+            s->while_.label = lname;
+            return s;
+        }
         if (check(p, TOK_FOR)) {
             advance(p);
             ForClause clause = {0};
@@ -1526,6 +1599,18 @@ static Stmt *parse_stmt(Parser *p) {
         s->while_.cond  = cond;
         s->while_.do_fn = do_fn;
         s->while_.body  = body;
+        return s;
+    }
+
+    /* loop — sugar for `while true`; requires an explicit break */
+    if (check(p, TOK_LOOP)) {
+        advance(p);
+        StmtList body = parse_block(p);
+        Expr *always_true = mkexpr(p, EXPR_BOOL, span);
+        always_true->bval = 1;
+        Stmt *s = mkstmt(p, STMT_WHILE, span);
+        s->while_.cond = always_true;
+        s->while_.body = body;
         return s;
     }
 

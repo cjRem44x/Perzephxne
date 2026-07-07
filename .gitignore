@@ -16,3 +16,14 @@ compiler/przp.dSYM/
 # test run artifacts
 test_output.txt
 tests/tmp/
+
+# examples/*/*/ build outputs — each example's compiled binary shares its
+# own directory's name (not "main"), so it needs its own rule: ignore
+# everything directly in an example project's root except przp.toml and the
+# src/ and tests/*.przp source it actually ships.
+examples/*/*/*
+!examples/*/*/przp.toml
+!examples/*/*/src/
+!examples/*/*/src/**
+!examples/*/*/tests/
+!examples/*/*/tests/*.przp

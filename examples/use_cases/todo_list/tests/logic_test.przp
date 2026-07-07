@@ -1,0 +1,14 @@
+import(t = "../src/logic")
+
+test "add, complete, and pending_count" {
+    list: t.TodoList = t.TodoList.new()
+    list.add("a")
+    list.add("b")
+    list.add("c")
+    @assert(list.pending_count() == 3)
+
+    list.complete(0)
+    @assert(list.pending_count() == 2)
+    @assert(list.tasks[0].done)
+    @assert(!list.tasks[1].done)
+}

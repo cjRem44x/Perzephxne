@@ -85,11 +85,11 @@ np: *[3]i32 = &nums
 np.* = [10, 20, 30]
 ```
 
-Use `@new(T)` for reference-counted smart pointer allocation:
+Use `@new(T)` for reference-counted smart pointer allocation. Dereference a `^T` with `.^`, not `.*` — see [Smart Pointers](./smart-pointers.md) for why the two aren't interchangeable:
 
 ```
 p: ^i32 = @new(i32)
-p.* = 42
+p.^ = 42
 @release(p)    # RC drop; frees when count reaches 0
 ```
 

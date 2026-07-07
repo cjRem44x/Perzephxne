@@ -136,27 +136,52 @@ static void path_join(char *out, size_t outsz, const char *a, const char *b) {
         snprintf(out, outsz, "%s/%s", a, b);
 }
 
+/* Does `name` refer to `orig_name` — either exactly, or as a generic
+   instantiation of it ("Box" itself, or "Box__T" / "Box__i32", but not an
+   unrelated name like "BoxOfBoxes" that merely starts with the same
+   letters)? A generic type's own methods and internal uses still reference
+   it by its pre-mangling, template-shaped name ("Box__T") even from deep
+   inside its own impl block, so matching only the bare name here would
+   leave those un-prefixed after import-mangling — silently pointing at a
+   type that was never actually defined under that name. */
+static int names_generic_match(const char *name, const char *orig_name) {
+    size_t olen = strlen(orig_name);
+    if (!strcmp(name, orig_name)) return 1;
+    return !strncmp(name, orig_name, olen) && name[olen] == '_' && name[olen + 1] == '_';
+}
+
 /* Rewrite TY_NAMED references that match any of orig_names → alias__name */
 static void rw_type(Type *ty, const char **orig, size_t n, const char *alias, Arena *a) {
     if (!ty) return;
     switch (ty->kind) {
         case TY_NAMED:
             for (size_t i = 0; i < n; i++) {
-                if (!strcmp(ty->named.name, orig[i])) {
-                    char *buf = arena_alloc(a, strlen(alias) + 2 + strlen(orig[i]) + 1);
-                    sprintf(buf, "%s__%s", alias, orig[i]);
+                if (names_generic_match(ty->named.name, orig[i])) {
+                    char *buf = arena_alloc(a, strlen(alias) + 2 + strlen(ty->named.name) + 1);
+                    sprintf(buf, "%s__%s", alias, ty->named.name);
                     ty->named.name = buf;
                     break;
                 }
             }
             break;
-        case TY_PTR: case TY_SLICE:
+        case TY_PTR: case TY_SMART_PTR: case TY_SLICE: case TY_FAILABLE:
             rw_type(ty->ptr.inner, orig, n, alias, a);
+            break;
+        case TY_ARRAY:
+            /* was missing entirely — a struct field typed "[N]Task" never
+               got its element type rewritten to "alias__Task" at all,
+               leaving array-typed fields pointing at a type that was never
+               actually defined under that name once the module got mangled */
+            rw_type(ty->array.inner, orig, n, alias, a);
             break;
         case TY_FN:
             for (size_t i = 0; i < ty->fn.params.len; i++)
                 rw_type(ty->fn.params.data[i], orig, n, alias, a);
             rw_type(ty->fn.ret, orig, n, alias, a);
+            break;
+        case TY_TUPLE:
+            for (size_t i = 0; i < ty->tuple.elems.len; i++)
+                rw_type(ty->tuple.elems.data[i], orig, n, alias, a);
             break;
         default: break;
     }
@@ -260,9 +285,9 @@ static void rw_ident_expr(Expr *e, const char **orig, size_t n_orig,
     switch (e->kind) {
         case EXPR_IDENT: {
             for (size_t i = 0; i < n_orig; i++) {
-                if (!strcmp(e->ident.name, orig[i])) {
+                if (names_generic_match(e->ident.name, orig[i])) {
                     char buf[512];
-                    snprintf(buf, sizeof(buf), "%s__%s", alias, orig[i]);
+                    snprintf(buf, sizeof(buf), "%s__%s", alias, e->ident.name);
                     e->ident.name = arena_strdup(a, buf);
                     break;
                 }
@@ -301,9 +326,9 @@ static void rw_ident_expr(Expr *e, const char **orig, size_t n_orig,
             break;
         case EXPR_STRUCT_LIT:
             for (size_t i = 0; i < n_orig; i++) {
-                if (!strcmp(e->struct_lit.ty_name, orig[i])) {
+                if (names_generic_match(e->struct_lit.ty_name, orig[i])) {
                     char buf[512];
-                    snprintf(buf, sizeof(buf), "%s__%s", alias, orig[i]);
+                    snprintf(buf, sizeof(buf), "%s__%s", alias, e->struct_lit.ty_name);
                     e->struct_lit.ty_name = arena_strdup(a, buf);
                     break;
                 }
@@ -353,13 +378,47 @@ static void mangle_items(Module *mod, const char *alias, Arena *arena) {
         if (item->name) all_orig[n_all_orig++] = item->name;
     }
 
+    /* gen_insts recorded while parsing this module reference its own
+       generic types by their pre-mangling names ("Box", "Box__i32") —
+       rewrite those the same way item names below get rewritten, or sema
+       looks for a template/instantiation under a name that no longer
+       exists once this module's items are all prefixed with alias__. */
+    for (size_t i = 0; i < mod->gen_insts.len; i++) {
+        GenInst *gi = &mod->gen_insts.data[i];
+        for (size_t j = 0; j < n_all_orig; j++) {
+            if (names_generic_match(gi->base, all_orig[j])) {
+                char b[512];
+                snprintf(b, sizeof(b), "%s__%s", alias, gi->base);
+                gi->base = arena_strdup(arena, b);
+                break;
+            }
+        }
+        for (size_t j = 0; j < n_all_orig; j++) {
+            if (names_generic_match(gi->mangled, all_orig[j])) {
+                char m[512];
+                snprintf(m, sizeof(m), "%s__%s", alias, gi->mangled);
+                gi->mangled = arena_strdup(arena, m);
+                break;
+            }
+        }
+    }
+
     char buf[512];
     for (size_t i = 0; i < mod->items.len; i++) {
         Item *item = mod->items.data[i];
         if (!item->name) continue;
         if (item->kind == ITEM_EXTERN_FN) {
-            /* save original C name, then mangle so alias.fn rewrites work */
-            item->extern_fn.c_name = item->name;
+            /* Save the original C symbol name, then mangle item->name so
+               alias.fn rewrites work — but only capture c_name on the first
+               mangling pass. A transitively-imported extern fn (e.g.
+               std/collections re-exported through a module that itself gets
+               imported) goes through mangle_items more than once as each
+               importer's alias gets applied in turn; capturing c_name again
+               on a later pass would overwrite the real C symbol ("malloc")
+               with the previous pass's already-mangled item->name
+               ("collections__malloc"), and the linker would then look for a
+               C symbol that was never actually exported under that name. */
+            if (!item->extern_fn.c_name) item->extern_fn.c_name = item->name;
             snprintf(buf, sizeof(buf), "%s__%s", alias, item->name);
             item->name = arena_strdup(arena, buf);
             continue;
@@ -571,6 +630,24 @@ static void rw_item(Item *item, const char **al, size_t n, Arena *a) {
 
 /* Append items from imp into mod, skipping ITEM_IMPORT entries */
 static void merge_items(Module *mod, Module *imp) {
+    /* imp's own gen_insts (generic instantiations it recorded while being
+       parsed — its own internal use of a generic type, or a caller's
+       qualified alias.Generic<T> use recorded against imp's own parser)
+       never reach sema unless they end up in the same Module sema actually
+       checks. Without this, any imported module that uses a generic type
+       — even purely internally, with no cross-module qualification at all —
+       breaks the moment something else imports it, since the concrete
+       instantiation is never requested in the merged module sema sees. */
+    if (imp->gen_insts.len) {
+        size_t new_gi_len = mod->gen_insts.len + imp->gen_insts.len;
+        GenInst *new_gi = arena_alloc(mod->arena, new_gi_len * sizeof(GenInst));
+        memcpy(new_gi, mod->gen_insts.data, mod->gen_insts.len * sizeof(GenInst));
+        memcpy(new_gi + mod->gen_insts.len, imp->gen_insts.data,
+               imp->gen_insts.len * sizeof(GenInst));
+        mod->gen_insts.data = new_gi;
+        mod->gen_insts.len  = new_gi_len;
+    }
+
     size_t extra = 0;
     for (size_t i = 0; i < imp->items.len; i++)
         if (imp->items.data[i]->kind != ITEM_IMPORT) extra++;

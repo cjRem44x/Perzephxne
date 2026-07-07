@@ -1,0 +1,19 @@
+# Pure helper functions, kept in their own module so tests/ can import just
+# the logic without recompiling main() — see tests/fizzbuzz_test.przp.
+
+fn fizzbuzz(n: i32) -> str {
+    if n % 15 == 0 { ret "fizzbuzz" }
+    elif n % 3 == 0 { ret "fizz" }
+    elif n % 5 == 0 { ret "buzz" }
+    ret @str(n)
+}
+
+fn classify_temp(celsius: i32) -> str {
+    ret when celsius {
+        -100..=0 => "freezing",
+        1..=15   => "cold",
+        16..=25  => "mild",
+        26..=35  => "warm",
+        _        => "hot",
+    }
+}

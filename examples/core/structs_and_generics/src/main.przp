@@ -1,0 +1,32 @@
+# examples/core/structs_and_generics — struct + impl, static methods, and
+# generic structs (Box<T>, Pair<A, B>).
+# Run it with: przp run   (from this directory)
+
+import(logic = "logic")
+
+fn main() -> i32 {
+    @pf("-- struct + impl --\n")
+    v: logic.Vec2 = logic.Vec2.new(3.0, 4.0)
+    @pf("len({v.x}, {v.y}) = {v.len()}\n")
+    v.scale(2.0)
+    @pf("after scale(2.0): ({v.x}, {v.y})\n")
+
+    sum: logic.Vec2 = logic.Vec2.add(v, logic.Vec2.new(1.0, 1.0))
+    @pf("sum = ({sum.x}, {sum.y})\n")
+
+    @pf("\n-- generic Box<T> --\n")
+    bi: logic.Box<i32> = logic.Box<i32>.new(42)
+    @pf("bi.get() = {bi.get()}\n")
+    bi.set(99)
+    @pf("after set: {bi.get()}\n")
+
+    bs: logic.Box<str> = logic.Box<str>.new("hello")
+    @pf("bs.get() = {bs.get()}\n")
+
+    @pf("\n-- generic Pair<A, B> --\n")
+    p: logic.Pair<i32, str> = logic.Pair<i32, str>{.first=1, .second="one"}
+    @pf("pair = ({p.first}, {p.second})\n")
+
+    @pf("\ndone\n")
+    ret 0
+}

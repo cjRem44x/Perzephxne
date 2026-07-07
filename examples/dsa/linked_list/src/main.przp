@@ -1,0 +1,22 @@
+# examples/dsa/linked_list — a generic singly linked list (push_front /
+# pop_front), the classic "pointer to next, or null" structure.
+# Run it with: przp run   (from this directory)
+
+import(logic = "logic")
+
+fn main() -> i32 {
+    list: logic.List<i32> = logic.List<i32>.new()
+    values: [5]i32 = [1, 2, 3, 4, 5]
+    for v => values {
+        list.push_front(v)
+    }
+    @pf("len = {list.len}\n")
+
+    while !list.is_empty() {
+        @pf("{list.pop_front()} ")
+    }
+    @pf("\n")
+
+    @pf("done\n")
+    ret 0
+}

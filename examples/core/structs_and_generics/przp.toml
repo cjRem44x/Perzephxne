@@ -1,0 +1,6 @@
+[package]
+name = "structs_and_generics"
+version = "0.1.0"
+
+[build]
+entry = "src/main.przp"

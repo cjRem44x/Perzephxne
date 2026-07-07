@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-20f5c537.js";
+            window.path_to_searchindex_js = "searchindex-9feaec89.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-4e58bc13.js"></script>
@@ -236,9 +236,9 @@ nums: [3]i32 = [0, 0, 0]
 np: *[3]i32 = &amp;nums
 np.* = [10, 20, 30]
 </code></pre>
-<p>Use <code>@new(T)</code> for reference-counted smart pointer allocation:</p>
+<p>Use <code>@new(T)</code> for reference-counted smart pointer allocation. Dereference a <code>^T</code> with <code>.^</code>, not <code>.*</code> — see <a href="./smart-pointers.html">Smart Pointers</a> for why the two aren’t interchangeable:</p>
 <pre><code>p: ^i32 = @new(i32)
-p.* = 42
+p.^ = 42
 @release(p)    # RC drop; frees when count reaches 0
 </code></pre>
 <p>For raw byte buffers use <code>@alo</code> (allocate) and <code>@free</code>:</p>

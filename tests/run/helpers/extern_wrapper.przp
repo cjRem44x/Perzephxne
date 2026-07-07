@@ -1,0 +1,9 @@
+# Re-exports extern_base's strlen one level down — the same shape
+# std/collections' malloc/realloc/free/memcpy take through any module that
+# imports std/collections and is itself imported by something else.
+
+import(base = "extern_base")
+
+fn wrapped_strlen(s: *u8) -> i64 {
+    ret base.strlen(s)
+}

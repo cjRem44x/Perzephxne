@@ -1,0 +1,38 @@
+# struct + impl, and a generic Box<T> / Pair<T, U>.
+
+struct Vec2 {
+    x: f64,
+    y: f64,
+}
+
+impl Vec2 {
+    fn new(x: f64, y: f64) -> Vec2 { ret Vec2{.x=x, .y=y} }
+
+    fn len(self: Vec2) -> f64 {
+        ret @sqrt(self.x * self.x + self.y * self.y)
+    }
+
+    fn scale(self: *Vec2, factor: f64) {
+        self.x *= factor
+        self.y *= factor
+    }
+
+    fn add(a: Vec2, b: Vec2) -> Vec2 {          # static: no self param
+        ret Vec2{.x=a.x+b.x, .y=a.y+b.y}
+    }
+}
+
+struct Box<T> {
+    value: T,
+}
+
+impl Box<T> {
+    fn new(v: T) -> Box<T> { ret Box<T>{.value=v} }
+    fn get(self: *Box<T>) -> T { ret self.value }
+    fn set(self: *Box<T>, v: T) { self.value = v }
+}
+
+struct Pair<A, B> {
+    first:  A,
+    second: B,
+}

@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-20f5c537.js";
+            window.path_to_searchindex_js = "searchindex-9feaec89.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-4e58bc13.js"></script>
@@ -247,23 +247,23 @@ b3: bool = @bool("yes")    # false
 <div class="table-wrapper">
 <table>
 <thead>
-<tr><th>Builtin</th><th>Description</th></tr>
+<tr><th>Builtin</th><th>Returns</th><th>Description</th></tr>
 </thead>
 <tbody>
-<tr><td><code>@size(T)</code></td><td>byte size of type <code>T</code></td></tr>
-<tr><td><code>@align(T)</code></td><td>alignment of type <code>T</code></td></tr>
-<tr><td><code>@offsetof(T, field)</code></td><td>byte offset of a struct field</td></tr>
-<tr><td><code>@bitcast(T, val)</code></td><td>reinterpret bits — same size required</td></tr>
-<tr><td><code>@zeroed(T)</code></td><td>zero value of type <code>T</code></td></tr>
-<tr><td><code>@alo(T)</code></td><td>heap-allocate one <code>T</code>, return <code>*T</code> (raw pointer, manual <code>@free</code>)</td></tr>
-<tr><td><code>@new(T)</code></td><td>heap-allocate one <code>T</code>, return <code>^T</code> (RC-managed)</td></tr>
-<tr><td><code>@clone(val)</code></td><td>increment RC of a <code>^T</code>, return shared <code>^T</code></td></tr>
-<tr><td><code>@free(ptr)</code></td><td>free raw <code>*T</code> heap memory</td></tr>
-<tr><td><code>@memcpy(dst, src, n)</code></td><td>copy <code>n</code> bytes from src to dst</td></tr>
-<tr><td><code>@memmove(dst, src, n)</code></td><td>copy <code>n</code> bytes, handles overlap</td></tr>
-<tr><td><code>@memset(dst, byte, n)</code></td><td>fill <code>n</code> bytes with <code>byte</code></td></tr>
-<tr><td><code>@addr(expr)</code></td><td>address of a variable, field, or index expression — like <code>&amp;</code> but usable in more contexts</td></tr>
-<tr><td><code>@str_raw(ptr, len)</code></td><td>construct a <code>str</code> fat pointer from a raw <code>*u8</code> and a <code>usize</code> length</td></tr>
+<tr><td><code>@size(T)</code></td><td><code>usize</code></td><td>byte size of type <code>T</code></td></tr>
+<tr><td><code>@align(T)</code></td><td><code>usize</code></td><td>alignment of type <code>T</code></td></tr>
+<tr><td><code>@offsetof(T, field)</code></td><td><code>usize</code></td><td>byte offset of a struct field</td></tr>
+<tr><td><code>@bitcast(T, val)</code></td><td><code>T</code></td><td>reinterpret bits — same size required</td></tr>
+<tr><td><code>@zeroed(T)</code></td><td><code>T</code></td><td>zero value of type <code>T</code></td></tr>
+<tr><td><code>@alo(T)</code></td><td><code>*T</code></td><td>heap-allocate one <code>T</code>, return <code>*T</code> (raw pointer, manual <code>@free</code>)</td></tr>
+<tr><td><code>@new(T)</code></td><td><code>^T</code></td><td>heap-allocate one <code>T</code>, return <code>^T</code> (RC-managed)</td></tr>
+<tr><td><code>@clone(val)</code></td><td><code>^T</code></td><td>increment RC of a <code>^T</code>, return shared <code>^T</code></td></tr>
+<tr><td><code>@free(ptr)</code></td><td><code>void</code></td><td>free raw <code>*T</code> heap memory</td></tr>
+<tr><td><code>@memcpy(dst, src, n)</code></td><td><code>void</code></td><td>copy <code>n</code> bytes from src to dst</td></tr>
+<tr><td><code>@memmove(dst, src, n)</code></td><td><code>void</code></td><td>copy <code>n</code> bytes, handles overlap</td></tr>
+<tr><td><code>@memset(dst, byte, n)</code></td><td><code>void</code></td><td>fill <code>n</code> bytes with <code>byte</code></td></tr>
+<tr><td><code>@addr(expr)</code></td><td><code>*T</code></td><td>address of a variable, field, or index expression — like <code>&amp;</code> but usable in more contexts</td></tr>
+<tr><td><code>@str_raw(ptr, len)</code></td><td><code>str</code></td><td>construct a <code>str</code> fat pointer from a raw <code>*u8</code> and a <code>usize</code> length</td></tr>
 </tbody>
 </table>
 </div>
@@ -274,24 +274,25 @@ bits: u32 = @bitcast(u32, f)   # raw bit pattern — 0x3F800000
 <div class="table-wrapper">
 <table>
 <thead>
-<tr><th>Builtin</th><th>Description</th></tr>
+<tr><th>Builtin</th><th>Returns</th><th>Description</th></tr>
 </thead>
 <tbody>
-<tr><td><code>@len(arr_or_slice)</code></td><td>element count — compile time for arrays, runtime for slices</td></tr>
+<tr><td><code>@len(arr_or_slice)</code></td><td><code>usize</code></td><td>element count — compile time for arrays, runtime for slices</td></tr>
 </tbody>
 </table>
 </div>
 <h2 id="math"><a class="header" href="#math">Math</a></h2>
+<p><code>@sqrt</code> always returns <code>f64</code>; <code>@abs</code>/<code>@min</code>/<code>@max</code> return whatever numeric type their argument(s) are — the same type going in comes back out, no widening or narrowing.</p>
 <div class="table-wrapper">
 <table>
 <thead>
-<tr><th>Builtin</th><th>Description</th></tr>
+<tr><th>Builtin</th><th>Returns</th><th>Description</th></tr>
 </thead>
 <tbody>
-<tr><td><code>@sqrt(x)</code></td><td>square root</td></tr>
-<tr><td><code>@abs(x)</code></td><td>absolute value</td></tr>
-<tr><td><code>@min(a, b)</code></td><td>minimum</td></tr>
-<tr><td><code>@max(a, b)</code></td><td>maximum</td></tr>
+<tr><td><code>@sqrt(x)</code></td><td><code>f64</code></td><td>square root</td></tr>
+<tr><td><code>@abs(x)</code></td><td>same as <code>x</code></td><td>absolute value</td></tr>
+<tr><td><code>@min(a, b)</code></td><td>same as <code>a</code>/<code>b</code></td><td>minimum</td></tr>
+<tr><td><code>@max(a, b)</code></td><td>same as <code>a</code>/<code>b</code></td><td>maximum</td></tr>
 </tbody>
 </table>
 </div>
@@ -299,29 +300,30 @@ bits: u32 = @bitcast(u32, f)   # raw bit pattern — 0x3F800000
 <div class="table-wrapper">
 <table>
 <thead>
-<tr><th>Builtin</th><th>Description</th></tr>
+<tr><th>Builtin</th><th>Returns</th><th>Description</th></tr>
 </thead>
 <tbody>
-<tr><td><code>@clz(x)</code></td><td>count leading zeros</td></tr>
-<tr><td><code>@ctz(x)</code></td><td>count trailing zeros</td></tr>
-<tr><td><code>@popcount(x)</code></td><td>count set bits</td></tr>
-<tr><td><code>@bswap(x)</code></td><td>reverse byte order</td></tr>
+<tr><td><code>@clz(x)</code></td><td>same as <code>x</code></td><td>count leading zeros</td></tr>
+<tr><td><code>@ctz(x)</code></td><td>same as <code>x</code></td><td>count trailing zeros</td></tr>
+<tr><td><code>@popcount(x)</code></td><td>same as <code>x</code></td><td>count set bits</td></tr>
+<tr><td><code>@bswap(x)</code></td><td>same as <code>x</code></td><td>reverse byte order</td></tr>
 </tbody>
 </table>
 </div>
 <h2 id="diagnostics"><a class="header" href="#diagnostics">Diagnostics</a></h2>
+<p>None of these return a usable value — <code>@assert</code>/<code>@panic</code>/<code>@unreachable</code>/<code>@todo</code>/<code>@fail</code> either return <code>void</code> or never return at all (the process exits or panics first), and <code>@pass</code>/<code>@fail</code> specifically stop the <em>test</em>, not just the call.</p>
 <div class="table-wrapper">
 <table>
 <thead>
-<tr><th>Builtin</th><th>Description</th></tr>
+<tr><th>Builtin</th><th>Returns</th><th>Description</th></tr>
 </thead>
 <tbody>
-<tr><td><code>@assert(cond, msg)</code></td><td>panic if false (debug only)</td></tr>
-<tr><td><code>@panic(msg)</code></td><td>unconditional panic with message</td></tr>
-<tr><td><code>@unreachable()</code></td><td>mark code path as unreachable</td></tr>
-<tr><td><code>@todo()</code></td><td>placeholder — panics at runtime</td></tr>
-<tr><td><code>@pass()</code></td><td>stop the current test immediately, marking it passed — see <a href="./testing.html">Testing</a></td></tr>
-<tr><td><code>@fail(msg?)</code></td><td>stop the current test immediately, marking it failed (same shape as <code>@panic</code>) — see <a href="./testing.html">Testing</a></td></tr>
+<tr><td><code>@assert(cond, msg)</code></td><td><code>void</code></td><td>panic if false (debug only)</td></tr>
+<tr><td><code>@panic(msg)</code></td><td>never returns</td><td>unconditional panic with message</td></tr>
+<tr><td><code>@unreachable()</code></td><td>never returns (debug); optimizer hint (release)</td><td>mark code path as unreachable</td></tr>
+<tr><td><code>@todo()</code></td><td>never returns</td><td>placeholder — panics at runtime</td></tr>
+<tr><td><code>@pass()</code></td><td>never returns</td><td>stop the current test immediately, marking it passed — see <a href="./testing.html">Testing</a></td></tr>
+<tr><td><code>@fail(msg?)</code></td><td>never returns</td><td>stop the current test immediately, marking it failed (same shape as <code>@panic</code>) — see <a href="./testing.html">Testing</a></td></tr>
 </tbody>
 </table>
 </div>

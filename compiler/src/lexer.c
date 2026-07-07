@@ -239,6 +239,7 @@ static TokenKind keyword_or_ident(const char *s) {
     if (!strcmp(s, "else"))     return TOK_ELSE;
     if (!strcmp(s, "when"))     return TOK_WHEN;
     if (!strcmp(s, "while"))    return TOK_WHILE;
+    if (!strcmp(s, "loop"))     return TOK_LOOP;
     if (!strcmp(s, "for"))      return TOK_FOR;
     if (!strcmp(s, "struct"))   return TOK_STRUCT;
     if (!strcmp(s, "impl"))     return TOK_IMPL;
@@ -402,6 +403,7 @@ const char *tok_kind_str(TokenKind k) {
         case TOK_ELSE:     return "'else'";
         case TOK_WHEN:     return "'when'";
         case TOK_WHILE:    return "'while'";
+        case TOK_LOOP:     return "'loop'";
         case TOK_FOR:      return "'for'";
         case TOK_STRUCT:   return "'struct'";
         case TOK_IMPL:     return "'impl'";

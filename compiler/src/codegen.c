@@ -4025,11 +4025,14 @@ static void cg_stmt(CG *cg, Stmt *s) {
                                     && !find_enum(cg, init_ty->named.name);
                     /* init_is_ptr: expressions that return a ptr to the struct (not the value).
                        EXPR_SMARTDEREF on a ^Struct also returns a ptr (past the RC header) —
-                       see the "struct value = ptr convention" comment in its EXPR_SMARTDEREF case. */
+                       see the "struct value = ptr convention" comment in its EXPR_SMARTDEREF case.
+                       EXPR_INDEX on an array/slice of structs is the same: a GEP to the
+                       element, not a loaded value ("t: Task = tasks[i]"). */
                     int init_is_ptr = is_struct &&
                                       (s->let.init->kind == EXPR_IDENT
                                        || s->let.init->kind == EXPR_STRUCT_LIT
-                                       || s->let.init->kind == EXPR_SMARTDEREF);
+                                       || s->let.init->kind == EXPR_SMARTDEREF
+                                       || s->let.init->kind == EXPR_INDEX);
                     /* ^T copy: auto-increment RC when source is an identifier */
                     int is_rc_copy = init_ty && init_ty->kind == TY_SMART_PTR
                                      && s->let.init->kind == EXPR_IDENT;
@@ -4418,6 +4421,21 @@ static void cg_stmt(CG *cg, Stmt *s) {
                 }
 
                 if (s->assign.op == ASSIGN_EQ) {
+                    /* struct/array rhs from EXPR_IDENT/EXPR_STRUCT_LIT/EXPR_ARRAY_LIT
+                       comes back as a ptr to the aggregate (see the matching
+                       comment on the .* = assign target) — load it before
+                       storing, or "arr[i] = Foo{...}" stores the literal's
+                       alloca pointer itself instead of the struct's bytes. */
+                    int rhs_is_aggregate_ptr =
+                        (vty && vty->kind == TY_NAMED && !find_enum(cg, vty->named.name)
+                            && (s->assign.val->kind == EXPR_IDENT || s->assign.val->kind == EXPR_STRUCT_LIT))
+                        || (vty && vty->kind == TY_ARRAY
+                            && (s->assign.val->kind == EXPR_IDENT || s->assign.val->kind == EXPR_ARRAY_LIT));
+                    if (rhs_is_aggregate_ptr) {
+                        int loaded = new_tmp(cg);
+                        emit(cg, "  %%t%d = load %s, ptr %s\n", loaded, elem_llt, rhs.buf);
+                        rhs = val_tmp(loaded);
+                    }
                     emit(cg, "  store %s %s, ptr %%t%d\n", elem_llt, rhs.buf, ep);
                 } else {
                     /* compound op: load current, operate, store */

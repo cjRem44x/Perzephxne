@@ -1,0 +1,46 @@
+# Word frequency counting over a string, split on spaces. Uses a small
+# fixed-size array of (word, count) pairs rather than a hash map — simple
+# and linear, since the standard library doesn't ship a generic map type yet
+# and a handful of words doesn't need one.
+
+import(str = "std/str")
+
+struct WordCounts {
+    words:  [64]str,
+    counts: [64]i32,
+    len:    usize,
+}
+
+impl WordCounts {
+    fn new() -> WordCounts { ret WordCounts{.len=0} }
+
+    fn add(self: *WordCounts, word: str) {
+        for i => 0..self.len {
+            if str.eq(self.words[i], word) {
+                self.counts[i] += 1
+                ret
+            }
+        }
+        self.words[self.len]  = word
+        self.counts[self.len] = 1
+        self.len += 1
+    }
+
+    fn count_of(self: WordCounts, word: str) -> i32 {
+        for i => 0..self.len {
+            if str.eq(self.words[i], word) { ret self.counts[i] }
+        }
+        ret 0
+    }
+}
+
+fn count_words(text: str) -> WordCounts {
+    wc: WordCounts = WordCounts.new()
+    n: usize = str.split_count(text, " ")
+    pos: usize = 0
+    for i => 0..n {
+        word: str = str.split_next(text, " ", &pos)
+        if word.len > 0 { wc.add(word) }
+    }
+    ret wc
+}
