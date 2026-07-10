@@ -1,0 +1,10 @@
+space=0
+escape=2
+right=6
+a=7 A=7
+z=32 Z=32
+untracked=-1
+rectangle: 230 41 55
+circle: 0 121 241
+background: 245 245 245
+done

@@ -1,6 +1,6 @@
-# Graphics — Design Sketch (Mostly Unimplemented)
+# Graphics — Design Sketch (Layer 1 Implemented, Layer 2 In Progress)
 
-> **Almost nothing in this chapter is built yet.** This is an architecture sketch — written to guide implementation — for a future media stack in the spirit of [raylib](https://www.raylib.com/): simple enough for a weekend game, capable enough for a native GUI app. **This is not a raylib binding.** The plan is to write Perzephxne's own renderer and windowing layer from scratch, on raw platform APIs, and shape its call-level ergonomics after raylib's — because raylib's API is a genuinely good design, not because the library itself is a dependency worth taking on. Every other chapter in this book documents the compiler as it is; this one documents a plan, with one exception: `std/graphics/window`'s open/close path (below) is real, shipped, and regression-tested. Everything else — the backend contract, the GL backend, `std/graphics`, `gdev`, and `guix` — remains unbuilt.
+> **Most of this chapter is still a plan, but layer 1 and a first slice of layer 2 are now real.** This is an architecture sketch — written to guide implementation — for a future media stack in the spirit of [raylib](https://www.raylib.com/): simple enough for a weekend game, capable enough for a native GUI app. **This is not a raylib binding.** The plan is to write Perzephxne's own renderer and windowing layer from scratch, on raw platform APIs, and shape its call-level ergonomics after raylib's — because raylib's API is a genuinely good design, not because the library itself is a dependency worth taking on. Every other chapter in this book documents the compiler as it is; this one documents a plan, with a growing exception: `std/graphics/window` (open/close, resize, keyboard/mouse input), the backend contract, `std/graphics/gl` (context setup, clear/present, and 2D immediate-mode drawing), and a first slice of `std/graphics` itself (window lifecycle, input queries, `Color`, and `draw_rectangle`/`draw_circle`/`draw_line`) are real, shipped, and regression-tested — see their sections below. `gdev` and `guix` remain unbuilt.
 
 The stack splits into two purpose-specific libraries built on one shared foundation:
 
@@ -64,9 +64,9 @@ The tradeoff is honest either way: this is a much bigger undertaking than bindin
 
 Three pieces, each a thin, dumb layer — no idiomatic naming, no safety wrapping, so advanced users can always drop to the raw calls when a higher layer doesn't cover something yet:
 
-- **`std/graphics/window`** — open a window and pump its event queue via the platform's native windowing API (X11 first, since that's universally available even under Wayland's XWayland compatibility layer; a native Wayland backend and, eventually, Win32/Cocoa backends follow the same shape behind one Perzephxne-facing surface). **Implemented** — see below.
+- **`std/graphics/window`** — open a window and pump its event queue via the platform's native windowing API (X11 first, since that's universally available even under Wayland's XWayland compatibility layer; a native Wayland backend and, eventually, Win32/Cocoa backends follow the same shape behind one Perzephxne-facing surface). **Implemented, including resize and keyboard/mouse input** — see below.
 - **The backend contract** — not a library binding at all, but a fixed set of Perzephxne function signatures (or a struct of function pointers) that any GPU backend must implement: init, clear, present, shutdown today, with submit/upload-texture/bind-shader named for later. **Implemented, at the scope today's capabilities can back for real** — see `std/graphics/backend` below. Perzephxne has no trait/interface mechanism, so the contract is a concrete `struct` of function pointers (`Backend`) rather than an abstract type — see [Functions § First-Class Functions](./functions.md#first-class-functions), which is what makes this possible with no new compiler feature.
-- **`std/graphics/gl`** — the OpenGL implementation of that contract. **Partially implemented** — see below. GL functions beyond 1.1 are resolved at runtime (`glXGetProcAddress` on Linux, not link-time symbols); that loader is still needed the moment shader-based rendering (GL 2.0+) is attempted, and isn't built yet.
+- **`std/graphics/gl`** — the OpenGL implementation of that contract, plus a small set of 2D immediate-mode draw primitives. **Partially implemented** — see below. GL functions beyond 1.1 are resolved at runtime (`glXGetProcAddress` on Linux, not link-time symbols); that loader is still needed the moment shader-based (GL 2.0+) rendering is attempted — legacy immediate mode (`glBegin`/`glVertex2f`/`glColor4f`), which the 2D primitives below use, is real GL 1.1 and doesn't need it.
 
 ### `std/graphics/window` — implemented
 
@@ -91,16 +91,24 @@ extern fn XFlush(display: *u8) -> i32
 extern fn XSendEvent(display: *u8, window: u64, propagate: i32, mask: i64, event: *u8) -> i32
 ```
 
-`XEvent` is a 192-byte C union with no Perzephxne struct declared for it (yet) — events are read directly out of a raw `[192]u8` buffer via pointer arithmetic and type-punning (`p: *u64 = buf + 32` reads the `window` field every event variant shares at that byte offset), with the offsets checked against a real `offsetof(XClientMessageEvent, ...)` compile rather than guessed:
+`XEvent` is a 192-byte C union with no Perzephxne struct declared for it (yet) — events are read directly out of a raw `[192]u8` buffer via pointer arithmetic and type-punning (`p: *u64 = buf + 32` reads the `window`/`event` field every event variant used here shares at that byte offset), with the offsets checked against a real `offsetof(...)` compile against each event's real struct (`XClientMessageEvent`, `XKeyEvent`, `XButtonEvent`, `XMotionEvent`, `XConfigureEvent`) rather than guessed:
 
 ```
 fn event_type(buf: *u8) -> i32 { p: *i32 = buf; ret p.* }              # offset 0
 fn event_window(buf: *u8) -> u64 { p: *u64 = buf + 32; ret p.* }        # offset 32
 fn event_client_message_type(buf: *u8) -> u64 { p: *u64 = buf + 40; ret p.* }  # offset 40
 fn event_client_data_l0(buf: *u8) -> i64 { p: *i64 = buf + 56; ret p.* }       # offset 56
+fn event_keycode(buf: *u8) -> u32 { p: *u32 = buf + 84; ret p.* }              # offset 84
+fn event_button(buf: *u8) -> u32 { p: *u32 = buf + 84; ret p.* }               # offset 84 (same union slot as keycode)
+fn event_x(buf: *u8) -> i32 { p: *i32 = buf + 64; ret p.* }                    # offset 64
+fn event_y(buf: *u8) -> i32 { p: *i32 = buf + 68; ret p.* }                    # offset 68
+fn event_width(buf: *u8) -> i32 { p: *i32 = buf + 56; ret p.* }                # offset 56 (ConfigureNotify)
+fn event_height(buf: *u8) -> i32 { p: *i32 = buf + 60; ret p.* }               # offset 60 (ConfigureNotify)
 ```
 
 Close detection uses the standard `WM_PROTOCOLS`/`WM_DELETE_WINDOW` handshake — a window manager sends a `ClientMessage` on a close-button click rather than the connection just dying, so a well-behaved window has to register for it and watch for it in the event loop, the same way a C/Xlib program would. `tests/x11/window_close` verifies this by sending itself that exact `ClientMessage` via `XSendEvent` (a real round trip through the X server, not a mocked event) and confirming the event loop reads it correctly and exits — since the test's virtual display has no window manager to click a close button in the first place. That test only runs when `Xvfb` and `libX11` are available; `tests/run.sh` skips it with a message otherwise rather than failing the whole suite on machines without a virtual display set up.
+
+Resize (`ConfigureNotify`) and keyboard/mouse (`KeyPress`/`KeyRelease`/`ButtonPress`/`ButtonRelease`/`MotionNotify`) events use the same raw-buffer approach — `INPUT_MASK` is the `XSelectInput` mask covering all of them, and `XKeycodeToKeysym(display, keycode, 0)` turns a `KeyPress`/`KeyRelease` event's raw hardware keycode into a portable `KeySym` (an X11 concept — the actual `Key`-enum mapping from that `KeySym` lives in `std/graphics`, layer 2, not here; this layer stays thin and dumb). `tests/x11/input_and_resize` verifies the byte-offset decoding itself (not `XKeycodeToKeysym`, whose result depends on the running system's keyboard layout and isn't something a portable test can pin down) the same way `window_close` does: synthesize each event kind with `XSendEvent`, known field values by hand, and confirm the readers pull back exactly what was set.
 
 Plain-old-data types (`Vector2`, `Vector3`, `Color`, `Rectangle`) are ordinary Perzephxne `struct` declarations, field-for-field, since Perzephxne structs already follow C ABI layout — this part of the original raylib-binding sketch carries over unchanged, since it's just describing data, not an API:
 
@@ -163,34 +171,81 @@ gl.GL_BACKEND.present(ctx)
 gl.GL_BACKEND.shutdown(ctx)
 ```
 
-`tests/gl/backend_contract` verifies this path end to end (clear through `GL_BACKEND`, then read the pixel back), alongside `tests/gl/clear_and_read_pixel` for the raw functions. Getting a triangle rasterized (vertex buffers, `glDrawArrays`/`glDrawElements`) and anything past GL 1.1 (shaders, VBOs) both still need the runtime `glXGetProcAddress` loader from prerequisite #2, which doesn't exist yet — so `Backend.clear`/`present` are real today, but there's no `submit` to call yet.
+`tests/gl/backend_contract` verifies this path end to end (clear through `GL_BACKEND`, then read the pixel back), alongside `tests/gl/clear_and_read_pixel` for the raw functions. Getting an arbitrary mesh rasterized via vertex buffers (`glDrawArrays`/`glDrawElements`) and anything past GL 1.1 (shaders, VBOs) both still need the runtime `glXGetProcAddress` loader from prerequisite #2, which doesn't exist yet — so `Backend.clear`/`present` are real today, and there's still no generic `submit` to call. What *is* built without that loader: `gl.przp` also has `set_ortho_2d`/`draw_rect`/`draw_circle`/`draw_line`, using GL 1.1's legacy immediate-mode calls (`glBegin`/`glVertex2f`/`glColor4f`/`glOrtho`) — real, exported, link-time symbols on every desktop GL implementation (including Mesa's compat profile), needing none of the runtime loading GL 2.0+ would:
+
+```
+extern fn glMatrixMode(mode: u32)
+extern fn glLoadIdentity()
+extern fn glOrtho(left: f64, right: f64, bottom: f64, top: f64, near: f64, far: f64)
+extern fn glBegin(mode: u32)
+extern fn glEnd()
+extern fn glVertex2f(x: f32, y: f32)
+extern fn glColor4f(r: f32, g: f32, b: f32, a: f32)
+
+fn set_ortho_2d(w: i32, h: i32)   # top-left-origin, Y-down pixel space sized w x h
+fn draw_rect(x: f32, y: f32, w: f32, h: f32, r: f32, g: f32, b: f32, a: f32)
+fn draw_circle(cx: f32, cy: f32, radius: f32, r: f32, g: f32, b: f32, a: f32)  # CIRCLE_SEGMENTS-sided polygon
+fn draw_line(x1: f32, y1: f32, x2: f32, y2: f32, r: f32, g: f32, b: f32, a: f32)
+```
+
+These call directly through GL, not through `Backend` — `Backend` has no submit-geometry field yet (see its scope note above), so `std/graphics` (layer 2, below) calls `gl.przp`'s draw functions directly rather than through the contract for now. That's a deliberate, temporary coupling: there's only one backend today, so there's nothing to be backend-agnostic about for drawing specifically yet; it goes away once `Backend` grows a real `submit` entry point and a second backend exists to justify one. `tests/gl/graphics_layer2` verifies these end to end (rectangle, circle, and untouched background all sampled back at the right pixels).
 
 ### Layer 2 — `std/graphics`, the shared foundation
 
-`std/graphics` turns the backend contract and windowing layer into something that reads like the rest of the standard library and, deliberately, like raylib's call-level ergonomics: `snake_case` names, `enum` constants instead of bare integers, tuples instead of output parameters, and `!T` for anything that can fail. This is the layer both `gdev` and `guix` import — window lifecycle, input, and 2D drawing primitives live here exactly once, not duplicated in each consumer:
+`std/graphics` turns the backend contract and windowing layer into something that reads like the rest of the standard library and, deliberately, like raylib's call-level ergonomics: `snake_case` names, `enum` constants instead of bare integers, tuples instead of output parameters, and `!T` for anything that can fail. This is the layer both `gdev` and `guix` import — window lifecycle, input, and 2D drawing primitives live here exactly once, not duplicated in each consumer. **A first slice is implemented**: window lifecycle, keyboard/mouse input queries, and the 2D draw primitives below (`Texture`/`draw_texture`/`draw_text` are still sketch — no image codec or text layout exists yet, see prerequisites #4/#5). See `compiler/std/graphics.przp` and `tests/gl/graphics_layer2`:
 
 ```
-enum Key {
-    Space, Enter, Escape, Up, Down, Left, Right,
-    A, B, C, # ... rest of the alphabet
-}
+struct Color { r: u8, g: u8, b: u8, a: u8 }
+RAYWHITE: Color : Color{.r=245, .g=245, .b=245, .a=255}   # + BLACK, WHITE, RED, GREEN, BLUE, YELLOW
 
-enum MouseButton { Left, Right, Middle }
+enum Key => i32 { Space = 0, Enter = 1, Escape = 2, Up = 3, Down = 4, Left = 5, Right = 6, A = 7, /* ...Z = 32 */ }
+enum MouseButton => i32 { Left = 0, Right = 1, Middle = 2 }
 
-struct Window { title: str, w: i32, h: i32 }
-
+struct Window { w: i32, h: i32 }
 impl Window {
-    fn open(title: str, w: i32, h: i32) -> Window {
-        # opens an X11 window, creates a GL context, initializes the backend
-        ret gfx_open_window(title, w, h)
-    }
-    fn should_close(self: Window) -> bool { ret gfx_should_close() }
-    fn close(self: Window) { gfx_close_window() }
+    fn open(title: str, w: i32, h: i32) -> Window   # opens the X11 window, GL context, and Backend in one call
+    fn should_close(self) -> bool
+    fn close(self)
 }
 
-fn is_key_pressed(k: Key) -> bool { ret gfx_key_pressed(key_code(k)) }
-fn mouse_position() -> (f32, f32) { ret gfx_mouse_position() }
+fn is_key_down(k: Key) -> bool
+fn is_mouse_button_down(b: MouseButton) -> bool
+fn mouse_position() -> (f32, f32)
 
+fn begin_drawing()
+fn end_drawing()               # presents the frame, then polls input for the next one
+fn clear_background(c: Color)
+fn draw_rectangle(x: f32, y: f32, w: f32, h: f32, c: Color)
+fn draw_circle(x: f32, y: f32, radius: f32, c: Color)
+fn draw_line(x1: f32, y1: f32, x2: f32, y2: f32, c: Color)
+```
+
+Single-window model, deliberately (like raylib): `Window.open` sets one module-level "current window" state; every other function operates on it implicitly, with no handle threaded through every call. Input is sampled once per frame inside `end_drawing` (see `poll_events` in `compiler/std/graphics.przp`) — key/mouse state read anywhere in a frame reflects exactly what was true when that frame's events were drained, not a live read racing the event queue. A `KeyPress`/`KeyRelease` event's raw X11 `KeySym` is mapped to a `Key` by `keysym_to_key`, tested directly against hardcoded `KeySym` constants from `X11/keysymdef.h` (`tests/gl/graphics_layer2`) rather than through a real key event, since the actual `KeySym` a keycode produces depends on the test machine's keyboard layout.
+
+A full loop, in the shape `gdev`'s own loop (see its section below) will look identical to once it exists:
+
+```
+import(gfx = "std/graphics")
+
+fn main() -> i32 {
+    win: gfx.Window = gfx.Window.open("demo", 800, 450)
+    pos: (f32, f32) = (400.0, 225.0)
+
+    while !win.should_close() {
+        if gfx.is_key_down(gfx.Key.Right) { pos.0 += 5.0 }
+        gfx.begin_drawing()
+        gfx.clear_background(gfx.RAYWHITE)
+        gfx.draw_circle(pos.0, pos.1, 20.0, gfx.RED)
+        gfx.end_drawing()
+    }
+    win.close()
+    ret 0
+}
+```
+
+Still a sketch — no image codec (prerequisite #4) or text layout (prerequisite #5) exists yet:
+
+```
 struct Texture { id: u32, w: i32, h: i32 }
 impl Texture {
     fn load(path: str) -> !Texture {
@@ -200,11 +255,6 @@ impl Texture {
     fn unload(self: Texture) { gfx_delete_texture(self.id) }
 }
 
-fn begin_drawing()
-fn end_drawing()               # flushes the frame's batched draws to the backend
-fn clear_background(c: Color)
-fn draw_rectangle(x: f32, y: f32, w: f32, h: f32, c: Color)
-fn draw_circle(x: f32, y: f32, r: f32, c: Color)
 fn draw_texture(t: Texture, x: f32, y: f32)
 fn draw_text(s: str, x: f32, y: f32, size: i32, c: Color)
 ```
@@ -295,7 +345,7 @@ fn main() -> i32 {
 
 ## Resolved prerequisites
 
-Both of the compiler defects this chapter originally surfaced have since been fixed and regression-tested — they're recorded here because they were found while drafting this design, not because they're still blocking it:
+The compiler defects this chapter has surfaced have all since been fixed and regression-tested — they're recorded here because they were found while building this design, not because they're still blocking it:
 
 - **`!StructName` failable returns.** `fn make() -> !Point { ret @ok(Point{...}) }` now works for any struct, tagged union, or array — see `tests/run/failable_struct.przp`.
 - **Struct-by-value FFI ABI.** An `extern fn` reached via `import()` that takes or returns a plain struct by value (e.g. `Vector2 { f32, f32 }`) now follows the x86-64 System V ABI, verified by linking against independently-compiled C code — see [Functions § Struct-by-Value Parameters and Returns](./functions.md#struct-by-value-parameters-and-returns) and `tests/ffi/struct_abi`. The one scoped limitation: this only works when the `extern fn` is declared in a module reached through `import()` — a struct-by-value `extern fn` declared directly in a file with no import fails to compile with a clear diagnostic rather than silently miscompiling.
@@ -303,6 +353,7 @@ Both of the compiler defects this chapter originally surfaced have since been fi
 - **Global constant initializers ignored struct/array literals and function references.** Found while wiring `std/graphics/gl`'s `GL_BACKEND` constant: a global declared with a struct-literal initializer (`Backend{...}`) compiled silently but always came back zero-initialized — codegen's constant emitter didn't recognize the expression kind and fell back to `zeroinitializer` with no diagnostic. Fixed: global initializers now support struct/array literals (recursively) and bare function references as compile-time constants, and anything genuinely non-constant is a compile error instead of silent zeroing — see [Global Variables § Immutable Globals](./globals.md#immutable-globals-constants) and `tests/run/global_const_struct`.
 - **`p.* = <struct or array literal>` stored the wrong value.** Also found while wiring `GL_BACKEND`'s `init`: assigning a struct or array literal through a pointer dereference stored the literal's alloca address itself rather than its bytes, corrupting the target in a way that happened to segfault reliably rather than silently. Fixed — see [Pointers & Memory § Allocation](./pointers.md#allocation) and `tests/run/derefassign_struct_array`.
 - **A module importing another module's types in a global initializer broke under re-import.** `std/graphics/gl` importing `std/graphics/backend` and using `backend.Backend` in its own global (`GL_BACKEND: backend.Backend : backend.Backend{...}`) compiled fine on its own, but failed once something else imported `gl` itself — the re-mangling pass that rewrites a module's own names when it's imported under a new alias rewrote a global's declared type but not its initializer expression, so the two ended up with mismatched (single- vs. double-mangled) type names. Fixed in the import-mangling pass — this is what makes `std/graphics/gl` importing `std/graphics/backend` (the first time one `std/graphics` module has imported a sibling module) actually work.
+- **A tuple literal referencing an imported symbol never got its reference re-mangled.** Found while wiring `std/graphics`'s `mouse_position() -> (f32, f32) { ret (STATE.mouse_x, STATE.mouse_y) }`: the import-mangling pass that rewrites a module's own bare identifiers when it's spliced under an alias (so `STATE` becomes `gfx__STATE` wherever the module refers to itself) walks every expression kind recursively — except tuple literals had no case at all, so any identifier reference inside one was silently skipped, leaving a now-nonexistent bare name and an "undefined identifier" error. Fixed by giving `EXPR_TUPLE` the same handling `EXPR_ARRAY_LIT` already had (it reuses the same underlying field) in both of `main.c`'s identifier-rewrite passes.
 
 This means the FFI mechanics and linking layer 1 depends on (struct-by-value calls, failable returns for loaders, linking against system libraries) are no longer blocked on compiler/toolchain work — the remaining prerequisites below are about what actually has to be written (a renderer, a windowing backend), not missing tooling.
 
@@ -312,7 +363,7 @@ This means the FFI mechanics and linking layer 1 depends on (struct-by-value cal
 |---|---|---|
 | 1 | **Backend contract design.** The fixed interface `std/graphics` calls through needs to be designed and settled *before* the GL backend is written against it — this is what makes future Vulkan/Metal/D3D12 backends additive instead of a rewrite. **Done, at today's scope**: `std/graphics/backend`'s `Backend` struct fixes `init`/`clear`/`present`/`shutdown`; `submit`/`upload_texture`/`bind_shader` are deliberately not fields yet (see `std/graphics/backend` above) until prerequisite #2 makes a real implementation possible. |
 | 2 | **GL function loading.** Nothing beyond OpenGL 1.1 is available as a link-time symbol — every modern GL entry point (shaders, buffers, textures beyond the basics) has to be resolved at runtime via `glXGetProcAddress` and called through a function pointer. This needs a small runtime loader written once, not per-project. **Not started** — `std/graphics/gl` so far only uses real link-time GL 1.1 symbols (`glClear`, `glClearColor`, `glGetError`, `glReadPixels`), which don't need this loader. |
-| 3 | **Windowing backend.** X11 first (works everywhere on Linux, including under Wayland via XWayland); a native Wayland backend, then Win32/Cocoa, come later behind the same `std/graphics/window` surface so `std/graphics`, `gdev`, and `guix` never have to change per platform. **Partially done**: open/title/close (including the `WM_DELETE_WINDOW` handshake) is implemented and tested. Still needed: resize reporting, keyboard/mouse input events. |
+| 3 | **Windowing backend.** X11 first (works everywhere on Linux, including under Wayland via XWayland); a native Wayland backend, then Win32/Cocoa, come later behind the same `std/graphics/window` surface so `std/graphics`, `gdev`, and `guix` never have to change per platform. **Done, for X11**: open/title/close (including the `WM_DELETE_WINDOW` handshake), resize reporting, and keyboard/mouse input events are all implemented and tested. Still open: a second (Wayland/Win32/Cocoa) backend, which is intentionally not started until a real cross-platform need shows up. |
 | 4 | **Image and audio codecs.** No bundled renderer means no bundled codecs either — PNG/JPEG decoding (for `guix` icons and `gdev` textures alike) and audio file loading (for `gdev`) need their own (likely also hand-written or minimally-bound) implementations, deferred until the 2D primitives above them are solid. |
 | 5 | **Text layout.** `guix` needs real text shaping/layout (cursor positioning, line wrapping, at minimum) to be a credible native-app toolkit; `gdev` only needs simple bitmap-font text draw calls. This is a `guix`-specific investment, not a `std/graphics` one. |
 | 6 | **Variadic/macro helpers.** Small conveniences like a `printf`-style text-formatting helper for on-screen debug text are built on `@fmt` rather than needing any new compiler feature — a non-issue, listed for completeness. |
@@ -321,10 +372,10 @@ This means the FFI mechanics and linking layer 1 depends on (struct-by-value cal
 ## Suggested build order
 
 1. Design the backend contract (prerequisite #1) before writing any GL code — settle the smallest set of operations `std/graphics` needs so the GL backend is written *against* a fixed interface, not the interface being reverse-engineered out of GL calls after the fact. **Done, at today's scope**: see `std/graphics/backend` above.
-2. Write the windowing backend (`std/graphics/window`, X11) for the smallest usable slice: open a window, pump events, report close/resize. **Open + title + close is done**; resize and input events are still open.
-3. Write `std/graphics/gl` as the first implementation of the backend contract, and get a single triangle or cleared background on screen — this is the point where "a window exists" becomes "a frame can be drawn." **Partially done**: `GL_BACKEND`'s `init`/`clear`/`present`/`shutdown` conform to the contract and get a cleared background on screen (verified via pixel readback, see `tests/gl/backend_contract`). Rasterizing an actual triangle, and everything past GL 1.1, still needs the loader (prerequisite #2).
-4. Write layer 2 (`std/graphics`) over that same small surface: 2D shapes, keyboard/mouse input, then texture loading once an image codec exists. Resist building out the full raylib-equivalent surface up front — this is also where the "simple by default" goal gets tested for real: a first-time caller should get a circle on screen in a handful of raylib-shaped lines, with 3D, shaders, and custom batching all staying opt-in layers underneath, not something the 2D path has to route around.
-5. Write a regression test per wrapped function group (window, shapes, input, textures), following the existing `tests/run/std_*.przp` convention, to the extent a windowing/GPU-dependent test can run headlessly in CI.
+2. Write the windowing backend (`std/graphics/window`, X11) for the smallest usable slice: open a window, pump events, report close/resize. **Done**: open/title/close, resize, and keyboard/mouse input events are all implemented and tested.
+3. Write `std/graphics/gl` as the first implementation of the backend contract, and get a single triangle or cleared background on screen — this is the point where "a window exists" becomes "a frame can be drawn." **Done, for 2D**: `GL_BACKEND`'s `init`/`clear`/`present`/`shutdown` conform to the contract, and `set_ortho_2d`/`draw_rect`/`draw_circle`/`draw_line` get real filled shapes on screen via GL 1.1 immediate mode (verified via pixel readback, see `tests/gl/graphics_layer2`). Rasterizing an arbitrary mesh via vertex buffers, and anything past GL 1.1 (shaders, VBOs), still needs the loader (prerequisite #2).
+4. Write layer 2 (`std/graphics`) over that same small surface: 2D shapes, keyboard/mouse input, then texture loading once an image codec exists. Resist building out the full raylib-equivalent surface up front — this is also where the "simple by default" goal gets tested for real: a first-time caller should get a circle on screen in a handful of raylib-shaped lines, with 3D, shaders, and custom batching all staying opt-in layers underneath, not something the 2D path has to route around. **Done for 2D shapes and input**: `Window` lifecycle, `is_key_down`/`is_mouse_button_down`/`mouse_position`, and `draw_rectangle`/`draw_circle`/`draw_line` are all real (see the layer 2 section above). Texture loading is still open, blocked on prerequisite #4 (no image codec yet).
+5. Write a regression test per wrapped function group (window, shapes, input, textures), following the existing `tests/run/std_*.przp` convention, to the extent a windowing/GPU-dependent test can run headlessly in CI. **Done for window/shapes/input**: `tests/x11/window_close`, `tests/x11/input_and_resize`, `tests/gl/backend_contract`, `tests/gl/clear_and_read_pixel`, `tests/gl/graphics_layer2`. Textures still need their test once loading exists.
 6. Start `gdev` once `std/graphics`'s 2D primitives, input, and texture loading are solid, and finish its 2D surface (sprites, 2D camera/scrolling, basic audio) before touching 3D or starting `guix`. `gdev` is the priority once layer 1 is done — `guix` is deliberately sequenced after, not developed in lockstep with it, so effort doesn't split across both toolkits while neither is finished.
 7. `gdev`: only once the 2D surface above is solid, extend to 3D (`Camera3D`-equivalent, cube/grid primitives).
 8. `guix`: start once `gdev`'s 2D surface is solid (does not need to wait for `gdev`'s 3D work). Extend to DPI scaling, text editing/cursor handling, focus/tab order, and clipboard. Prioritize mouse-interaction latency here specifically, since that's the axis this design most wants to win on: input state should be sampled once per frame with nothing between the OS event and code reading it.

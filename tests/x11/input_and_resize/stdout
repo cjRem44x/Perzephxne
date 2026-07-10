@@ -1,0 +1,6 @@
+KeyPress keycode=42
+KeyRelease keycode=43
+ButtonPress button=1 x=100 y=150
+ButtonRelease button=3 x=10 y=20
+MotionNotify x=200 y=250
+ConfigureNotify width=640 height=480

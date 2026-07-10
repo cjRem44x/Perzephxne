@@ -1,0 +1,220 @@
+# std/graphics — layer 2, the shared foundation (see book/graphics.md):
+# window lifecycle, keyboard/mouse input, and 2D drawing, built on the
+# layer-1 pieces (std/graphics/window for X11, std/graphics/gl for OpenGL,
+# std/graphics/backend for the fixed backend contract). This is the layer
+# gdev and guix both import once they exist, so window/input/2D-primitive
+# code lives exactly once rather than duplicated in each.
+#
+# Single-window model, deliberately: like raylib, there is one "current"
+# window. Window.open sets it; every other function here (is_key_down,
+# draw_rectangle, ...) operates on it implicitly through the module-level
+# STATE global, with no window handle threaded through every call. This
+# matches the design sketch in book/graphics.md and keeps the common case
+# (one window, the overwhelming majority of games and simple GUI apps)
+# free of ceremony. A real multi-window story isn't a goal yet.
+#
+# draw_rectangle/draw_circle/draw_line call directly through
+# std/graphics/gl's immediate-mode helpers rather than through the
+# std/graphics/backend.Backend contract — Backend has no submit-geometry
+# field yet (see std/graphics/backend's scope note), and std/graphics only
+# has one backend today, so there is nothing to be backend-agnostic about
+# for drawing specifically yet. Backend.init/clear/present/shutdown are
+# used normally for lifecycle. This is a scoped, temporary coupling that
+# goes away once Backend grows a real submit entry point.
+
+import(win = "std/graphics/window")
+import(gl  = "std/graphics/gl")
+
+struct Color { r: u8, g: u8, b: u8, a: u8 }
+
+# A handful of named colors (raylib's palette values), since typing out
+# four byte literals every draw call gets old fast. Not exhaustive — add
+# more as real use turns them up.
+RAYWHITE: Color : Color{.r=245, .g=245, .b=245, .a=255}
+BLACK:    Color : Color{.r=0,   .g=0,   .b=0,   .a=255}
+WHITE:    Color : Color{.r=255, .g=255, .b=255, .a=255}
+RED:      Color : Color{.r=230, .g=41,  .b=55,  .a=255}
+GREEN:    Color : Color{.r=0,   .g=228, .b=48,  .a=255}
+BLUE:     Color : Color{.r=0,   .g=121, .b=241, .a=255}
+YELLOW:   Color : Color{.r=253, .g=249, .b=0,   .a=255}
+
+# Key indices double as the index into STATE.keys_down — see
+# keysym_to_key below, which is the only place these numbers matter.
+enum Key => i32 {
+    Space = 0, Enter = 1, Escape = 2,
+    Up = 3, Down = 4, Left = 5, Right = 6,
+    A = 7,  B = 8,  C = 9,  D = 10, E = 11, F = 12, G = 13,
+    H = 14, I = 15, J = 16, K = 17, L = 18, M = 19, N = 20,
+    O = 21, P = 22, Q = 23, R = 24, S = 25, T = 26, U = 27,
+    V = 28, W = 29, X = 30, Y = 31, Z = 32,
+}
+
+enum MouseButton => i32 {
+    Left = 0, Right = 1, Middle = 2,
+}
+
+struct Window { w: i32, h: i32 }
+
+struct GfxState {
+    display:     *u8,
+    window:      u64,
+    backend_ctx: *u8,
+    wm_delete:   u64,
+    should_close: bool,
+    width:  i32,
+    height: i32,
+    keys_down:  [40]bool,
+    mouse_x: f32,
+    mouse_y: f32,
+    mouse_down: [3]bool,
+}
+
+# Zero-initialized: null display, 0 window/wm_delete, false should_close,
+# 0 width/height, all-false key/mouse-button state, 0.0 mouse position —
+# every field's zero value is exactly the "nothing open yet" state. A
+# struct literal needs at least one `.field=` to parse as one at all
+# (an empty `{}` doesn't), so `display` is named explicitly and every
+# other field defaults to zero.
+STATE: GfxState = GfxState{.display=null}
+
+# keysym_to_key: map an X11 KeySym (see std/graphics/window's
+# XKeycodeToKeysym) to a Key index, or -1 if it's a key std/graphics
+# doesn't track. Letter keysyms are ASCII-valued in X11 (XK_a == 'a',
+# XK_A == 'A') and covered case-insensitively since Perzephxne's Key enum
+# doesn't distinguish shifted letters.
+fn keysym_to_key(ks: u64) -> i32 {
+    if ks == 0x0020 { ret @i32(Key.Space) }
+    if ks == 0xff0d { ret @i32(Key.Enter) }
+    if ks == 0xff1b { ret @i32(Key.Escape) }
+    if ks == 0xff52 { ret @i32(Key.Up) }
+    if ks == 0xff54 { ret @i32(Key.Down) }
+    if ks == 0xff51 { ret @i32(Key.Left) }
+    if ks == 0xff53 { ret @i32(Key.Right) }
+    if ks >= 0x0061 && ks <= 0x007a { ret @i32(Key.A) + @i32(ks - 0x0061) }
+    if ks >= 0x0041 && ks <= 0x005a { ret @i32(Key.A) + @i32(ks - 0x0041) }
+    ret -1
+}
+
+# x11_button_to_index: Xlib numbers a standard 3-button mouse 1=left,
+# 2=middle, 3=right; MouseButton orders Left/Right/Middle to match the
+# far more common Left/Right-first convention other APIs use. -1 for
+# anything else (a 4th/5th button, a scroll-wheel "button", ...).
+fn x11_button_to_index(btn: u32) -> i32 {
+    if btn == 1 { ret @i32(MouseButton.Left) }
+    if btn == 2 { ret @i32(MouseButton.Middle) }
+    if btn == 3 { ret @i32(MouseButton.Right) }
+    ret -1
+}
+
+# poll_events: drain every pending X event, updating STATE (should_close,
+# key/mouse state, window size) for the callers below to read. Called once
+# per frame from end_drawing, so input state is sampled exactly once per
+# frame — no event can be read twice or missed between frames.
+fn poll_events() {
+    buf: [192]u8 = undef
+    while win.XPending(STATE.display) > 0 {
+        win.XNextEvent(STATE.display, &buf[0])
+        ty: i32 = win.event_type(&buf[0])
+
+        if ty == win.EVENT_CLIENT_MESSAGE {
+            if win.event_client_data_l0(&buf[0]) == @bitcast(i64, STATE.wm_delete) {
+                STATE.should_close = true
+            }
+        } elif ty == win.EVENT_KEY_PRESS {
+            k: i32 = keysym_to_key(win.XKeycodeToKeysym(STATE.display, @u8(win.event_keycode(&buf[0])), 0))
+            if k >= 0 { STATE.keys_down[k] = true }
+        } elif ty == win.EVENT_KEY_RELEASE {
+            k: i32 = keysym_to_key(win.XKeycodeToKeysym(STATE.display, @u8(win.event_keycode(&buf[0])), 0))
+            if k >= 0 { STATE.keys_down[k] = false }
+        } elif ty == win.EVENT_BUTTON_PRESS {
+            b: i32 = x11_button_to_index(win.event_button(&buf[0]))
+            if b >= 0 { STATE.mouse_down[b] = true }
+        } elif ty == win.EVENT_BUTTON_RELEASE {
+            b: i32 = x11_button_to_index(win.event_button(&buf[0]))
+            if b >= 0 { STATE.mouse_down[b] = false }
+        } elif ty == win.EVENT_MOTION_NOTIFY {
+            STATE.mouse_x = @f32(win.event_x(&buf[0]))
+            STATE.mouse_y = @f32(win.event_y(&buf[0]))
+        } elif ty == win.EVENT_CONFIGURE_NOTIFY {
+            neww: i32 = win.event_width(&buf[0])
+            newh: i32 = win.event_height(&buf[0])
+            if neww != STATE.width || newh != STATE.height {
+                STATE.width  = neww
+                STATE.height = newh
+                gl.set_ortho_2d(neww, newh)
+            }
+        }
+    }
+}
+
+impl Window {
+    fn open(title: str, w: i32, h: i32) -> Window {
+        display: *u8 = win.XOpenDisplay(null)
+        screen: i32 = win.XDefaultScreen(display)
+        root: u64 = win.XRootWindow(display, screen)
+        window: u64 = win.XCreateSimpleWindow(display, root, 0, 0, @u32(w), @u32(h), 1u32, 0u64, 0u64)
+        win.XStoreName(display, window, title.data)
+        win.XSelectInput(display, window, win.INPUT_MASK)
+
+        wm_protocols: u64 = win.XInternAtom(display, "WM_PROTOCOLS".data, 0)
+        wm_delete: u64 = win.XInternAtom(display, "WM_DELETE_WINDOW".data, 0)
+        protocols: [1]u64 = [wm_delete]
+        win.XSetWMProtocols(display, window, &protocols[0], 1)
+
+        win.XMapWindow(display, window)
+        win.XFlush(display)
+
+        ctx: *u8 = gl.GL_BACKEND.init(display, window)
+        gl.set_ortho_2d(w, h)
+
+        STATE.display      = display
+        STATE.window       = window
+        STATE.backend_ctx  = ctx
+        STATE.wm_delete    = wm_delete
+        STATE.should_close = false
+        STATE.width        = w
+        STATE.height       = h
+
+        ret Window{.w=w, .h=h}
+    }
+
+    fn should_close(self) -> bool { ret STATE.should_close }
+
+    fn close(self) {
+        gl.GL_BACKEND.shutdown(STATE.backend_ctx)
+        win.XDestroyWindow(STATE.display, STATE.window)
+        win.XCloseDisplay(STATE.display)
+    }
+}
+
+fn is_key_down(k: Key) -> bool { ret STATE.keys_down[@i32(k)] }
+fn is_mouse_button_down(b: MouseButton) -> bool { ret STATE.mouse_down[@i32(b)] }
+fn mouse_position() -> (f32, f32) { ret (STATE.mouse_x, STATE.mouse_y) }
+
+# begin_drawing: a no-op today (GL's immediate mode has nothing to batch),
+# kept for raylib-shaped symmetry with end_drawing and so a future batching
+# backend has a real place to start a frame from without a signature change.
+fn begin_drawing() {}
+
+# end_drawing: presents the frame drawn since begin_drawing, then polls
+# input for the next frame — see poll_events for why polling happens here.
+fn end_drawing() {
+    gl.GL_BACKEND.present(STATE.backend_ctx)
+    poll_events()
+}
+
+fn clear_background(c: Color) {
+    gl.GL_BACKEND.clear(STATE.backend_ctx, @f32(c.r) / 255.0, @f32(c.g) / 255.0, @f32(c.b) / 255.0, @f32(c.a) / 255.0)
+}
+
+fn draw_rectangle(x: f32, y: f32, w: f32, h: f32, c: Color) {
+    gl.draw_rect(x, y, w, h, @f32(c.r) / 255.0, @f32(c.g) / 255.0, @f32(c.b) / 255.0, @f32(c.a) / 255.0)
+}
+
+fn draw_circle(x: f32, y: f32, radius: f32, c: Color) {
+    gl.draw_circle(x, y, radius, @f32(c.r) / 255.0, @f32(c.g) / 255.0, @f32(c.b) / 255.0, @f32(c.a) / 255.0)
+}
+
+fn draw_line(x1: f32, y1: f32, x2: f32, y2: f32, c: Color) {
+    gl.draw_line(x1, y1, x2, y2, @f32(c.r) / 255.0, @f32(c.g) / 255.0, @f32(c.b) / 255.0, @f32(c.a) / 255.0)
+}

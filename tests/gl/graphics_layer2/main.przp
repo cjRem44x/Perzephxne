@@ -1,0 +1,47 @@
+# Exercises std/graphics (layer 2): keysym_to_key's key-mapping table
+# (checked directly against hardcoded KeySym constants — not through a
+# real key event, since XKeycodeToKeysym's result depends on the running
+# system's keyboard layout and isn't something a portable test can pin
+# down), then a real window + clear_background + draw_rectangle +
+# draw_circle, read back via glReadPixels the same way tests/gl's other
+# cases verify GL output.
+
+import(gfx = "std/graphics")
+import(gl  = "std/graphics/gl")
+
+fn check_pixel(x: i32, y: i32, want_r: u8, want_g: u8, want_b: u8, label: str) {
+    pixel: [4]u8 = undef
+    gl.glReadPixels(x, y, 1, 1, gl.GL_RGBA, gl.GL_UNSIGNED_BYTE, &pixel[0])
+    @pf("{label}: {pixel[0]} {pixel[1]} {pixel[2]}\n")
+}
+
+fn main() -> i32 {
+    # keysym_to_key: a handful of representative keys, hardcoded KeySym
+    # values from X11/keysymdef.h (space=0x0020, Escape=0xff1b, Right
+    # arrow=0xff53, 'a'=0x0061, 'Z'=0x005a — both cases of a letter map to
+    # the same Key index), plus one keysym that isn't tracked at all.
+    @pf("space={gfx.keysym_to_key(0x0020)}\n")
+    @pf("escape={gfx.keysym_to_key(0xff1b)}\n")
+    @pf("right={gfx.keysym_to_key(0xff53)}\n")
+    @pf("a={gfx.keysym_to_key(0x0061)} A={gfx.keysym_to_key(0x0041)}\n")
+    @pf("z={gfx.keysym_to_key(0x007a)} Z={gfx.keysym_to_key(0x005a)}\n")
+    @pf("untracked={gfx.keysym_to_key(0x1234)}\n")
+
+    win: gfx.Window = gfx.Window.open("layer2 test", 320, 240)
+
+    gfx.begin_drawing()
+    gfx.clear_background(gfx.RAYWHITE)
+    gfx.draw_rectangle(50.0, 50.0, 60.0, 40.0, gfx.RED)
+    gfx.draw_circle(200.0, 150.0, 30.0, gfx.BLUE)
+
+    # Sample before end_drawing's present so the pixels just rasterized
+    # are still what glReadPixels sees (present + poll_events isn't
+    # needed to read back the current draw buffer here).
+    check_pixel(70, 240 - 1 - 70, 230u8, 41u8, 55u8, "rectangle")
+    check_pixel(200, 240 - 1 - 150, 0u8, 121u8, 241u8, "circle")
+    check_pixel(10, 240 - 1 - 10, 245u8, 245u8, 245u8, "background")
+
+    win.close()
+    @pf("done\n")
+    ret 0
+}

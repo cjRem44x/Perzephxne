@@ -337,6 +337,7 @@ static void rw_ident_expr(Expr *e, const char **orig, size_t n_orig,
                 rw_ident_expr(e->struct_lit.fields.data[i].val, orig, n_orig, alias, a);
             break;
         case EXPR_ARRAY_LIT:
+        case EXPR_TUPLE: /* EXPR_TUPLE reuses the array_lit field (parser.c) */
             for (size_t i = 0; i < e->array_lit.len; i++)
                 rw_ident_expr(e->array_lit.data[i], orig, n_orig, alias, a);
             break;
@@ -590,6 +591,7 @@ static void rw_expr(Expr *e, const char **al, size_t n, Arena *a) {
                 rw_expr(e->struct_lit.fields.data[i].val, al, n, a);
             break;
         case EXPR_ARRAY_LIT:
+        case EXPR_TUPLE: /* EXPR_TUPLE reuses the array_lit field (parser.c) */
             for (size_t i = 0; i < e->array_lit.len; i++)
                 rw_expr(e->array_lit.data[i], al, n, a);
             break;

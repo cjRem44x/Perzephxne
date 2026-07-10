@@ -6,9 +6,22 @@
 # shader-based rendering needs GL 2.0+ entry points (glCreateShader and
 # friends aren't link-time symbols) — see book/graphics.md's open
 # prerequisites for the loader that unblocks that.
+#
+# The draw_rect/draw_circle/draw_line helpers below use GL 1.1's legacy
+# immediate-mode calls (glBegin/glVertex2f/glColor4f) rather than vertex
+# buffers — real, exported, link-time symbols on every desktop GL
+# implementation (including Mesa's compat profile), so they need none of
+# the runtime function loading GL 2.0+ would. std/graphics calls these
+# directly for now (bypassing std/graphics/backend.Backend entirely for
+# drawing) since Backend has no submit-geometry field yet — see
+# std/graphics/backend's scope note. That's a deliberate, temporary
+# coupling: std/graphics only has one backend today, so there's nothing
+# to be backend-agnostic about yet. It goes away the day Backend grows a
+# real submit entry point and a second backend exists to justify one.
 
 import(win = "window")
 import(be  = "backend")
+import(m   = "std/math")
 
 extern fn glXChooseVisual(display: *u8, screen: i32, attribs: *i32) -> *u8
 extern fn glXCreateContext(display: *u8, vis: *u8, share: *u8, direct: i32) -> *u8
@@ -22,14 +35,36 @@ extern fn glViewport(x: i32, y: i32, w: i32, h: i32)
 extern fn glGetError() -> u32
 extern fn glReadPixels(x: i32, y: i32, w: i32, h: i32, format: u32, ty: u32, data: *u8)
 
+extern fn glMatrixMode(mode: u32)
+extern fn glLoadIdentity()
+extern fn glOrtho(left: f64, right: f64, bottom: f64, top: f64, near: f64, far: f64)
+extern fn glBegin(mode: u32)
+extern fn glEnd()
+extern fn glVertex2f(x: f32, y: f32)
+extern fn glColor4f(r: f32, g: f32, b: f32, a: f32)
+
 GL_COLOR_BUFFER_BIT: u32 = 0x00004000
 GL_RGBA: u32 = 0x1908
 GL_UNSIGNED_BYTE: u32 = 0x1401
 GL_NO_ERROR: u32 = 0
 
+GL_LINES:        u32 = 0x0001
+GL_TRIANGLE_FAN: u32 = 0x0006
+GL_QUADS:        u32 = 0x0007
+GL_PROJECTION:   u32 = 0x1701
+GL_MODELVIEW:    u32 = 0x1700
+
 GLX_RGBA: i32 = 4
 GLX_DEPTH_SIZE: i32 = 12
 GLX_DOUBLEBUFFER: i32 = 5
+
+TAU: f64 = 6.283185307179586
+
+# Circle approximation quality: fixed segment count rather than an argument
+# std/graphics's draw_circle takes, since a raylib-shaped call
+# (draw_circle(x, y, r, color)) has no room for one and 32 segments is
+# smooth enough at the sizes a 2D UI/game draws circles at.
+CIRCLE_SEGMENTS: i32 = 32
 
 # Choose an RGBA, double-buffered, 24-bit-depth-buffer visual. Returns null
 # (a GLXChooseVisual failure) if the display can't offer one.
@@ -65,6 +100,59 @@ fn swap(display: *u8, window: u64) {
 
 fn destroy_context(display: *u8, ctx: *u8) {
     glXDestroyContext(display, ctx)
+}
+
+# ── 2D drawing (legacy GL 1.1 immediate mode) ───────────────────────────────
+
+# set_ortho_2d: point the projection at a top-left-origin, Y-down pixel
+# space sized w x h — (0, 0) is the top-left corner and (w, h) the
+# bottom-right, matching screen/raylib coordinate conventions rather than
+# GL's default bottom-left-origin, Y-up NDC cube. Call once per resize
+# (including the first frame), before any draw_* call.
+fn set_ortho_2d(w: i32, h: i32) {
+    glMatrixMode(GL_PROJECTION)
+    glLoadIdentity()
+    glOrtho(0.0, @f64(w), @f64(h), 0.0, -1.0, 1.0)
+    glMatrixMode(GL_MODELVIEW)
+    glLoadIdentity()
+}
+
+# draw_rect: an axis-aligned filled rectangle with its top-left corner at
+# (x, y), in the pixel space set_ortho_2d establishes.
+fn draw_rect(x: f32, y: f32, w: f32, h: f32, r: f32, g: f32, b: f32, a: f32) {
+    glColor4f(r, g, b, a)
+    glBegin(GL_QUADS)
+    glVertex2f(x, y)
+    glVertex2f(x + w, y)
+    glVertex2f(x + w, y + h)
+    glVertex2f(x, y + h)
+    glEnd()
+}
+
+# draw_circle: a filled circle centered at (cx, cy), approximated as a
+# CIRCLE_SEGMENTS-sided regular polygon (a triangle fan around the center).
+fn draw_circle(cx: f32, cy: f32, radius: f32, r: f32, g: f32, b: f32, a: f32) {
+    glColor4f(r, g, b, a)
+    glBegin(GL_TRIANGLE_FAN)
+    glVertex2f(cx, cy)
+    i: i32 = 0
+    while i <= CIRCLE_SEGMENTS {
+        theta: f64 = TAU * (@f64(i) / @f64(CIRCLE_SEGMENTS))
+        vx: f32 = cx + radius * @f32(m.cos(theta))
+        vy: f32 = cy + radius * @f32(m.sin(theta))
+        glVertex2f(vx, vy)
+        i += 1
+    }
+    glEnd()
+}
+
+# draw_line: a single-pixel-wide line segment from (x1, y1) to (x2, y2).
+fn draw_line(x1: f32, y1: f32, x2: f32, y2: f32, r: f32, g: f32, b: f32, a: f32) {
+    glColor4f(r, g, b, a)
+    glBegin(GL_LINES)
+    glVertex2f(x1, y1)
+    glVertex2f(x2, y2)
+    glEnd()
 }
 
 # ── Backend contract conformance ────────────────────────────────────────────
