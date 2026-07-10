@@ -1,0 +1,27 @@
+# Qualified (mod-prefixed) constants used as when-arm patterns. Depth-2 dot
+# chains (Mod.Enum.Variant) are supported in pattern position; '=>' itself
+# is reserved as the arm's own separator there, so use '.' inside patterns.
+
+mod Dir {
+    enum Direction {
+        North,
+        South,
+        East,
+        West,
+    }
+}
+
+fn code(d: Dir.Direction) -> i32 {
+    ret when d {
+        Dir.Direction.North => 1,
+        Dir.Direction.South => 2,
+        Dir.Direction.East => 3,
+        Dir.Direction.West => 4,
+    }
+}
+
+fn main() -> i32 {
+    d: Dir.Direction = Dir=>Direction=>East
+    @pf("{code(d)}\n")
+    ret 0
+}

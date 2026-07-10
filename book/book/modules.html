@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-9feaec89.js";
+            window.path_to_searchindex_js = "searchindex-6de36b6f.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-4e58bc13.js"></script>
@@ -202,6 +202,60 @@ fn main() {
     io.println(@str(r))
 }
 </code></pre>
+<h2 id="inline-namespaces-mod"><a class="header" href="#inline-namespaces-mod">Inline Namespaces (<code>mod</code>)</a></h2>
+<p>For grouping related declarations within a single file, use a <code>mod</code> block:</p>
+<pre><code>mod Shapes {
+    fn double(v: i32) -&gt; i32 { ret v * 2 }
+
+    struct Point {
+        x: i32,
+        y: i32,
+    }
+
+    impl Point {
+        fn new(x: i32, y: i32) -&gt; Point { ret Point{.x=x, .y=y} }
+        fn sum(self) -&gt; i32 { ret self.x + self.y }
+    }
+}
+
+fn main() -&gt; i32 {
+    a := Shapes=&gt;double(21)
+    p := Shapes.Point.new(3, 4)
+    ret a + p.sum()
+}
+</code></pre>
+<p><code>mod</code> is purely a same-file grouping/prefixing convenience — it does not introduce real scoping or privacy. A <code>mod X { fn a() {} }</code> block is handled exactly like importing a file that declares <code>fn a() {}</code> under alias <code>X</code>: internally, the compiler mangles the block’s own items to <code>X__a</code> and splices them into the module’s flat item list, so <code>X=&gt;a()</code> and <code>X.a()</code> resolve identically to an import’s <code>X.a()</code>.</p>
+<p><code>=&gt;</code> is a fully interchangeable spelling of <code>.</code> for qualified access — module paths, import aliases, and qualified generics all accept either operator, mixed freely (<code>Shapes=&gt;Box&lt;i32&gt;.new(...)</code> and <code>Shapes.Box&lt;i32&gt;=&gt;new(...)</code> mean the same thing). <code>.</code> continues to work everywhere it always has; <code>=&gt;</code> is purely additive.</p>
+<p>Generics declared inside a <code>mod</code> block use the same qualified-generic syntax as imports:</p>
+<pre><code>mod Boxes {
+    struct Box&lt;T&gt; { val: T }
+    impl Box&lt;T&gt; {
+        fn new(v: T) -&gt; Box&lt;T&gt; { ret Box&lt;T&gt;{.val=v} }
+        fn get(self) -&gt; T { ret self.val }
+    }
+}
+
+b := Boxes=&gt;Box&lt;i32&gt;.new(7)
+</code></pre>
+<p>A <code>mod</code> block can also live inside an imported file, and chains with the importer’s own alias: given <code>mod Y { ... }</code> inside <code>lib.przp</code>, an importer that does <code>import(lib = "lib")</code> reaches it as <code>lib.Y=&gt;item</code> (or <code>lib.Y.item</code>) for struct/enum/generic access. Plain free functions declared inside a <code>mod</code> that is itself inside an <em>imported</em> file are not reachable through a two-level path (<code>lib.Y=&gt;someFreeFn()</code>) — only mod access local to the current file, or import access to a top-level (non-mod) function, resolves through a single alias level today. Struct/enum/generic-qualified access (<code>lib.Y=&gt;Box&lt;i32&gt;.new(...)</code>, <code>lib.Y.SomeEnum.Variant</code>) is unaffected by this and works at any nesting depth.</p>
+<h3 id="-in-when-patterns"><a class="header" href="#-in-when-patterns"><code>=&gt;</code> in <code>when</code> patterns</a></h3>
+<p>Inside a <code>when</code> arm’s pattern, <code>=&gt;</code> is reserved for the arm’s own separator (<code>pattern =&gt; body</code>) and cannot also be used as a qualifier there — use <code>.</code> for qualified access within a pattern instead. This only affects the pattern; <code>=&gt;</code> works normally as a qualifier in the arm’s body and everywhere else.</p>
+<pre><code>mod Dir {
+    enum Direction { North, South, East, West }
+}
+
+fn code(d: Dir.Direction) -&gt; i32 {
+    ret when d {
+        Dir.Direction.North =&gt; 1,   # '.' in the pattern, not '=&gt;'
+        Dir.Direction.South =&gt; 2,
+        Dir.Direction.East  =&gt; 3,
+        Dir.Direction.West  =&gt; 4,
+    }
+}
+</code></pre>
+<p>Dot chains of any depth (<code>Mod.Enum.Variant</code>, <code>Mod.Sub.Enum.Variant</code>, …) are supported in pattern position, since a pattern is always explicitly terminated by <code>=&gt;</code> regardless of how many <code>.</code>-qualified segments precede it.</p>
+<h3 id="a-lexing-note-on-"><a class="header" href="#a-lexing-note-on-">A lexing note on <code>&gt;=&gt;</code></a></h3>
+<p>A generic’s closing <code>&gt;</code> immediately followed by <code>=&gt;</code> (e.g. <code>Box&lt;i32&gt;=&gt;new(...)</code>) lexes as <code>&gt;=</code> (greater-or-equal) followed by a lone <code>&gt;</code>, not as <code>&gt;</code> followed by <code>=&gt;</code> — the lexer always takes the longest match at each position and has no way to know a generic argument list is closing there. Add a space (<code>Box&lt;i32&gt; =&gt; new(...)</code>) or just use <code>.</code> (<code>Box&lt;i32&gt;.new(...)</code>) to avoid it. This is the same class of issue as <code>&gt;&gt;</code> needing care after nested generics in other C-like languages.</p>
 <h2 id="module-layout"><a class="header" href="#module-layout">Module Layout</a></h2>
 <p>Source files within the same project are visible by default. Layout follows the filesystem:</p>
 <pre><code>MyProject/

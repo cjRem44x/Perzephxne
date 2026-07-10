@@ -1,0 +1,26 @@
+# mod X { ... } declares an inline namespace; its members are reached from
+# outside as X=>item (or the equivalent X.item — both operators resolve the
+# same qualified access).
+
+mod Shapes {
+    fn double(v: i32) -> i32 {
+        ret v * 2
+    }
+
+    struct Point {
+        x: i32,
+        y: i32,
+    }
+
+    impl Point {
+        fn new(x: i32, y: i32) -> Point { ret Point{.x=x, .y=y} }
+        fn sum(self) -> i32 { ret self.x + self.y }
+    }
+}
+
+fn main() -> i32 {
+    a := Shapes=>double(21)
+    p := Shapes.Point.new(3, 4)
+    @pf("{a} {p.sum()}\n")
+    ret 0
+}

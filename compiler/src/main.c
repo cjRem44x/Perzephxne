@@ -473,6 +473,61 @@ static void mangle_items(Module *mod, const char *alias, Arena *arena) {
     }
 }
 
+static void rw_item(Item *item, const char **al, size_t n, Arena *a);
+
+/* Flatten every top-level `mod Name { ...items... }` block in mod->items:
+   mangle the block's own items (and any of its own internal generic uses,
+   since gen_insts recorded while parsing the block live in the same
+   Module-wide list) with alias "Name" — exactly what mangle_items already
+   does for an imported file — then splice the (now Name__-prefixed) items
+   into mod->items in the block's place. After this, "mod X { fn a() {} }"
+   and "import(x = <a file containing fn a() {}>)" leave the same shape:
+   an item named "x__a" in the module's flat item list. Does not recurse
+   into nested mod-in-mod (not needed yet, and this keeps it simple).
+
+   Also rewrites the rest of this module's own code (the code outside the
+   mod block, in this same file) so that qualified accesses like X=>A or
+   X.A — which parse to EXPR_FIELD(EXPR_IDENT("X"), "A") the same as an
+   import alias would — resolve to the flattened item "X__A", using the
+   same rw_item machinery load_imports uses for import aliases. */
+static void expand_mod_items(Module *mod, Arena *arena) {
+    int any_mod = 0;
+    size_t total = 0;
+    for (size_t i = 0; i < mod->items.len; i++) {
+        Item *it = mod->items.data[i];
+        if (it->kind == ITEM_MOD) { any_mod = 1; total += it->mod_.items.len; }
+        else total += 1;
+    }
+    if (!any_mod) return;
+
+    const char *mod_names[64];
+    size_t      n_mod_names = 0;
+
+    Item **out = arena_alloc(arena, total * sizeof(Item *));
+    size_t n = 0;
+    for (size_t i = 0; i < mod->items.len; i++) {
+        Item *it = mod->items.data[i];
+        if (it->kind != ITEM_MOD) { out[n++] = it; continue; }
+
+        if (n_mod_names < 64) mod_names[n_mod_names++] = it->name;
+
+        Module pseudo = {0};
+        pseudo.items     = it->mod_.items;
+        pseudo.gen_insts = mod->gen_insts; /* same underlying array — mangle_items
+                                               mutates matching entries in place */
+        pseudo.arena     = arena;
+        mangle_items(&pseudo, it->name, arena);
+        for (size_t j = 0; j < pseudo.items.len; j++)
+            out[n++] = pseudo.items.data[j];
+    }
+    mod->items.data = out;
+    mod->items.len  = n;
+
+    if (n_mod_names > 0)
+        for (size_t i = 0; i < mod->items.len; i++)
+            rw_item(mod->items.data[i], mod_names, n_mod_names, arena);
+}
+
 /* ── AST rewrite: EXPR_FIELD(EXPR_IDENT("alias"), "x") → EXPR_IDENT("alias__x") ── */
 
 static int is_alias(const char **aliases, size_t n, const char *name) {
@@ -727,6 +782,7 @@ static int load_imports(Module *mod, const char *src_path, const char *src,
             error_init(full, imp_src);
             Module *imp = parse(imp_src, (uint32_t)(n_loading + 1), arena);
             stamp_test_files(imp, full, arena);
+            expand_mod_items(imp, arena);
 
             /* recurse: handle imports inside the imported module */
             const char *new_loading[64];
@@ -852,6 +908,7 @@ static int merge_tests_dir(Module *mod, const char *tests_dir, Arena *arena) {
         error_init(full, tsrc);
         Module *extra = parse(tsrc, 0, arena);
         stamp_test_files(extra, full, arena);
+        expand_mod_items(extra, arena);
 
         const char *extra_loading[1] = { full };
         if (!load_imports(extra, full, tsrc, arena, extra_loading, 1)) {
@@ -885,6 +942,7 @@ static int compile_file(const char *src_path, const char *out_path, int release,
     error_init(src_path, src);
     Module *mod = parse(src, 0, &arena);
     stamp_test_files(mod, src_path, &arena);
+    expand_mod_items(mod, &arena);
 
     /* load and merge imported modules before sema */
     const char *loading[1] = { src_path };
@@ -978,6 +1036,7 @@ static void cmd_sac(int argc, char **argv) {
     error_init(files[0], srcs[0]);
     Module *mod = parse(srcs[0], 0, &arena);
     stamp_test_files(mod, files[0], &arena);
+    expand_mod_items(mod, &arena);
     const char *loading[1] = { files[0] };
     if (!load_imports(mod, files[0], srcs[0], &arena, loading, 1)) {
         arena_free(&arena);
@@ -998,6 +1057,7 @@ static void cmd_sac(int argc, char **argv) {
         error_init(files[fi], srcs[fi]);
         Module *extra = parse(srcs[fi], 0, &arena);
         stamp_test_files(extra, files[fi], &arena);
+        expand_mod_items(extra, &arena);
         const char *extra_loading[1] = { files[fi] };
         if (!load_imports(extra, files[fi], srcs[fi], &arena, extra_loading, 1)) {
             arena_free(&arena);
