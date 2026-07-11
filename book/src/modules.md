@@ -82,7 +82,12 @@ mod Boxes {
 b := Boxes=>Box<i32>.new(7)
 ```
 
-A `mod` block can also live inside an imported file, and chains with the importer's own alias: given `mod Y { ... }` inside `lib.przp`, an importer that does `import(lib = "lib")` reaches it as `lib.Y=>item` (or `lib.Y.item`) for struct/enum/generic access. Plain free functions declared inside a `mod` that is itself inside an *imported* file are not reachable through a two-level path (`lib.Y=>someFreeFn()`) — only mod access local to the current file, or import access to a top-level (non-mod) function, resolves through a single alias level today. Struct/enum/generic-qualified access (`lib.Y=>Box<i32>.new(...)`, `lib.Y.SomeEnum.Variant`) is unaffected by this and works at any nesting depth.
+A `mod` block can also live inside an imported file, and chains with the importer's own alias — but how far that chain resolves depends on *what* is being reached, not just how deep it is. Given `mod Y { ... }` inside `lib.przp`, imported as `import(lib = "lib")`:
+
+- **A generic struct or impl inside the mod** (`lib.Y.Box<i32>.new(...)`, `lib.Y=>Box<i32>=>new(...)`) resolves at any depth — this path is handled entirely at parse time, by directly building the fully-qualified mangled name (`lib__Y__Box__i32`) from the qualified-generic syntax itself, rather than relying on any post-hoc rewriting.
+- **A plain free function, a non-generic struct's static method, or an enum variant** (`lib.Y.someFreeFn()`, `lib.Y.Circle.new(...)`, `lib.Y.Direction.North`) does **not** resolve through the two-level `import`+`mod` path today — only mod access local to the current file (`Y.someFreeFn()` within `lib.przp` itself), or plain import access to a top-level non-mod item (`lib.someFreeFn()`), resolves correctly. The two-level case for these needs a fix to the post-hoc alias-collapsing pass that currently only handles one level safely (extending it naively broke plain enum-variant matching, since it can't yet tell "this is still a namespace prefix" apart from "this is now a type name" without deliberately enumerating mod-qualified namespace prefixes as their own alias entries) — see [Status & Next Work](./status-next.md).
+
+In short: reach for `mod` freely within one file, and freely combine `import` with a mod's *generic* members across files; for everything else inside a mod, either keep the access to one level, or restructure the generic-only case into its own file if you need the deeper reach today.
 
 ### `=>` in `when` patterns
 

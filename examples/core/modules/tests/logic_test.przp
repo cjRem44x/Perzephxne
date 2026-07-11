@@ -1,0 +1,20 @@
+import(t = "../src/logic")
+
+test "circle area" {
+    a: f64 = t.circle_area(2.0)
+    @assert(a > 12.56 && a < 12.57)
+}
+
+test "rectangle area" {
+    @assert(t.rectangle_area(3.0, 4.0) == 12.0)
+}
+
+test "degrees to radians" {
+    r: f64 = t.degrees_to_radians(180.0)
+    @assert(r > 3.14 && r < 3.15)
+}
+
+test "shapes and units share a describe name without colliding" {
+    s: str = t.report()
+    @assert(s.len > 0)
+}

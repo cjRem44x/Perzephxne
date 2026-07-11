@@ -1397,6 +1397,7 @@ static int ident_colon_starts_label(Parser *p) {
     if (p3 == TOK_LT) return 0;
     if (p3 == TOK_COLON) return 0;
     if (p3 == TOK_DOT) return 0;
+    if (p3 == TOK_FATARROW) return 0; /* mod-qualified type: r: Shapes=>Rectangle = ... */
     return 1;
 }
 

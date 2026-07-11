@@ -1,0 +1,21 @@
+# Regression: `name: Mod=>Type = ...` (a mod-qualified type annotation
+# spelled with => instead of .) was misparsed as a label declaration
+# followed by an assignment to the type name itself — the
+# label-vs-var-decl disambiguation heuristic checked for a following '.'
+# (Mod.Type) but never got the matching '=>' case added when => became
+# an alternative spelling for qualified access. Caught while writing
+# examples/core/modules, which uses exactly this shape.
+
+mod Shapes {
+    struct Rectangle { width: f64, height: f64 }
+    impl Rectangle {
+        fn new(w: f64, h: f64) -> Rectangle { ret Rectangle{.width=w, .height=h} }
+        fn area(self) -> f64 { ret self.width * self.height }
+    }
+}
+
+fn main() -> i32 {
+    r: Shapes=>Rectangle = Shapes=>Rectangle=>new(3.0, 4.0)
+    @pf("{r.area()}\n")
+    ret 0
+}
