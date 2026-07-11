@@ -24,6 +24,7 @@
 
 import(win = "std/graphics/window")
 import(gl  = "std/graphics/gl")
+import(img = "std/image")
 
 struct Color { r: u8, g: u8, b: u8, a: u8 }
 
@@ -217,4 +218,31 @@ fn draw_circle(x: f32, y: f32, radius: f32, c: Color) {
 
 fn draw_line(x1: f32, y1: f32, x2: f32, y2: f32, c: Color) {
     gl.draw_line(x1, y1, x2, y2, @f32(c.r) / 255.0, @f32(c.g) / 255.0, @f32(c.b) / 255.0, @f32(c.a) / 255.0)
+}
+
+# Texture: a GPU-resident image, decoded once via std/image (PNG only —
+# see its scope note) and uploaded once via std/graphics/gl.create_texture.
+# `id` is the raw GL texture name; there's no reference counting or
+# automatic reload, matching how raw std/graphics.gl handles work
+# everywhere else in this file — unload() when done with it.
+struct Texture { id: u32, w: i32, h: i32 }
+
+impl Texture {
+    fn load(path: str) -> !Texture {
+        im, err: !img.Image = img.load_png(path)
+        if err != 0 { ret @err(err) }
+        id: u32 = gl.create_texture(im.pixels, im.width, im.height, im.channels)
+        w: i32 = im.width
+        h: i32 = im.height
+        img.free_image(im)
+        ret @ok(Texture{.id=id, .w=w, .h=h})
+    }
+
+    fn unload(self) {
+        gl.delete_texture(self.id)
+    }
+}
+
+fn draw_texture(t: Texture, x: f32, y: f32) {
+    gl.draw_textured_rect(t.id, x, y, @f32(t.w), @f32(t.h))
 }

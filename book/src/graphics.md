@@ -1,6 +1,6 @@
 # Graphics — Design Sketch (Layer 1 Implemented, Layer 2 In Progress)
 
-> **Most of this chapter is still a plan, but layer 1 and a first slice of layer 2 are now real.** This is an architecture sketch — written to guide implementation — for a future media stack in the spirit of [raylib](https://www.raylib.com/): simple enough for a weekend game, capable enough for a native GUI app. **This is not a raylib binding.** The plan is to write Perzephxne's own renderer and windowing layer from scratch, on raw platform APIs, and shape its call-level ergonomics after raylib's — because raylib's API is a genuinely good design, not because the library itself is a dependency worth taking on. Every other chapter in this book documents the compiler as it is; this one documents a plan, with a growing exception: `std/graphics/window` (open/close, resize, keyboard/mouse input), the backend contract, `std/graphics/gl` (context setup, clear/present, and 2D immediate-mode drawing), and a first slice of `std/graphics` itself (window lifecycle, input queries, `Color`, and `draw_rectangle`/`draw_circle`/`draw_line`) are real, shipped, and regression-tested — see their sections below. `gdev` and `guix` remain unbuilt.
+> **Layer 1 and layer 2's 2D surface are now real; `gdev`/`guix` remain a plan.** This is an architecture sketch — written to guide implementation — for a future media stack in the spirit of [raylib](https://www.raylib.com/): simple enough for a weekend game, capable enough for a native GUI app. **This is not a raylib binding.** The plan is to write Perzephxne's own renderer and windowing layer from scratch, on raw platform APIs, and shape its call-level ergonomics after raylib's — because raylib's API is a genuinely good design, not because the library itself is a dependency worth taking on. Every other chapter in this book documents the compiler as it is; this one documents a plan, with a growing exception: `std/graphics/window` (open/close, resize, keyboard/mouse input), the backend contract, `std/graphics/gl` (context setup, clear/present, 2D immediate-mode drawing, and texture upload), `std/image` (PNG decoding), and `std/graphics` itself (window lifecycle, input queries, `Color`, `draw_rectangle`/`draw_circle`/`draw_line`, and `Texture`/`draw_texture`) are real, shipped, and regression-tested — see their sections below. Only `draw_text` (needs text layout) is still sketched in layer 2; `gdev` and `guix` remain unbuilt.
 
 The stack splits into two purpose-specific libraries built on one shared foundation:
 
@@ -192,7 +192,7 @@ These call directly through GL, not through `Backend` — `Backend` has no submi
 
 ### Layer 2 — `std/graphics`, the shared foundation
 
-`std/graphics` turns the backend contract and windowing layer into something that reads like the rest of the standard library and, deliberately, like raylib's call-level ergonomics: `snake_case` names, `enum` constants instead of bare integers, tuples instead of output parameters, and `!T` for anything that can fail. This is the layer both `gdev` and `guix` import — window lifecycle, input, and 2D drawing primitives live here exactly once, not duplicated in each consumer. **A first slice is implemented**: window lifecycle, keyboard/mouse input queries, and the 2D draw primitives below (`Texture`/`draw_texture`/`draw_text` are still sketch — no image codec or text layout exists yet, see prerequisites #4/#5). See `compiler/std/graphics.przp` and `tests/gl/graphics_layer2`:
+`std/graphics` turns the backend contract and windowing layer into something that reads like the rest of the standard library and, deliberately, like raylib's call-level ergonomics: `snake_case` names, `enum` constants instead of bare integers, tuples instead of output parameters, and `!T` for anything that can fail. This is the layer both `gdev` and `guix` import — window lifecycle, input, and 2D drawing primitives live here exactly once, not duplicated in each consumer. **Implemented**: window lifecycle, keyboard/mouse input queries, the 2D draw primitives below, and texture loading (`draw_text` is still sketch — no text layout exists yet, see prerequisite #5). See `compiler/std/graphics.przp`, `tests/gl/graphics_layer2`, and `tests/gl/texture_load`:
 
 ```
 struct Color { r: u8, g: u8, b: u8, a: u8 }
@@ -243,19 +243,31 @@ fn main() -> i32 {
 }
 ```
 
-Still a sketch — no image codec (prerequisite #4) or text layout (prerequisite #5) exists yet:
+**Texture loading is implemented** (prerequisite #4, for images — audio is still open), via a new `std/image` module — an 8-bit-per-channel RGB/RGBA PNG decoder, hand-written except for DEFLATE decompression, which goes through the system zlib (`uncompress()`, linked via `-lz` the same way `-lX11`/`-lGL` already are):
+
+```
+struct Image { width: i32, height: i32, channels: i32, pixels: *u8 }
+fn load_png(path: str) -> !Image
+fn free_image(img: Image)
+```
+
+Scope: non-interlaced, 8-bit, RGB or RGBA only — the overwhelming majority of real-world PNG exports (every common browser/paint-tool default). 16-bit, palette (indexed-color), grayscale, and interlaced PNGs are rejected with a clear error rather than silently misdecoded; broadening this later only touches the per-pixel unpacking after defiltering, not the chunk/defilter machinery itself. `std/graphics`'s `Texture` wraps this with GPU upload:
 
 ```
 struct Texture { id: u32, w: i32, h: i32 }
 impl Texture {
-    fn load(path: str) -> !Texture {
-        # decode (PNG to start), upload via backend_upload_texture, wrap the id
-        ret gfx_load_texture(path)
-    }
-    fn unload(self: Texture) { gfx_delete_texture(self.id) }
+    fn load(path: str) -> !Texture   # std/image.load_png, then gl.create_texture
+    fn unload(self)
 }
 
-fn draw_texture(t: Texture, x: f32, y: f32)
+fn draw_texture(t: Texture, x: f32, y: f32)   # native resolution, no scaling
+```
+
+Texture upload/draw goes through `std/graphics/gl`'s `create_texture`/`draw_textured_rect` (nearest-neighbor filtering, edge-clamped wrapping — real GL 1.1 texturing calls, no runtime loader needed), the same direct-to-GL coupling `draw_rect`/`draw_circle`/`draw_line` already have, for the same reason (no `Backend.submit` yet). `tests/gl/texture_load` verifies the full round trip — decode, upload, draw, read back — against two fixtures: a hand-rolled RGB PNG (every scanline filter type `None`) and a real libpng-encoded RGBA PNG using adaptive per-row filter selection, so all five PNG filter types (`None`/`Sub`/`Up`/`Average`/`Paeth`) are exercised, not just the trivial one.
+
+`draw_text` is still a sketch — no text layout exists yet (prerequisite #5):
+
+```
 fn draw_text(s: str, x: f32, y: f32, size: i32, c: Color)
 ```
 
@@ -364,7 +376,7 @@ This means the FFI mechanics and linking layer 1 depends on (struct-by-value cal
 | 1 | **Backend contract design.** The fixed interface `std/graphics` calls through needs to be designed and settled *before* the GL backend is written against it — this is what makes future Vulkan/Metal/D3D12 backends additive instead of a rewrite. **Done, at today's scope**: `std/graphics/backend`'s `Backend` struct fixes `init`/`clear`/`present`/`shutdown`; `submit`/`upload_texture`/`bind_shader` are deliberately not fields yet (see `std/graphics/backend` above) until prerequisite #2 makes a real implementation possible. |
 | 2 | **GL function loading.** Nothing beyond OpenGL 1.1 is available as a link-time symbol — every modern GL entry point (shaders, buffers, textures beyond the basics) has to be resolved at runtime via `glXGetProcAddress` and called through a function pointer. This needs a small runtime loader written once, not per-project. **Not started** — `std/graphics/gl` so far only uses real link-time GL 1.1 symbols (`glClear`, `glClearColor`, `glGetError`, `glReadPixels`), which don't need this loader. |
 | 3 | **Windowing backend.** X11 first (works everywhere on Linux, including under Wayland via XWayland); a native Wayland backend, then Win32/Cocoa, come later behind the same `std/graphics/window` surface so `std/graphics`, `gdev`, and `guix` never have to change per platform. **Done, for X11**: open/title/close (including the `WM_DELETE_WINDOW` handshake), resize reporting, and keyboard/mouse input events are all implemented and tested. Still open: a second (Wayland/Win32/Cocoa) backend, which is intentionally not started until a real cross-platform need shows up. |
-| 4 | **Image and audio codecs.** No bundled renderer means no bundled codecs either — PNG/JPEG decoding (for `guix` icons and `gdev` textures alike) and audio file loading (for `gdev`) need their own (likely also hand-written or minimally-bound) implementations, deferred until the 2D primitives above them are solid. |
+| 4 | **Image and audio codecs.** No bundled renderer means no bundled codecs either — PNG/JPEG decoding (for `guix` icons and `gdev` textures alike) and audio file loading (for `gdev`) need their own (likely also hand-written or minimally-bound) implementations. **Done, for images**: `std/image` decodes 8-bit RGB/RGBA PNG (DEFLATE via system zlib, everything else hand-written) — see the layer 2 section above. JPEG and audio file loading are still open, deferred until something real needs them. |
 | 5 | **Text layout.** `guix` needs real text shaping/layout (cursor positioning, line wrapping, at minimum) to be a credible native-app toolkit; `gdev` only needs simple bitmap-font text draw calls. This is a `guix`-specific investment, not a `std/graphics` one. |
 | 6 | **Variadic/macro helpers.** Small conveniences like a `printf`-style text-formatting helper for on-screen debug text are built on `@fmt` rather than needing any new compiler feature — a non-issue, listed for completeness. |
 | 7 | **Threading model.** GPU contexts are tied to the thread that created them; the wrapper should document a single-threaded main loop (window, input, and drawing calls all from one thread) as the initial supported model rather than attempt general multi-threaded rendering from the start. |
@@ -374,8 +386,8 @@ This means the FFI mechanics and linking layer 1 depends on (struct-by-value cal
 1. Design the backend contract (prerequisite #1) before writing any GL code — settle the smallest set of operations `std/graphics` needs so the GL backend is written *against* a fixed interface, not the interface being reverse-engineered out of GL calls after the fact. **Done, at today's scope**: see `std/graphics/backend` above.
 2. Write the windowing backend (`std/graphics/window`, X11) for the smallest usable slice: open a window, pump events, report close/resize. **Done**: open/title/close, resize, and keyboard/mouse input events are all implemented and tested.
 3. Write `std/graphics/gl` as the first implementation of the backend contract, and get a single triangle or cleared background on screen — this is the point where "a window exists" becomes "a frame can be drawn." **Done, for 2D**: `GL_BACKEND`'s `init`/`clear`/`present`/`shutdown` conform to the contract, and `set_ortho_2d`/`draw_rect`/`draw_circle`/`draw_line` get real filled shapes on screen via GL 1.1 immediate mode (verified via pixel readback, see `tests/gl/graphics_layer2`). Rasterizing an arbitrary mesh via vertex buffers, and anything past GL 1.1 (shaders, VBOs), still needs the loader (prerequisite #2).
-4. Write layer 2 (`std/graphics`) over that same small surface: 2D shapes, keyboard/mouse input, then texture loading once an image codec exists. Resist building out the full raylib-equivalent surface up front — this is also where the "simple by default" goal gets tested for real: a first-time caller should get a circle on screen in a handful of raylib-shaped lines, with 3D, shaders, and custom batching all staying opt-in layers underneath, not something the 2D path has to route around. **Done for 2D shapes and input**: `Window` lifecycle, `is_key_down`/`is_mouse_button_down`/`mouse_position`, and `draw_rectangle`/`draw_circle`/`draw_line` are all real (see the layer 2 section above). Texture loading is still open, blocked on prerequisite #4 (no image codec yet).
-5. Write a regression test per wrapped function group (window, shapes, input, textures), following the existing `tests/run/std_*.przp` convention, to the extent a windowing/GPU-dependent test can run headlessly in CI. **Done for window/shapes/input**: `tests/x11/window_close`, `tests/x11/input_and_resize`, `tests/gl/backend_contract`, `tests/gl/clear_and_read_pixel`, `tests/gl/graphics_layer2`. Textures still need their test once loading exists.
+4. Write layer 2 (`std/graphics`) over that same small surface: 2D shapes, keyboard/mouse input, then texture loading once an image codec exists. Resist building out the full raylib-equivalent surface up front — this is also where the "simple by default" goal gets tested for real: a first-time caller should get a circle on screen in a handful of raylib-shaped lines, with 3D, shaders, and custom batching all staying opt-in layers underneath, not something the 2D path has to route around. **Done**: `Window` lifecycle, `is_key_down`/`is_mouse_button_down`/`mouse_position`, `draw_rectangle`/`draw_circle`/`draw_line`, and `Texture.load`/`draw_texture` (backed by the new `std/image` PNG decoder) are all real (see the layer 2 section above).
+5. Write a regression test per wrapped function group (window, shapes, input, textures), following the existing `tests/run/std_*.przp` convention, to the extent a windowing/GPU-dependent test can run headlessly in CI. **Done**: `tests/x11/window_close`, `tests/x11/input_and_resize`, `tests/gl/backend_contract`, `tests/gl/clear_and_read_pixel`, `tests/gl/graphics_layer2`, `tests/gl/texture_load`.
 6. Start `gdev` once `std/graphics`'s 2D primitives, input, and texture loading are solid, and finish its 2D surface (sprites, 2D camera/scrolling, basic audio) before touching 3D or starting `guix`. `gdev` is the priority once layer 1 is done — `guix` is deliberately sequenced after, not developed in lockstep with it, so effort doesn't split across both toolkits while neither is finished.
 7. `gdev`: only once the 2D surface above is solid, extend to 3D (`Camera3D`-equivalent, cube/grid primitives).
 8. `guix`: start once `gdev`'s 2D surface is solid (does not need to wait for `gdev`'s 3D work). Extend to DPI scaling, text editing/cursor handling, focus/tab order, and clipboard. Prioritize mouse-interaction latency here specifically, since that's the axis this design most wants to win on: input state should be sampled once per frame with nothing between the OS event and code reading it.

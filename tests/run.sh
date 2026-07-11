@@ -308,7 +308,7 @@ run_gl_case() {
     local expected="$src_dir/stdout"
 
     printf 'gl    %s\n' "$name"
-    if ! PRZP_STDLIB="$STDLIB" "$PRZP" sac "$src_dir/main.przp" -lX11 -lGL -o="$bin" \
+    if ! PRZP_STDLIB="$STDLIB" "$PRZP" sac "$src_dir/main.przp" -lX11 -lGL -lz -o="$bin" \
             >"$TMP/out/$name.gl.compile.stdout" 2>"$compile_err"; then
         printf 'FAIL  %s: gl compile failed\n' "$name" >&2
         sed -n '1,120p' "$compile_err" >&2

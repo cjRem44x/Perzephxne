@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-d868b235.js";
+            window.path_to_searchindex_js = "searchindex-0c316b0c.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-4e58bc13.js"></script>
@@ -178,6 +178,18 @@
                 <div id="mdbook-content" class="content">
                     <main>
                         <h1 id="control-flow"><a class="header" href="#control-flow">Control Flow</a></h1>
+<h2 id="statement-separation"><a class="header" href="#statement-separation">Statement Separation</a></h2>
+<p>Statements are separated by newlines — no semicolons required. This is not newline-<em>sensitive</em> parsing, though: a statement’s expression keeps extending across the newline for as long as the next token is a valid postfix continuation (<code>.</code>, <code>(</code>, <code>[</code>, <code>.*</code>, <code>.^</code>, <code>-&gt;</code>). That matters when a statement happens to end in something callable/indexable and the <em>next</em> statement starts with <code>(</code>, <code>[</code>, or <code>.</code> — the two merge into one expression instead of parsing as two statements, the same pitfall JavaScript’s automatic-semicolon-insertion has:</p>
+<pre><code>buf: *u8 = malloc(4)
+(buf + 1).* = 200u8     # WRONG: parses as malloc(4)(buf + 1).* — a call on malloc's result,
+                        # which then hits the '=' unexpectedly and fails to compile
+</code></pre>
+<p>The fix is the same idiom used throughout this book and the standard library: name the pointer expression first, then dereference the name, so the statement starts with a plain identifier instead of <code>(</code>:</p>
+<pre><code>buf: *u8 = malloc(4)
+p: *u8 = buf + 1
+p.* = 200u8              # fine — starts with an identifier, nothing to merge with
+</code></pre>
+<p>This only bites when a statement <em>starts</em> with <code>(</code>, <code>[</code>, or a bare <code>.</code> right after one that ends in a value — the overwhelmingly common case (a statement starting with an identifier or keyword) is never affected.</p>
 <h2 id="if-elif-else"><a class="header" href="#if-elif-else">if, elif, else</a></h2>
 <pre><code>x: i32 = 42
 

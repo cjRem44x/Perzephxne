@@ -1,5 +1,25 @@
 # Control Flow
 
+## Statement Separation
+
+Statements are separated by newlines — no semicolons required. This is not newline-*sensitive* parsing, though: a statement's expression keeps extending across the newline for as long as the next token is a valid postfix continuation (`.`, `(`, `[`, `.*`, `.^`, `->`). That matters when a statement happens to end in something callable/indexable and the *next* statement starts with `(`, `[`, or `.` — the two merge into one expression instead of parsing as two statements, the same pitfall JavaScript's automatic-semicolon-insertion has:
+
+```
+buf: *u8 = malloc(4)
+(buf + 1).* = 200u8     # WRONG: parses as malloc(4)(buf + 1).* — a call on malloc's result,
+                        # which then hits the '=' unexpectedly and fails to compile
+```
+
+The fix is the same idiom used throughout this book and the standard library: name the pointer expression first, then dereference the name, so the statement starts with a plain identifier instead of `(`:
+
+```
+buf: *u8 = malloc(4)
+p: *u8 = buf + 1
+p.* = 200u8              # fine — starts with an identifier, nothing to merge with
+```
+
+This only bites when a statement *starts* with `(`, `[`, or a bare `.` right after one that ends in a value — the overwhelmingly common case (a statement starting with an identifier or keyword) is never affected.
+
 ## if, elif, else
 
 ```

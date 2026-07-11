@@ -42,11 +42,30 @@ extern fn glBegin(mode: u32)
 extern fn glEnd()
 extern fn glVertex2f(x: f32, y: f32)
 extern fn glColor4f(r: f32, g: f32, b: f32, a: f32)
+extern fn glEnable(cap: u32)
+extern fn glDisable(cap: u32)
+
+extern fn glGenTextures(n: i32, textures: *u32)
+extern fn glDeleteTextures(n: i32, textures: *u32)
+extern fn glBindTexture(target: u32, texture: u32)
+extern fn glTexParameteri(target: u32, pname: u32, param: i32)
+extern fn glTexImage2D(target: u32, level: i32, internalformat: i32, w: i32, h: i32,
+                        border: i32, format: u32, ty: u32, data: *u8)
+extern fn glTexCoord2f(s: f32, t: f32)
 
 GL_COLOR_BUFFER_BIT: u32 = 0x00004000
+GL_RGB:  u32 = 0x1907
 GL_RGBA: u32 = 0x1908
 GL_UNSIGNED_BYTE: u32 = 0x1401
 GL_NO_ERROR: u32 = 0
+
+GL_TEXTURE_2D:        u32 = 0x0DE1
+GL_TEXTURE_MIN_FILTER: u32 = 0x2801
+GL_TEXTURE_MAG_FILTER: u32 = 0x2800
+GL_TEXTURE_WRAP_S:    u32 = 0x2802
+GL_TEXTURE_WRAP_T:    u32 = 0x2803
+GL_NEAREST:           u32 = 0x2600
+GL_CLAMP_TO_EDGE:     u32 = 0x812F
 
 GL_LINES:        u32 = 0x0001
 GL_TRIANGLE_FAN: u32 = 0x0006
@@ -153,6 +172,54 @@ fn draw_line(x1: f32, y1: f32, x2: f32, y2: f32, r: f32, g: f32, b: f32, a: f32)
     glVertex2f(x1, y1)
     glVertex2f(x2, y2)
     glEnd()
+}
+
+# ── Textures ─────────────────────────────────────────────────────────────────
+
+# create_texture: upload w*h*channels raw pixel bytes (channels = 3 for RGB,
+# 4 for RGBA, row-major, top row first — exactly what std/image's Image
+# produces) as a new GL texture, returning its id. Nearest-neighbor
+# filtering and edge-clamped wrapping: a reasonable, simple default for 2D
+# sprite/UI work, where linear filtering usually just blurs pixel art and
+# wrapping past the edge is rarely wanted.
+fn create_texture(pixels: *u8, w: i32, h: i32, channels: i32) -> u32 {
+    tex: u32 = 0
+    glGenTextures(1, &tex)
+    glBindTexture(GL_TEXTURE_2D, tex)
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, @i32(GL_NEAREST))
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, @i32(GL_NEAREST))
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, @i32(GL_CLAMP_TO_EDGE))
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, @i32(GL_CLAMP_TO_EDGE))
+    fmt: u32 = if channels == 4 { GL_RGBA } else { GL_RGB }
+    glTexImage2D(GL_TEXTURE_2D, 0, @i32(fmt), w, h, 0, fmt, GL_UNSIGNED_BYTE, pixels)
+    ret tex
+}
+
+fn delete_texture(tex: u32) {
+    t: u32 = tex
+    glDeleteTextures(1, &t)
+}
+
+# draw_textured_rect: an axis-aligned rect at (x, y) sized w x h, textured
+# with `tex` at full opacity (glColor4f(1,1,1,1) so the texture's own
+# colors show through unmodified). GL_TEXTURE_2D is enabled/disabled
+# around the draw rather than left on globally, so it doesn't leak into
+# draw_rect/draw_circle/draw_line calls elsewhere in a frame.
+fn draw_textured_rect(tex: u32, x: f32, y: f32, w: f32, h: f32) {
+    glEnable(GL_TEXTURE_2D)
+    glBindTexture(GL_TEXTURE_2D, tex)
+    glColor4f(1.0, 1.0, 1.0, 1.0)
+    glBegin(GL_QUADS)
+    glTexCoord2f(0.0, 0.0)
+    glVertex2f(x, y)
+    glTexCoord2f(1.0, 0.0)
+    glVertex2f(x + w, y)
+    glTexCoord2f(1.0, 1.0)
+    glVertex2f(x + w, y + h)
+    glTexCoord2f(0.0, 1.0)
+    glVertex2f(x, y + h)
+    glEnd()
+    glDisable(GL_TEXTURE_2D)
 }
 
 # ── Backend contract conformance ────────────────────────────────────────────
