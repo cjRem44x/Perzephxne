@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-a6802ed5.js";
+            window.path_to_searchindex_js = "searchindex-d114b9fa.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-4e58bc13.js"></script>
@@ -185,10 +185,12 @@
 <li>The <code>przp</code> compiler binary (build from source)</li>
 </ul>
 <pre><code class="language-sh">git clone https://github.com/cjRem44x/Perzephxne
-cd Perzephxne/compiler
-make
-sudo cp przp /usr/local/bin/
+cd Perzephxne
+./deploy.sh              # builds compiler/przp, installs it + std/ to /usr/local (needs sudo)
+# or, no sudo needed:
+PREFIX="$HOME/.local" ./deploy.sh
 </code></pre>
+<p>Don’t just <code>cp compiler/przp /usr/local/bin/</code> by hand — <code>przp</code> resolves every <code>import(x = "std/...")</code> against a <code>std/</code> directory it finds relative to its own binary path (or <code>$PRZP_STDLIB</code>, if set), so a bare binary with no <code>std/</code> deployed anywhere near it fails to import anything from the standard library. <code>deploy.sh</code> installs both, in the layout <code>przp</code> already knows how to find on its own (<code>$PREFIX/bin/przp</code> + <code>$PREFIX/lib/przp/std/</code>) — see <code>deploy.sh --help</code>, or <code>make deploy</code> / <code>make uninstall</code> from the repo root.</p>
 <h2 id="hello-world"><a class="header" href="#hello-world">Hello World</a></h2>
 <p>Create <code>main.przp</code>:</p>
 <pre><code>fn main() {

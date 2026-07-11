@@ -91,6 +91,11 @@ static void stamp_test_files(Module *mod, const char *path, Arena *arena) {
     }
 }
 
+static int dir_exists(const char *path) {
+    struct stat st;
+    return stat(path, &st) == 0 && S_ISDIR(st.st_mode);
+}
+
 static void stdlib_root_init(const char *argv0) {
     (void)argv0;
     const char *env = getenv("PRZP_STDLIB");
@@ -98,7 +103,16 @@ static void stdlib_root_init(const char *argv0) {
         snprintf(g_stdlib_root, sizeof(g_stdlib_root), "%s", env);
         return;
     }
-    /* try /proc/self/exe (Linux) to find binary dir */
+    /* try /proc/self/exe (Linux) to find binary dir. Two layouts are
+       checked, in order: "std/" sitting right next to the binary (a dev
+       checkout running compiler/przp straight out of compiler/, where
+       compiler/std is a sibling directory — no install step at all), and
+       "../lib/przp/std" (the FHS-style layout deploy.sh installs:
+       $PREFIX/bin/przp + $PREFIX/lib/przp/std). Picking whichever one
+       actually exists means a plain `cp przp /usr/local/bin/` with no
+       std/ anywhere near it fails at import time with a clear "cannot
+       import std/X" pointing at a real path, rather than at a directory
+       that was never going to exist either way. */
     char exe[1024];
     ssize_t n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
     if (n > 0) {
@@ -106,11 +120,26 @@ static void stdlib_root_init(const char *argv0) {
         const char *slash = strrchr(exe, '/');
         if (slash) {
             size_t len = (size_t)(slash - exe);
-            if (len + 5 < sizeof(g_stdlib_root)) {
-                memcpy(g_stdlib_root, exe, len);
-                memcpy(g_stdlib_root + len, "/std", 5);
+            char sibling[1024];
+            if (len + 5 < sizeof(sibling)) {
+                memcpy(sibling, exe, len);
+                memcpy(sibling + len, "/std", 5);
+                if (dir_exists(sibling)) {
+                    snprintf(g_stdlib_root, sizeof(g_stdlib_root), "%s", sibling);
+                    return;
+                }
+            }
+            char fhs[1024];
+            int fhs_n = snprintf(fhs, sizeof(fhs), "%.*s/../lib/przp/std", (int)len, exe);
+            if (fhs_n > 0 && (size_t)fhs_n < sizeof(fhs) && dir_exists(fhs)) {
+                snprintf(g_stdlib_root, sizeof(g_stdlib_root), "%s", fhs);
                 return;
             }
+            /* neither candidate exists (no std/ deployed anywhere near
+               this binary) — keep the sibling guess so the resulting
+               error at least points at a sensible, binary-relative path */
+            snprintf(g_stdlib_root, sizeof(g_stdlib_root), "%s", sibling);
+            return;
         }
     }
     /* fallback: relative to cwd */

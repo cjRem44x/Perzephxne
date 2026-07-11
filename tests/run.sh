@@ -377,6 +377,67 @@ run_cli_fail_in_dir() {
     fi
 }
 
+# Regression for stdlib_root_init's binary-relative fallback (no
+# $PRZP_STDLIB set): przp must find std/ on its own in both layouts it
+# knows how to look for — "std/" sitting right next to the binary (a
+# dev checkout running compiler/przp out of compiler/), and
+# "../lib/przp/std" (the layout deploy.sh installs). A bare binary with
+# std/ deployed nowhere near it (e.g. `cp przp /usr/local/bin/` and
+# nothing else) must still fail with a clear "cannot import" error
+# rather than silently doing the wrong thing.
+run_stdlib_resolution_case() {
+    local prog="$TMP/stdlib_resolution/prog.przp"
+    mkdir -p "$TMP/stdlib_resolution"
+    cat > "$prog" <<'EOF'
+import(m = "std/math")
+fn main() -> i32 {
+    @pf("{m.sqrt(4.0)}\n")
+    ret 0
+}
+EOF
+
+    printf 'res   stdlib_resolution (sibling layout)\n'
+    local sib="$TMP/stdlib_resolution/sibling"
+    mkdir -p "$sib"
+    cp "$PRZP" "$sib/przp"
+    cp -r "$STDLIB" "$sib/std"
+    if ! out="$(env -u PRZP_STDLIB "$sib/przp" sac "$prog" -o="$sib/prog" 2>"$TMP/err/stdlib_resolution_sibling.stderr" && "$sib/prog")"; then
+        printf 'FAIL  stdlib_resolution: sibling layout did not resolve std/\n' >&2
+        sed -n '1,60p' "$TMP/err/stdlib_resolution_sibling.stderr" >&2
+        failures=$((failures + 1))
+    elif [ "$out" != "2.000000" ]; then
+        printf 'FAIL  stdlib_resolution: sibling layout produced unexpected output: %s\n' "$out" >&2
+        failures=$((failures + 1))
+    fi
+
+    printf 'res   stdlib_resolution (deploy.sh FHS layout)\n'
+    local fhs="$TMP/stdlib_resolution/fhs"
+    mkdir -p "$fhs/bin" "$fhs/lib/przp"
+    cp "$PRZP" "$fhs/bin/przp"
+    cp -r "$STDLIB" "$fhs/lib/przp/std"
+    if ! out="$(env -u PRZP_STDLIB "$fhs/bin/przp" sac "$prog" -o="$fhs/prog" 2>"$TMP/err/stdlib_resolution_fhs.stderr" && "$fhs/prog")"; then
+        printf 'FAIL  stdlib_resolution: deploy.sh FHS layout did not resolve std/\n' >&2
+        sed -n '1,60p' "$TMP/err/stdlib_resolution_fhs.stderr" >&2
+        failures=$((failures + 1))
+    elif [ "$out" != "2.000000" ]; then
+        printf 'FAIL  stdlib_resolution: FHS layout produced unexpected output: %s\n' "$out" >&2
+        failures=$((failures + 1))
+    fi
+
+    printf 'res   stdlib_resolution (no std/ deployed)\n'
+    local none="$TMP/stdlib_resolution/none"
+    mkdir -p "$none"
+    cp "$PRZP" "$none/przp"
+    if env -u PRZP_STDLIB "$none/przp" sac "$prog" -o="$none/prog" >"$TMP/out/stdlib_resolution_none.stdout" 2>"$TMP/err/stdlib_resolution_none.stderr"; then
+        printf 'FAIL  stdlib_resolution: expected a compile failure with no std/ deployed\n' >&2
+        failures=$((failures + 1))
+    elif ! grep -q "cannot import 'std/math'" "$TMP/err/stdlib_resolution_none.stderr"; then
+        printf 'FAIL  stdlib_resolution: wrong error with no std/ deployed\n' >&2
+        sed -n '1,60p' "$TMP/err/stdlib_resolution_none.stderr" >&2
+        failures=$((failures + 1))
+    fi
+}
+
 run_init_case() {
     local work="$TMP/init/current"
     local stdout="$TMP/out/init.stdout"
@@ -740,6 +801,7 @@ if run_x11_setup; then
     run_x11_teardown
 fi
 
+run_stdlib_resolution_case
 run_init_case
 run_freshness_case
 run_test_cmd_case
