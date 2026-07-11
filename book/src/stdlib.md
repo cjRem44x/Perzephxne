@@ -4,6 +4,8 @@ The standard library ships with the compiler under `compiler/std`. Import module
 
 There is no external package resolver yet. `[deps]` in `przp.toml` is reserved for future packages; the modules below are the standard library that currently ships with the language.
 
+Every module below has a runnable usage snippet. For complete projects using several modules together, see the `examples/` gallery at the repo root (also pointed to from [Getting Started](./getting-started.md#next-steps)).
+
 ## `std/io`
 
 File I/O via libc. Open files are raw `*u8` handles (`FILE *`).
@@ -18,6 +20,19 @@ File I/O via libc. Open files are raw `*u8` handles (`FILE *`).
 | `file_size(f)` | byte size of an open file |
 | `print(s)` | print a string |
 | `println(s)` | print a string plus newline |
+
+```
+import(io = "std/io")
+
+f: *u8 = io.open("greeting.txt", "w")
+io.write_str(f, "hello, przp\n")
+io.close(f)
+
+r: *u8 = io.open("greeting.txt", "r")
+line: str = io.read_line(r)
+io.print(line)   # "hello, przp" — read_line keeps the trailing newline
+io.close(r)
+```
 
 ## `std/str`
 
@@ -45,6 +60,17 @@ String helpers. Functions that produce new strings allocate.
 | `is_digit_str(s)` | all ASCII digits |
 | `is_alpha_str(s)` | all ASCII letters |
 
+```
+import(str = "std/str")
+
+s: str = "  Hello, World!  "
+t: str = str.trim(s)
+u: str = str.to_lower(t)
+@pf("{u}\n")                             # "hello, world!"
+@assert(str.starts_with(u, "hello"))
+n: usize = str.split_count(u, ", ")      # 2 — "hello" and "world!"
+```
+
 ## `std/math`
 
 Math wrappers and constants.
@@ -67,6 +93,14 @@ Math wrappers and constants.
 | `min_i64(a, b)`, `max_i64(a, b)` | i64 min/max |
 | `clamp_i32(x, lo, hi)`, `clamp_f64(x, lo, hi)` | clamp |
 
+```
+import(m = "std/math")
+
+d: f64 = m.sqrt(2.0) * m.sqrt(2.0)   # 2.0 (up to floating-point error)
+c: i32 = m.clamp_i32(15, 0, 10)      # 10
+@pf("{d} {c}\n")
+```
+
 ## `std/os`
 
 Process, environment, and directory helpers.
@@ -80,6 +114,15 @@ Process, environment, and directory helpers.
 | `mkdir_dir(path)` | create a directory with mode `755` |
 | `chdir_to(path)` | change current directory |
 | `rmdir_dir(path)` | remove an empty directory |
+
+```
+import(os = "std/os")
+
+dir: str = os.cwd()
+os.mkdir_dir("scratch")
+os.rmdir_dir("scratch")
+@pf("running in {dir}\n")
+```
 
 ## `std/file`
 
@@ -100,6 +143,21 @@ Path-based file utilities.
 
 `list` builds its result with the [`@slice`](./builtins.md#memory) builtin, since a directory's entry count is only known at runtime, and a slice otherwise only ever comes from an array (whose size is a compile-time constant) decaying or being range-indexed.
 
+```
+import(file = "std/file")
+
+file.write_all("notes.txt", "line one\n")
+file.append("notes.txt", "line two\n")
+content: str = file.read_all("notes.txt")
+@pf("{content}")
+
+entries, err: ![]str = file.list(".")
+if err == 0 {
+    is_f: bool = file.is_file("notes.txt")
+    @pf("{@len(entries)} entries here, notes.txt is_file={is_f}\n")
+}
+```
+
 ## `std/fmt`
 
 String formatting helpers. For interpolation-style formatting, use the `@fmt` builtin directly with named expressions, for example `@fmt("x={x}")`.
@@ -116,6 +174,15 @@ String formatting helpers. For interpolation-style formatting, use the `@fmt` bu
 | `pad_left(s, width, ch)` | prepend `ch` to reach `width` |
 | `pad_right(s, width, ch)` | append `ch` to reach `width` |
 | `zero_pad(n, width)` | left-pad integer with `0` |
+
+```
+import(fmt = "std/fmt")
+
+h: str = fmt.hex(255u64)          # "ff"
+p: str = fmt.zero_pad(7, 3)       # "007"
+f: str = fmt.fixed(3.14159, 2)    # "3.14"
+@pf("{h} {p} {f}\n")
+```
 
 ## `std/collections`
 
@@ -134,6 +201,17 @@ The current collection module provides a growable `Vec` of `i64` values.
 | `Vec.pop(self)` | remove and return last value; `0` if empty |
 | `Vec.clear(self)` | set length to `0` without freeing capacity |
 
+```
+import(vec = "std/collections")
+
+v: vec.Vec = vec.Vec.new()
+v.push(10)
+v.push(20)
+v.push(30)
+@pf("{v.len_of()} {v.get(1)}\n")   # 3 20
+v.free_vec()
+```
+
 ## `std/atomic`
 
 Atomic operations on `i64` values. Operations use sequentially consistent ordering.
@@ -151,6 +229,15 @@ Atomic operations on `i64` values. Operations use sequentially consistent orderi
 | `cas(ptr, expected, desired)` | compare-and-swap; true if swapped |
 | `inc(ptr)` | add 1, return new value |
 | `dec(ptr)` | subtract 1, return new value |
+
+```
+import(atomic = "std/atomic")
+
+counter: i64 = 0
+old: i64 = atomic.add(&counter, 5)
+v: i64 = atomic.load(&counter)
+@pf("{old} {v}\n")   # 0 5
+```
 
 ## `std/sync`
 
@@ -172,6 +259,15 @@ Mutex and read-write lock wrappers over pthread types. The compiler links genera
 | `trywlock(rw)` | try writer lock |
 | `rwunlock(rw)` | release reader or writer lock |
 | `rwlock_destroy(rw)` | destroy read-write lock |
+
+```
+import(sync = "std/sync")
+
+mu: sync.Mutex = sync.mutex_new()
+sync.lock(&mu)
+defer sync.unlock(&mu)
+# ... critical section ...
+```
 
 ## `std/crypto`
 
