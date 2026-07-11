@@ -1,4 +1,13 @@
 # std/file — high-level file utilities (path-based, no open handle required)
+#
+# Directory listing (list/is_file/is_dir below) reads `struct dirent` and
+# `struct stat` fields directly out of raw buffers, the same "checked
+# against a real offsetof compile, not guessed" approach std/graphics/
+# window uses for XEvent: on x86-64 Linux/glibc, `dirent.d_name` starts
+# at byte offset 19 and `stat.st_mode` at byte offset 24, with
+# sizeof(struct stat) = 144 bytes needed for the stat() output buffer.
+
+import(str = "std/str")
 
 extern fn fopen(path: *u8, mode: *u8) -> *u8
 extern fn fclose(f: *u8) -> i32
@@ -11,7 +20,18 @@ extern fn remove(path: *u8) -> i32
 extern fn rename(old: *u8, new_: *u8) -> i32
 extern fn access(path: *u8, mode: i32) -> i32
 extern fn malloc(n: usize) -> *u8
+extern fn realloc(p: *u8, n: usize) -> *u8
 extern fn memcpy(dst: *u8, src: *u8, n: usize) -> *u8
+extern fn strlen(s: *u8) -> usize
+
+extern fn opendir(path: *u8) -> *u8
+extern fn readdir(dirp: *u8) -> *u8
+extern fn closedir(dirp: *u8) -> i32
+extern fn stat(path: *u8, buf: *u8) -> i32
+
+S_IFMT:  u32 = 0xF000
+S_IFDIR: u32 = 0x4000
+S_IFREG: u32 = 0x8000
 
 SEEK_END: i32 = 2
 
@@ -76,4 +96,75 @@ fn remove_file(path: str) -> bool {
 # rename_file: rename or move a file, return true on success
 fn rename_file(old: str, new_path: str) -> bool {
     ret rename(old.data, new_path.data) == 0
+}
+
+# stat_mode: raw st_mode bits for path, or 0 if stat() fails (path doesn't
+# exist, no permission, ...) — 0 can't collide with a real mode, since
+# every real file/dir has a nonzero S_IFMT type bit set.
+fn stat_mode(path: str) -> u32 {
+    buf: [144]u8 = undef
+    ok: i32 = stat(path.data, &buf[0])
+    if ok != 0 { ret 0 }
+    p: *u32 = &buf[0] + 24
+    ret p.*
+}
+
+# is_file: true if path exists and is a regular file
+fn is_file(path: str) -> bool {
+    m: u32 = stat_mode(path)
+    ret (m & S_IFMT) == S_IFREG
+}
+
+# is_dir: true if path exists and is a directory
+fn is_dir(path: str) -> bool {
+    m: u32 = stat_mode(path)
+    ret (m & S_IFMT) == S_IFDIR
+}
+
+# list: the entries of dir, as dir-joined paths ("dir/name") ready to pass
+# straight to is_file/is_dir/read_all — not just bare names. "." and ".."
+# are skipped. Returns an error if dir can't be opened (doesn't exist,
+# not a directory, no permission).
+fn list(dir: str) -> ![]str {
+    d: *u8 = opendir(dir.data)
+    if d == null { ret @err(1) }
+
+    cap: usize = 16
+    n: usize = 0
+    arr: *str = malloc(cap * 16)
+
+    entry: *u8 = readdir(d)
+    while entry != null {
+        name: *u8 = entry + 19
+        nlen: usize = strlen(name)
+
+        skip: bool = false
+        if nlen == 1 {
+            c0p: *u8 = name
+            if c0p.* == 46u8 { skip = true } # "."
+        }
+        if nlen == 2 {
+            c0p2: *u8 = name
+            c1p2: *u8 = name + 1
+            if c0p2.* == 46u8 && c1p2.* == 46u8 { skip = true } # ".."
+        }
+
+        if !skip {
+            if n == cap {
+                cap = cap * 2
+                arr = realloc(arr, cap * 16)
+            }
+            name_copy: *u8 = malloc(nlen + 1)
+            memcpy(name_copy, name, nlen + 1)
+            entry_name: str = @str_raw(name_copy, nlen)
+            full_path: str = str.concat(str.concat(dir, "/"), entry_name)
+            slot: *str = arr + n
+            slot.* = full_path
+            n += 1
+        }
+        entry = readdir(d)
+    }
+    closedir(d)
+
+    ret @ok(@slice(arr, n))
 }

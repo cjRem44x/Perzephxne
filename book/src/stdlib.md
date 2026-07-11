@@ -94,6 +94,11 @@ Path-based file utilities.
 | `append(path, content)` | append to file, creating if missing |
 | `remove_file(path)` | delete file |
 | `rename_file(old, new_path)` | rename/move file |
+| `is_file(path)` | true if path exists and is a regular file |
+| `is_dir(path)` | true if path exists and is a directory |
+| `list(dir)` | `![]str` — dir-joined paths of `dir`'s entries (`.`/`..` skipped), ready to pass to `is_file`/`is_dir`/`read_all` |
+
+`list` builds its result with the [`@slice`](./builtins.md#memory) builtin, since a directory's entry count is only known at runtime, and a slice otherwise only ever comes from an array (whose size is a compile-time constant) decaying or being range-indexed.
 
 ## `std/fmt`
 

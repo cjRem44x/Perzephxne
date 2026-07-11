@@ -1602,6 +1602,29 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                 return cg_expr(cg, arg, out_ty);
             }
 
+            /* @slice(ptr: *T, len: usize) → []T — builds the { ptr, i64 }
+               fat pointer directly from a runtime pointer + length, the
+               same shape array_to_slice() builds for an array-to-slice
+               decay, just with a runtime (not compile-time-constant) len. */
+            if (!strcmp(name, "slice") && e->builtin.args.len >= 2) {
+                Val ptr_val = cg_expr(cg, e->builtin.args.data[0], NULL);
+                Type *len_ty = NULL;
+                Val len_val = cg_expr(cg, e->builtin.args.data[1], &len_ty);
+                const char *len_llt = len_ty ? llvm_type(len_ty) : "i64";
+                Val len64 = len_val;
+                if (strcmp(len_llt, "i64") != 0) {
+                    int lz = new_tmp(cg);
+                    emit(cg, "  %%t%d = zext %s %s to i64\n", lz, len_llt, len_val.buf);
+                    len64 = val_tmp(lz);
+                }
+                int t0 = new_tmp(cg);
+                emit(cg, "  %%t%d = insertvalue { ptr, i64 } undef, ptr %s, 0\n", t0, ptr_val.buf);
+                int t1 = new_tmp(cg);
+                emit(cg, "  %%t%d = insertvalue { ptr, i64 } %%t%d, i64 %s, 1\n",
+                     t1, t0, len64.buf);
+                return val_tmp(t1);
+            }
+
             /* @unreachable / @todo */
             if (!strcmp(name, "unreachable") || !strcmp(name, "todo")) {
                 emit(cg, "  call void @exit(i32 1)\n");

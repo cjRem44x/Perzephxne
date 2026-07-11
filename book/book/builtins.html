@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-0c316b0c.js";
+            window.path_to_searchindex_js = "searchindex-959f65a1.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-4e58bc13.js"></script>
@@ -264,6 +264,7 @@ b3: bool = @bool("yes")    # false
 <tr><td><code>@memset(dst, byte, n)</code></td><td><code>void</code></td><td>fill <code>n</code> bytes with <code>byte</code></td></tr>
 <tr><td><code>@addr(expr)</code></td><td><code>*T</code></td><td>address of a variable, field, or index expression — like <code>&amp;</code> but usable in more contexts</td></tr>
 <tr><td><code>@str_raw(ptr, len)</code></td><td><code>str</code></td><td>construct a <code>str</code> fat pointer from a raw <code>*u8</code> and a <code>usize</code> length</td></tr>
+<tr><td><code>@slice(ptr, len)</code></td><td><code>[]T</code></td><td>construct a slice fat pointer from a raw <code>*T</code> and a <code>usize</code> length — the <code>@str_raw</code> of slices, for when a count is only known at runtime (e.g. <code>std/file.list</code>)</td></tr>
 </tbody>
 </table>
 </div>

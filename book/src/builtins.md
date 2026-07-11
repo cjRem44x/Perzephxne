@@ -104,6 +104,7 @@ b3: bool = @bool("yes")    # false
 | `@memset(dst, byte, n)` | `void` | fill `n` bytes with `byte` |
 | `@addr(expr)` | `*T` | address of a variable, field, or index expression — like `&` but usable in more contexts |
 | `@str_raw(ptr, len)` | `str` | construct a `str` fat pointer from a raw `*u8` and a `usize` length |
+| `@slice(ptr, len)` | `[]T` | construct a slice fat pointer from a raw `*T` and a `usize` length — the `@str_raw` of slices, for when a count is only known at runtime (e.g. `std/file.list`) |
 
 ```
 f: f32    = 1.0

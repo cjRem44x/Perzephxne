@@ -362,19 +362,24 @@ static void rw_ident_expr(Expr *e, const char **orig, size_t n_orig,
 /* Prefix all item names in mod with "alias__", and rewrite type references */
 static void mangle_items(Module *mod, const char *alias, Arena *arena) {
     /* Collect all item names — both extern fns and regular fns get prefixed.
-       Extern fn names in function bodies also need rewriting to call the wrapper. */
-    const char *orig[256];
+       Extern fn names in function bodies also need rewriting to call the wrapper.
+       Sized to mod->items.len (no fixed cap): a deep-enough import tree —
+       e.g. std/graphics pulling in std/image, which pulls in std/file and
+       std/str — easily exceeds a couple hundred merged items, and a fixed
+       cap here silently truncated which names got rewritten, corrupting
+       calls into whichever names fell past the cutoff. */
+    const char **orig = arena_alloc(arena, mod->items.len * sizeof(char *));
     size_t n_orig = 0;
-    for (size_t i = 0; i < mod->items.len && n_orig < 256; i++) {
+    for (size_t i = 0; i < mod->items.len; i++) {
         Item *item = mod->items.data[i];
         if (item->name)
             orig[n_orig++] = item->name;
     }
 
     /* collect ALL original names for type-name rewriting (structs, enums, etc.) */
-    const char *all_orig[256];
+    const char **all_orig = arena_alloc(arena, mod->items.len * sizeof(char *));
     size_t n_all_orig = 0;
-    for (size_t i = 0; i < mod->items.len && n_all_orig < 256; i++) {
+    for (size_t i = 0; i < mod->items.len; i++) {
         Item *item = mod->items.data[i];
         if (item->name) all_orig[n_all_orig++] = item->name;
     }
@@ -494,15 +499,16 @@ static void rw_item(Item *item, const char **al, size_t n, Arena *a);
 static void expand_mod_items(Module *mod, Arena *arena) {
     int any_mod = 0;
     size_t total = 0;
+    size_t n_mods = 0;
     for (size_t i = 0; i < mod->items.len; i++) {
         Item *it = mod->items.data[i];
-        if (it->kind == ITEM_MOD) { any_mod = 1; total += it->mod_.items.len; }
+        if (it->kind == ITEM_MOD) { any_mod = 1; total += it->mod_.items.len; n_mods++; }
         else total += 1;
     }
     if (!any_mod) return;
 
-    const char *mod_names[64];
-    size_t      n_mod_names = 0;
+    const char **mod_names = arena_alloc(arena, n_mods * sizeof(char *));
+    size_t       n_mod_names = 0;
 
     Item **out = arena_alloc(arena, total * sizeof(Item *));
     size_t n = 0;
@@ -510,7 +516,7 @@ static void expand_mod_items(Module *mod, Arena *arena) {
         Item *it = mod->items.data[i];
         if (it->kind != ITEM_MOD) { out[n++] = it; continue; }
 
-        if (n_mod_names < 64) mod_names[n_mod_names++] = it->name;
+        mod_names[n_mod_names++] = it->name;
 
         Module pseudo = {0};
         pseudo.items     = it->mod_.items;
@@ -728,8 +734,15 @@ static void merge_items(Module *mod, Module *imp) {
  */
 static int load_imports(Module *mod, const char *src_path, const char *src,
                         Arena *arena, const char **loading, size_t n_loading) {
-    /* collect (alias, resolved-path) pairs from ITEM_IMPORT items */
-    const char *aliases[64];
+    /* collect (alias, resolved-path) pairs from ITEM_IMPORT items. Sized to
+       the actual total import-entry count (no fixed cap) — a file with
+       many import() statements, or one import() listing many aliases,
+       shouldn't silently lose alias rewriting past an arbitrary cutoff. */
+    size_t max_aliases = 0;
+    for (size_t i = 0; i < mod->items.len; i++)
+        if (mod->items.data[i]->kind == ITEM_IMPORT)
+            max_aliases += mod->items.data[i]->imports.len;
+    const char **aliases = arena_alloc(arena, max_aliases * sizeof(char *));
     size_t      n_aliases = 0;
     char        src_dir[1024];
     src_dir_of(src_path, src_dir, sizeof(src_dir));
@@ -737,11 +750,11 @@ static int load_imports(Module *mod, const char *src_path, const char *src,
        touches the caller's own code, not the imported (already-mangled) items */
     size_t n_orig_items = mod->items.len;
 
-    for (size_t i = 0; i < mod->items.len && n_aliases < 64; i++) {
+    for (size_t i = 0; i < mod->items.len; i++) {
         Item *item = mod->items.data[i];
         if (item->kind != ITEM_IMPORT) continue;
 
-        for (size_t j = 0; j < item->imports.len && n_aliases < 64; j++) {
+        for (size_t j = 0; j < item->imports.len; j++) {
             const char *alias     = item->imports.data[j].alias;
             const char *imp_path  = item->imports.data[j].path;
 
