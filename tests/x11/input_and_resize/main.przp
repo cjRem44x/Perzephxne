@@ -1,0 +1,85 @@
+# Exercises std/graphics/window's resize + input event field readers
+# (event_keycode, event_button, event_x, event_y, event_width,
+# event_height) against synthetic events, the same technique
+# tests/x11/window_close uses for ClientMessage: hand-build a raw XEvent
+# byte buffer with known field values, deliver it to our own window's
+# queue via XSendEvent (a real round trip through the X server), then
+# confirm the readers pull back exactly what was set. This checks the
+# byte-offset decoding itself, not XKeycodeToKeysym/keyboard-layout
+# behavior (which depends on the running system's keymap and isn't
+# something a portable regression test can pin down) — that mapping
+# lives in std/graphics (layer 2) and is tested there with hardcoded
+# keysym constants instead of real key events.
+
+import(win = "std/graphics/window")
+
+fn send_fake(display: *u8, window: u64, ty: i32, x: i32, y: i32,
+             detail: u32, w: i32, h: i32) {
+    buf: [192]u8 = undef
+    base: *u8 = &buf[0]
+    tp: *i32 = base
+    tp.* = ty
+    wp: *u64 = base + 32
+    wp.* = window
+    xp: *i32 = base + 64
+    xp.* = x
+    yp: *i32 = base + 68
+    yp.* = y
+    dp: *u32 = base + 84
+    dp.* = detail
+    widp: *i32 = base + 56
+    widp.* = w
+    heip: *i32 = base + 60
+    heip.* = h
+    win.XSendEvent(display, window, 0, 0, base)
+}
+
+fn main() -> i32 {
+    display: *u8 = win.XOpenDisplay(null)
+    if display == null {
+        @perr("XOpenDisplay")
+        ret 1
+    }
+
+    screen: i32 = win.XDefaultScreen(display)
+    root: u64 = win.XRootWindow(display, screen)
+    window: u64 = win.XCreateSimpleWindow(display, root, 0, 0, 320u32, 240u32, 1u32, 0u64, 0u64)
+    win.XMapWindow(display, window)
+    win.XFlush(display)
+
+    send_fake(display, window, win.EVENT_KEY_PRESS, 0, 0, 42u32, 0, 0)
+    send_fake(display, window, win.EVENT_KEY_RELEASE, 0, 0, 43u32, 0, 0)
+    send_fake(display, window, win.EVENT_BUTTON_PRESS, 100, 150, 1u32, 0, 0)
+    send_fake(display, window, win.EVENT_BUTTON_RELEASE, 10, 20, 3u32, 0, 0)
+    send_fake(display, window, win.EVENT_MOTION_NOTIFY, 200, 250, 0u32, 0, 0)
+    send_fake(display, window, win.EVENT_CONFIGURE_NOTIFY, 0, 0, 0u32, 640, 480)
+    win.XFlush(display)
+
+    event: [192]u8 = undef
+    base: *u8 = &event[0]
+    i: i32 = 0
+    while i < 6 {
+        win.XNextEvent(display, base)
+        ty: i32 = win.event_type(base)
+        if ty == win.EVENT_KEY_PRESS {
+            @pf("KeyPress keycode={win.event_keycode(base)}\n")
+        } elif ty == win.EVENT_KEY_RELEASE {
+            @pf("KeyRelease keycode={win.event_keycode(base)}\n")
+        } elif ty == win.EVENT_BUTTON_PRESS {
+            @pf("ButtonPress button={win.event_button(base)} x={win.event_x(base)} y={win.event_y(base)}\n")
+        } elif ty == win.EVENT_BUTTON_RELEASE {
+            @pf("ButtonRelease button={win.event_button(base)} x={win.event_x(base)} y={win.event_y(base)}\n")
+        } elif ty == win.EVENT_MOTION_NOTIFY {
+            @pf("MotionNotify x={win.event_x(base)} y={win.event_y(base)}\n")
+        } elif ty == win.EVENT_CONFIGURE_NOTIFY {
+            @pf("ConfigureNotify width={win.event_width(base)} height={win.event_height(base)}\n")
+        } else {
+            @pf("unexpected event type {ty}\n")
+        }
+        i += 1
+    }
+
+    win.XDestroyWindow(display, window)
+    win.XCloseDisplay(display)
+    ret 0
+}

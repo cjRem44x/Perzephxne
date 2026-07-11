@@ -1,0 +1,51 @@
+# Fixed-capacity, array-backed Stack<T> (LIFO) and Queue<T> (FIFO, ring
+# buffer). Fixed capacity keeps the example simple — see dsa/linked_list for
+# an unbounded, pointer-based alternative.
+
+CAP: usize : 64
+
+struct Stack<T> {
+    data: [64]T,
+    len:  usize,
+}
+
+impl Stack<T> {
+    fn new() -> Stack<T> { ret Stack<T>{.len=0} }
+
+    fn push(self: *Stack<T>, v: T) {
+        self.data[self.len] = v
+        self.len += 1
+    }
+
+    fn pop(self: *Stack<T>) -> T {
+        self.len -= 1
+        ret self.data[self.len]
+    }
+
+    fn is_empty(self: *Stack<T>) -> bool { ret self.len == 0 }
+}
+
+struct Queue<T> {
+    data:  [64]T,
+    head:  usize,
+    len:   usize,
+}
+
+impl Queue<T> {
+    fn new() -> Queue<T> { ret Queue<T>{.head=0, .len=0} }
+
+    fn enqueue(self: *Queue<T>, v: T) {
+        tail: usize = (self.head + self.len) % CAP
+        self.data[tail] = v
+        self.len += 1
+    }
+
+    fn dequeue(self: *Queue<T>) -> T {
+        v: T = self.data[self.head]
+        self.head = (self.head + 1) % CAP
+        self.len -= 1
+        ret v
+    }
+
+    fn is_empty(self: *Queue<T>) -> bool { ret self.len == 0 }
+}

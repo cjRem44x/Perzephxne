@@ -1,0 +1,12 @@
+import(t = "../src/logic")
+
+test "insert and contains" {
+    tree: t.Tree = t.Tree.new()
+    values: [5]i32 = [5, 3, 8, 1, 4]
+    for v => values {
+        tree.insert(v)
+    }
+    @assert(tree.contains(3))
+    @assert(tree.contains(8))
+    @assert(!tree.contains(100))
+}

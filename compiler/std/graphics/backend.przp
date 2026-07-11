@@ -1,0 +1,45 @@
+# std/graphics/backend — the fixed GPU backend contract (see
+# book/graphics.md's "backend contract" prerequisite). Perzephxne has no
+# trait/interface mechanism, so the contract is a concrete struct of
+# function pointers rather than an abstract type: any backend module
+# builds one `Backend` value wiring its own functions into these fields,
+# and std/graphics (once it exists) holds and calls through that value
+# without knowing which backend produced it.
+#
+# `std/graphics/gl` is the first (and, for now, only) implementation —
+# see its `GL_BACKEND` constant.
+#
+# Scope note: this is deliberately the smallest contract that today's
+# capabilities (a cleared, presented frame) can back for real. Submitting
+# geometry, uploading textures, and binding shaders are named in
+# book/graphics.md's design sketch but stay out of this struct until the
+# runtime GL-function loader (book/graphics.md prerequisite #2) makes a
+# real implementation possible — adding fields later, once they mean
+# something, costs nothing this early in the language's life.
+#
+# `init`'s parameter shape (`display`/`window`) mirrors std/graphics/window's
+# current X11-only handles; it will need revisiting the day a second
+# windowing backend (Wayland, Win32, ...) exists behind a portable window
+# handle instead.
+
+struct Backend {
+    # (display: *u8, window: u64) -> ctx: *u8 — opens a rendering context
+    # bound to the given native window and returns an opaque backend-context
+    # handle (null on failure). Every other field below receives that handle
+    # back — backend-specific setup (GLX visual selection, a future Vulkan
+    # surface/device, ...) happens entirely inside `init` and is never
+    # exposed above it.
+    init: fn(*u8, u64) -> *u8,
+
+    # (ctx: *u8, r: f32, g: f32, b: f32, a: f32) — clears the frame to a
+    # solid color.
+    clear: fn(*u8, f32, f32, f32, f32),
+
+    # (ctx: *u8) — presents the frame drawn since the last `present` (or
+    # since `init`) to the screen.
+    present: fn(*u8),
+
+    # (ctx: *u8) — releases everything `init` allocated. `ctx` is not valid
+    # after this call.
+    shutdown: fn(*u8),
+}

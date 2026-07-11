@@ -1,0 +1,64 @@
+# Exercises std/image's PNG decoder and std/graphics's Texture end to end:
+# decode + upload + draw + read back, against two fixtures chosen to cover
+# different parts of the decoder:
+#
+# - fixture.png: 8x6 RGB, every scanline filter type None. Hand-rolled
+#   (not shipped: /tmp/make_png.c in the session that generated it) with
+#   an exactly known formula per pixel: (x, y) -> (x*10, y*10, x*7+y*3+1).
+# - fixture_rgba.png: 32x24 RGBA, encoded by real libpng with its default
+#   *adaptive* per-row filter selection — exercises Sub/Up/Average/Paeth
+#   reconstruction, not just None, the same way a real-world PNG export
+#   would. Also hand-rolled offline (not shipped), formula per pixel:
+#   r=(x*37+y*11)%256, g=(x*x+y)%256, b=255-x*5-y*2, a=200+x-y.
+#
+# draw_texture draws at the texture's native resolution (no stretching),
+# so sampling at screen (x, window_height-1-y) reads texel (x, y) of
+# whichever texture was drawn at (0, 0) most recently.
+
+import(gfx = "std/graphics")
+import(gl  = "std/graphics/gl")
+
+WIN_H: i32 = 24
+
+fn check(x: i32, y: i32, want_r: u8, want_g: u8, want_b: u8) {
+    pixel: [4]u8 = undef
+    gl.glReadPixels(x, WIN_H - 1 - y, 1, 1, gl.GL_RGBA, gl.GL_UNSIGNED_BYTE, &pixel[0])
+    @pf("({x},{y}): {pixel[0]} {pixel[1]} {pixel[2]}\n")
+}
+
+fn main() -> i32 {
+    win: gfx.Window = gfx.Window.open("texture load test", 32, 24)
+
+    t1, err1: !gfx.Texture = gfx.Texture.load("tests/gl/texture_load/fixture.png")
+    if err1 != 0 {
+        @pf("fixture.png load failed: {err1}\n")
+        ret 1
+    }
+    @pf("fixture: {t1.w}x{t1.h}\n")
+
+    gfx.begin_drawing()
+    gfx.clear_background(gfx.BLACK)
+    gfx.draw_texture(t1, 0.0, 0.0)
+
+    check(0, 0, 0u8, 0u8, 1u8)
+    check(2, 3, 20u8, 30u8, 24u8)
+    check(7, 5, 70u8, 50u8, 65u8)
+
+    t2, err2: !gfx.Texture = gfx.Texture.load("tests/gl/texture_load/fixture_rgba.png")
+    if err2 != 0 {
+        @pf("fixture_rgba.png load failed: {err2}\n")
+        ret 1
+    }
+    @pf("fixture_rgba: {t2.w}x{t2.h}\n")
+
+    gfx.draw_texture(t2, 0.0, 0.0)
+
+    check(0, 0, 0u8, 0u8, 255u8)
+    check(3, 2, 133u8, 11u8, 236u8)
+    check(10, 5, 169u8, 105u8, 195u8)
+
+    t1.unload()
+    t2.unload()
+    win.close()
+    ret 0
+}

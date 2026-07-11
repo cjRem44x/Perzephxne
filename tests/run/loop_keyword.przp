@@ -1,0 +1,26 @@
+# regression: `loop { ... }` — documented in book/control-flow.md as an
+# infinite loop requiring an explicit break, but never actually implemented
+# in the lexer/parser (an "undefined identifier 'loop'" error). Desugars to
+# `while true { ... }`, including the labeled form.
+
+fn main() -> i32 {
+    n: i32 = 0
+    loop {
+        if n >= 3 { break }
+        @pf("tick {n}\n")
+        n += 1
+    }
+
+    outer: loop {
+        i: i32 = 0
+        loop {
+            if i >= 2 { break }
+            @pf("inner {i}\n")
+            i += 1
+        }
+        break outer
+    }
+
+    @pf("done\n")
+    ret 0
+}

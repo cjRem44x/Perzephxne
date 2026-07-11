@@ -628,6 +628,22 @@ static Type *check_expr(Sema *s, Expr *e) {
                 /* @addr(x) → *T  (same as &x) */
                 Type *arg = e->builtin.args.data[0]->ty;
                 ret = make_ptr(s, TY_PTR, arg);
+            } else if (!strcmp(e->builtin.name, "slice") && e->builtin.args.len >= 2) {
+                /* @slice(ptr: *T, len: usize) → []T — constructs a slice
+                   value directly from a raw pointer and a runtime length,
+                   the one thing array-decay and range-indexing can't do
+                   (both require an existing array/slice value already
+                   attached to a size). Element type comes from the
+                   pointer argument, the same way @clone infers from its
+                   ^T argument. */
+                Type *ptr_ty = e->builtin.args.data[0]->ty;
+                if (ptr_ty && (ptr_ty->kind == TY_PTR || ptr_ty->kind == TY_SMART_PTR)) {
+                    ret = make_ptr(s, TY_SLICE, ptr_ty->ptr.inner);
+                } else {
+                    sema_error(s, e->span, "@slice expects a pointer as its first argument, got '%s'",
+                               ptr_ty ? ty_str(ptr_ty) : "unknown");
+                    ret = make_ptr(s, TY_SLICE, NULL);
+                }
             } else if (!ret && e->builtin.args.len > 0) {
                 /* for min/max/abs: inherit first arg type */
                 ret = e->builtin.args.data[0]->ty;

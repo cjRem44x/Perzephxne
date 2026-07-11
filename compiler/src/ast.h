@@ -263,6 +263,10 @@ typedef enum {
     ITEM_GLOBAL,
     ITEM_IMPORT,
     ITEM_EXTERN_FN,
+    ITEM_MOD,      /* mod Name { ...items... } — an inline namespace, in the
+                       same file, accessed as Name=>Item (see main.c's
+                       mangle_items, reused here to prefix the block's own
+                       items with "Name__" the same way an import does). */
 } ItemKind;
 
 struct Item {
@@ -332,6 +336,8 @@ struct Item {
             int          variadic;
             const char  *c_name; /* original C symbol name when imported (NULL otherwise) */
         } extern_fn;
+
+        struct { ItemList items; } mod_;
     };
 };
 

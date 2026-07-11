@@ -1,0 +1,13 @@
+import(t = "../src/logic")
+
+test "push_front and pop_front are LIFO" {
+    list: t.List<i32> = t.List<i32>.new()
+    list.push_front(1)
+    list.push_front(2)
+    list.push_front(3)
+    @assert(list.len == 3)
+    @assert(list.pop_front() == 3)
+    @assert(list.pop_front() == 2)
+    @assert(list.pop_front() == 1)
+    @assert(list.is_empty())
+}

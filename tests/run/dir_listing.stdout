@@ -1,0 +1,11 @@
+count=3
+has alpha.txt=1
+has beta.txt=1
+has sub=1
+is_file(alpha.txt)=1
+is_dir(alpha.txt)=0
+is_dir(sub)=1
+is_file(sub)=0
+is_file(nonexistent)=0
+is_dir(nonexistent)=0
+list(nonexistent) err=1

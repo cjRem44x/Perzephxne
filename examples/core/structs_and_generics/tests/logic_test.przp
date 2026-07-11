@@ -1,0 +1,22 @@
+import(t = "../src/logic")
+
+test "vec2 len and scale" {
+    v: t.Vec2 = t.Vec2.new(3.0, 4.0)
+    @assert(v.len() == 5.0)
+    v.scale(2.0)
+    @assert(v.x == 6.0)
+    @assert(v.y == 8.0)
+}
+
+test "vec2 add is static" {
+    sum: t.Vec2 = t.Vec2.add(t.Vec2.new(1.0, 2.0), t.Vec2.new(3.0, 4.0))
+    @assert(sum.x == 4.0)
+    @assert(sum.y == 6.0)
+}
+
+test "box get and set" {
+    b: t.Box<i32> = t.Box<i32>.new(1)
+    @assert(b.get() == 1)
+    b.set(2)
+    @assert(b.get() == 2)
+}

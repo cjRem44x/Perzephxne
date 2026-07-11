@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-b3a4d4a9.js";
+            window.path_to_searchindex_js = "searchindex-c52d590b.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-4e58bc13.js"></script>
@@ -226,9 +226,19 @@ p.* = 42
 # ...
 @free(p)
 </code></pre>
-<p>Use <code>@new(T)</code> for reference-counted smart pointer allocation:</p>
+<p><code>.* = </code> writes a whole aggregate value through a pointer too, not just scalars — a struct or array literal, or another variable of the same type:</p>
+<pre><code>struct Point { x: i32, y: i32 }
+
+p: *Point = @alo(Point)
+p.* = Point{.x=1, .y=2}   # overwrites the whole struct
+
+nums: [3]i32 = [0, 0, 0]
+np: *[3]i32 = &amp;nums
+np.* = [10, 20, 30]
+</code></pre>
+<p>Use <code>@new(T)</code> for reference-counted smart pointer allocation. Dereference a <code>^T</code> with <code>.^</code>, not <code>.*</code> — see <a href="./smart-pointers.html">Smart Pointers</a> for why the two aren’t interchangeable:</p>
 <pre><code>p: ^i32 = @new(i32)
-p.* = 42
+p.^ = 42
 @release(p)    # RC drop; frees when count reaches 0
 </code></pre>
 <p>For raw byte buffers use <code>@alo</code> (allocate) and <code>@free</code>:</p>

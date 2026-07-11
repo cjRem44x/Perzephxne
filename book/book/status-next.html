@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-b3a4d4a9.js";
+            window.path_to_searchindex_js = "searchindex-c52d590b.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-4e58bc13.js"></script>
@@ -186,6 +186,7 @@
 <li>functions, first-class function pointers, extern declarations, inline functions, and return inference</li>
 <li>control flow, <code>when</code>, loops, labels, <code>break</code>, <code>continue</code>, <code>goto</code>, and <code>defer</code></li>
 <li>structs, <code>impl</code> methods, generic functions, generic structs, enums, plain unions, and tagged unions</li>
+<li>inline <code>mod</code> namespaces and <code>=&gt;</code> as a module-access operator interchangeable with <code>.</code></li>
 <li>raw pointers, heap allocation, smart pointers, globals, platform constants, inline assembly, builtins, operators, and naming conventions</li>
 <li>all standard library modules shipped under <code>compiler/std</code></li>
 </ul>
@@ -206,6 +207,8 @@
 <tr><td><code>any</code> type</td><td>Reserved keyword. Runtime-tagged values (boxing, type IDs, <code>when</code> dispatch on types) are designed but not implemented; removed from the reference until they exist.</td></tr>
 <tr><td>Struct-by-value FFI, non-imported <code>extern fn</code></td><td><code>extern fn foo(v: Vector2) -&gt; Vector2</code> declared directly in a file (not reached via <code>import()</code>) fails to compile if it needs struct-by-value ABI handling — the wrapper mechanism needs an import alias to redirect call sites to (see <a href="./stdlib.html">Standard Library</a>). Move the declaration into its own module and <code>import()</code> it, which is fully supported.</td></tr>
 <tr><td><code>@bitcast</code> pointer type arguments</td><td><code>@bitcast(T, val)</code>’s type argument only accepts a bare type name (<code>u32</code>, <code>vec2</code>) — a compound type expression like <code>*u8</code> doesn’t parse. Not a practical limitation for pointer reinterpretation specifically, since a raw pointer already coerces to any other raw pointer type via plain assignment (see <a href="./pointers.html">Pointers &amp; Memory</a>), but the parser gap is real for anyone trying to <code>@bitcast</code> to e.g. a slice or smart-pointer type.</td></tr>
+<tr><td>Array size via a named constant (<code>[CAP]T</code>)</td><td>An array type’s size is only evaluated as a compile-time constant when it’s a literal integer (<code>[64]T</code>) — a global constant identifier in that position (<code>CAP: usize : 64</code> used as <code>[CAP]T</code>) silently computes a size of 0 instead, corrupting the struct’s layout (fields after the array overlap it rather than following it). Fixing this means teaching every array-size call site in codegen to evaluate a constant expression generally, not just check for a literal <code>EXPR_INT</code>. Use a literal size for now.</td></tr>
+<tr><td>Two-level non-generic access through <code>mod</code> + <code>import</code></td><td>A plain free function, a non-generic struct’s static method, or an enum variant declared inside a <code>mod</code> block that itself lives inside an <em>imported</em> file isn’t reachable through the full two-level path (<code>lib.Y.someFreeFn()</code>, <code>lib.Y.Circle.new(...)</code>, <code>lib.Y.Direction.North</code>) — only one level of alias resolves for these today (mod access local to the current file, or plain import access to a non-mod item). <strong>Generic</strong> struct/impl access at that same depth (<code>lib.Y.Box&lt;i32&gt;.new(...)</code>) is unaffected, since it resolves entirely at parse time rather than through the post-hoc alias-collapsing pass the other cases rely on; see <a href="./modules.html">Modules</a>.</td></tr>
 </tbody>
 </table>
 </div>

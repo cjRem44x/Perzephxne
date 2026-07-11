@@ -1,0 +1,21 @@
+# examples/use_cases/word_count — count word frequency in a block of text.
+# Run it with: przp run   (from this directory)
+
+import(logic = "logic")
+
+fn main() -> i32 {
+    text: str = "the quick brown fox jumps over the lazy dog the fox runs"
+    wc: logic.WordCounts = logic.count_words(text)
+
+    @pf("word counts:\n")
+    for i => 0..wc.len {
+        @pf("  {wc.words[i]}: {wc.counts[i]}\n")
+    }
+
+    the_count: i32 = wc.count_of("the")
+    fox_count: i32 = wc.count_of("fox")
+    @pf("\n'the' appears {the_count} times\n")
+    @pf("'fox' appears {fox_count} times\n")
+    @pf("done\n")
+    ret 0
+}

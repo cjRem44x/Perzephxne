@@ -1,0 +1,6 @@
+[package]
+name = "stack_and_queue"
+version = "0.1.0"
+
+[build]
+entry = "src/main.przp"

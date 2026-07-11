@@ -1,0 +1,24 @@
+# regression: assigning a struct or array literal through a pointer
+# dereference (`p.* = Foo{...}` / `p.* = [1,2,3]`) used to store the
+# literal's own alloca address into the target instead of its bytes —
+# codegen's EXPR_DEREF assign-target path was missing the "struct/array
+# rhs comes back as a ptr, load it before storing" step that other
+# aggregate-assignment paths (STMT_RET, `.^ = `) already had.
+
+struct Foo {
+    a: *u8,
+    b: u64,
+    c: *u8,
+}
+
+fn main() -> i32 {
+    p: *Foo = @alo(Foo)
+    p.* = Foo{.a=null, .b=5u64, .c=null}
+    @pf("{p.b} {p.a == null} {p.c == null}\n")
+
+    nums: [3]i32 = [0, 0, 0]
+    np: *[3]i32 = &nums
+    np.* = [10, 20, 30]
+    @pf("{nums[0]} {nums[1]} {nums[2]}\n")
+    ret 0
+}

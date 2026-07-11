@@ -1,0 +1,32 @@
+# regression: a generic struct/impl reached through an import() alias didn't
+# work at all through `alias.Type<Args>` syntax — the qualified-generic
+# form was only handled in type position (parse_type), not in expression
+# position (struct literals, static method calls via parse_postfix), and
+# even where the parser did handle it, the imported module's own impl-block
+# methods still referenced the struct by its pre-mangling name ("Box__T"
+# instead of "alias__Box__T") since the import-mangling pass only did exact
+# string matches, never recognizing a generic-instantiation-shaped name as
+# a reference to the type it's instantiated from.
+
+import(h = "helpers/generic_box")
+
+fn main() -> i32 {
+    # qualified generic struct literal (single and multi type param)
+    b: h.Box<i32> = h.Box<i32>{.value=1}
+    @pf("literal: {b.value}\n")
+
+    p: h.Pair<i32, str> = h.Pair<i32, str>{.first=1, .second="one"}
+    @pf("pair: {p.first} {p.second}\n")
+
+    # qualified generic static method call — this is the path that needs the
+    # imported impl block's own self-references correctly re-mangled
+    c: h.Box<i32> = h.Box<i32>.new(42)
+    @pf("new: {c.get()}\n")
+    c.set(99)
+    @pf("set: {c.get()}\n")
+
+    bs: h.Box<str> = h.Box<str>.new("hello")
+    @pf("str box: {bs.get()}\n")
+
+    ret 0
+}

@@ -308,7 +308,7 @@ run_gl_case() {
     local expected="$src_dir/stdout"
 
     printf 'gl    %s\n' "$name"
-    if ! PRZP_STDLIB="$STDLIB" "$PRZP" sac "$src_dir/main.przp" -lX11 -lGL -o="$bin" \
+    if ! PRZP_STDLIB="$STDLIB" "$PRZP" sac "$src_dir/main.przp" -lX11 -lGL -lz -o="$bin" \
             >"$TMP/out/$name.gl.compile.stdout" 2>"$compile_err"; then
         printf 'FAIL  %s: gl compile failed\n' "$name" >&2
         sed -n '1,120p' "$compile_err" >&2
@@ -643,6 +643,62 @@ EOF
     fi
 }
 
+# regression: a tests/ file importing the same generic module the entry file
+# also imports (each under its own alias) used to fail — merge_items() only
+# merged items, never gen_insts, so a tests/ file's own qualified generic
+# usage (recorded as a gen_inst against its own parser) never reached sema
+# once merged into the entry file's module.
+run_tests_dir_generic_case() {
+    local work="$TMP/tests_dir_generic/proj"
+    local stdout="$TMP/out/tests_dir_generic.stdout"
+    local stderr="$TMP/err/tests_dir_generic.stderr"
+
+    printf 'run   tests_dir_generic\n'
+    mkdir -p "$work/src" "$work/tests"
+    cat > "$work/przp.toml" <<'EOF'
+[package]
+name = "tdgen"
+version = "0.1.0"
+EOF
+    cat > "$work/src/logic.przp" <<'EOF'
+struct Box<T> { value: T }
+impl Box<T> {
+    fn new(v: T) -> Box<T> { ret Box<T>{.value=v} }
+    fn get(self: *Box<T>) -> T { ret self.value }
+}
+EOF
+    cat > "$work/src/main.przp" <<'EOF'
+import(logic = "logic")
+fn main() -> i32 {
+    b: logic.Box<i32> = logic.Box<i32>.new(42)
+    @pf("{b.get()}\n")
+    ret 0
+}
+EOF
+    cat > "$work/tests/box_test.przp" <<'EOF'
+import(t = "../src/logic")
+test "box via a different alias than main.przp uses" {
+    b: t.Box<i32> = t.Box<i32>.new(1)
+    @assert(b.get() == 1)
+}
+EOF
+
+    (cd "$work" && PRZP_STDLIB="$STDLIB" "$PRZP" run >"$stdout" 2>"$stderr")
+    if [ "$?" -ne 0 ] || ! grep -Fq "42" "$stdout"; then
+        printf 'FAIL  tests_dir_generic: przp run did not print 42\n' >&2
+        sed -n '1,40p' "$stdout" "$stderr" >&2
+        failures=$((failures + 1))
+        return
+    fi
+
+    (cd "$work" && PRZP_STDLIB="$STDLIB" "$PRZP" test >"$stdout" 2>"$stderr")
+    if [ "$?" -ne 0 ] || ! grep -Fq "1 passed, 0 failed" "$stdout"; then
+        printf 'FAIL  tests_dir_generic: przp test did not pass\n' >&2
+        sed -n '1,40p' "$stdout" "$stderr" >&2
+        failures=$((failures + 1))
+    fi
+}
+
 for src in "$ROOT"/tests/run/*.przp; do
     [ -e "$src" ] || continue
     run_success_case "$src"
@@ -688,6 +744,7 @@ run_init_case
 run_freshness_case
 run_test_cmd_case
 run_tests_dir_case
+run_tests_dir_generic_case
 
 run_cli_fail unknown_command "unknown command 'nope'" "$PRZP" nope
 run_cli_fail sac_no_files "przp sac: no input files" "$PRZP" sac

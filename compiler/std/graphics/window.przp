@@ -5,12 +5,16 @@
 # who needs to drop to raw Xlib, have something honest to build on.
 #
 # XEvent is a 192-byte C union; every event variant shares "type" at byte
-# offset 0 and (for the events used here) "window" at offset 32.
-# ClientMessage additionally has "message_type" (an Atom) at offset 40 and
-# its data union at offset 56. These offsets were checked against a real
-# compile of <X11/Xlib.h> on x86-64 Linux (offsetof each field), not
-# guessed — Xlib gives no other portable way to read event fields from a
-# bare byte buffer without a full struct-by-value FFI binding for XEvent.
+# offset 0 and "window"/"event" (the window the event is reported to) at
+# byte offset 32. ClientMessage additionally has "message_type" (an Atom)
+# at offset 40 and its data union at offset 56; KeyPress/KeyRelease and
+# ButtonPress/ButtonRelease share "keycode"/"button" (both plain `unsigned
+# int`) at offset 84; ButtonPress/Release and MotionNotify share "x"/"y"
+# at offsets 64/68; ConfigureNotify has "width"/"height" at offsets 56/60.
+# These offsets were checked against a real compile of <X11/Xlib.h> on
+# x86-64 Linux (offsetof each field), not guessed — Xlib gives no other
+# portable way to read event fields from a bare byte buffer without a full
+# struct-by-value FFI binding for XEvent.
 
 extern fn XOpenDisplay(name: *u8) -> *u8
 extern fn XCloseDisplay(display: *u8) -> i32
@@ -29,8 +33,38 @@ extern fn XPending(display: *u8) -> i32
 extern fn XFlush(display: *u8) -> i32
 extern fn XSendEvent(display: *u8, window: u64, propagate: i32, mask: i64, event: *u8) -> i32
 
+# KeySym for a given (Display, KeyCode, index). index 0 is the plain
+# (unshifted) symbol, which is all the Key mapping in std/graphics needs
+# today. Deprecated in favor of XGetKeyboardMapping in modern Xlib, but
+# still a real exported symbol and far simpler for a single-keycode lookup.
+extern fn XKeycodeToKeysym(display: *u8, keycode: u8, index: i32) -> u64
+
 EVENT_SIZE: usize = 192
-EVENT_CLIENT_MESSAGE: i32 = 33
+
+EVENT_KEY_PRESS:        i32 = 2
+EVENT_KEY_RELEASE:      i32 = 3
+EVENT_BUTTON_PRESS:     i32 = 4
+EVENT_BUTTON_RELEASE:   i32 = 5
+EVENT_MOTION_NOTIFY:    i32 = 6
+EVENT_CONFIGURE_NOTIFY: i32 = 22
+EVENT_CLIENT_MESSAGE:   i32 = 33
+
+MASK_KEY_PRESS:        i64 = 1
+MASK_KEY_RELEASE:      i64 = 2
+MASK_BUTTON_PRESS:     i64 = 4
+MASK_BUTTON_RELEASE:   i64 = 8
+MASK_POINTER_MOTION:   i64 = 64
+MASK_STRUCTURE_NOTIFY: i64 = 131072
+
+# The mask std/graphics registers by default: enough to track key state,
+# mouse position/buttons, and resizes, without also asking for every
+# unrelated event class (e.g. focus/enter/leave) it doesn't read yet.
+# = MASK_KEY_PRESS | MASK_KEY_RELEASE | MASK_BUTTON_PRESS |
+#   MASK_BUTTON_RELEASE | MASK_POINTER_MOTION | MASK_STRUCTURE_NOTIFY
+#   (1 + 2 + 4 + 8 + 64 + 131072), written as one literal since these bits
+#   never overlap and a global's constant initializer can't reference
+#   other globals yet (see Status & Next Work).
+INPUT_MASK: i64 = 131151
 
 # event_type: the event's type tag (byte offset 0 in every XEvent variant)
 fn event_type(buf: *u8) -> i32 {
@@ -55,5 +89,46 @@ fn event_client_message_type(buf: *u8) -> u64 {
 # protocol's Atom (e.g. WM_DELETE_WINDOW) here.
 fn event_client_data_l0(buf: *u8) -> i64 {
     p: *i64 = buf + 56
+    ret p.*
+}
+
+# event_keycode: the raw hardware keycode (byte offset 84) of a
+# KeyPress/KeyRelease event. Pass to XKeycodeToKeysym to get a portable
+# key symbol.
+fn event_keycode(buf: *u8) -> u32 {
+    p: *u32 = buf + 84
+    ret p.*
+}
+
+# event_button: the button number (byte offset 84 — the same union slot
+# XKeyEvent.keycode occupies) of a ButtonPress/ButtonRelease event. 1=left,
+# 2=middle, 3=right on a standard 3-button mouse.
+fn event_button(buf: *u8) -> u32 {
+    p: *u32 = buf + 84
+    ret p.*
+}
+
+# event_x / event_y: pointer position (byte offsets 64/68) of a
+# ButtonPress/ButtonRelease/MotionNotify event, relative to the event
+# window's origin.
+fn event_x(buf: *u8) -> i32 {
+    p: *i32 = buf + 64
+    ret p.*
+}
+
+fn event_y(buf: *u8) -> i32 {
+    p: *i32 = buf + 68
+    ret p.*
+}
+
+# event_width / event_height: the window's new size (byte offsets 56/60)
+# on a ConfigureNotify event.
+fn event_width(buf: *u8) -> i32 {
+    p: *i32 = buf + 56
+    ret p.*
+}
+
+fn event_height(buf: *u8) -> i32 {
+    p: *i32 = buf + 60
     ret p.*
 }

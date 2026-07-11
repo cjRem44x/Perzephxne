@@ -1,0 +1,48 @@
+# Exercises std/graphics/gl's GL_BACKEND (the std/graphics/backend.Backend
+# contract), rather than gl's own raw choose_visual/create_context/clear/
+# swap/destroy_context calls (see tests/gl/clear_and_read_pixel for those).
+# Verifies gl.przp's conformance to the fixed backend contract shape end to
+# end: init a context from a bare display+window, clear through it, and
+# read the pixel back the same way the raw-API test does.
+
+import(win = "std/graphics/window")
+import(gl  = "std/graphics/gl")
+
+fn main() -> i32 {
+    display: *u8 = win.XOpenDisplay(null)
+    if display == null {
+        @perr("XOpenDisplay")
+        ret 1
+    }
+
+    screen: i32 = win.XDefaultScreen(display)
+    root: u64 = win.XRootWindow(display, screen)
+    window: u64 = win.XCreateSimpleWindow(display, root, 0, 0, 320u32, 240u32, 1u32, 0u64, 0u64)
+    win.XMapWindow(display, window)
+    win.XFlush(display)
+
+    ctx: *u8 = gl.GL_BACKEND.init(display, window)
+    if ctx == null {
+        @epf("GL_BACKEND.init failed\n")
+        ret 1
+    }
+
+    gl.GL_BACKEND.clear(ctx, 0.1, 0.2, 0.3, 1.0)
+
+    err: u32 = gl.glGetError()
+    if err != gl.GL_NO_ERROR {
+        @epf("GL error after clear: {err}\n")
+        ret 1
+    }
+
+    pixel: [4]u8 = undef
+    gl.glReadPixels(10, 10, 1, 1, gl.GL_RGBA, gl.GL_UNSIGNED_BYTE, &pixel[0])
+    @pf("pixel: {pixel[0]} {pixel[1]} {pixel[2]} {pixel[3]}\n")
+
+    gl.GL_BACKEND.present(ctx)
+    gl.GL_BACKEND.shutdown(ctx)
+    win.XDestroyWindow(display, window)
+    win.XCloseDisplay(display)
+    @pf("done\n")
+    ret 0
+}

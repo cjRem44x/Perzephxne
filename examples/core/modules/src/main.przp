@@ -1,0 +1,14 @@
+# examples/core/modules — mod X { ... } blocks and the => module-access
+# operator (interchangeable with .). See src/logic.przp for the mod
+# blocks themselves; this file only ever calls logic's plain top-level
+# functions, one import level away — see logic.przp's header comment
+# for why that's the right shape today.
+# Run it with: przp run   (from this directory)
+
+import(logic = "logic")
+
+fn main() -> i32 {
+    report: str = logic.report()
+    @pf("{report}\n")
+    ret 0
+}

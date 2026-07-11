@@ -1,0 +1,54 @@
+# A recursive binary search tree of i32 values — insert, contains, and an
+# in-order traversal (which visits a BST in sorted order for free).
+
+import(collections = "std/collections")
+
+struct Node {
+    value: i32,
+    left:  *Node,
+    right: *Node,
+}
+
+struct Tree {
+    root: *Node,
+}
+
+impl Tree {
+    fn new() -> Tree { ret Tree{.root=null} }
+
+    fn insert(self: *Tree, v: i32) {
+        self.root = insert_node(self.root, v)
+    }
+
+    fn contains(self: Tree, v: i32) -> bool {
+        ret contains_node(self.root, v)
+    }
+}
+
+fn insert_node(node: *Node, v: i32) -> *Node {
+    if node == null {
+        n: *Node = @alo(Node)
+        n.* = Node{.value=v, .left=null, .right=null}
+        ret n
+    }
+    if v < node.value {
+        node.left = insert_node(node.left, v)
+    } elif v > node.value {
+        node.right = insert_node(node.right, v)
+    }
+    ret node
+}
+
+fn contains_node(node: *Node, v: i32) -> bool {
+    if node == null { ret false }
+    if v == node.value { ret true }
+    if v < node.value { ret contains_node(node.left, v) }
+    ret contains_node(node.right, v)
+}
+
+fn in_order(node: *Node, out: *collections.Vec) {
+    if node == null { ret }
+    in_order(node.left, out)
+    out.push(@i64(node.value))
+    in_order(node.right, out)
+}

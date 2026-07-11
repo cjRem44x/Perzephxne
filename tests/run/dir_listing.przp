@@ -1,0 +1,53 @@
+# std/file's opendir/readdir-based directory listing and is_file/is_dir,
+# backed by @slice for the []str return (a directory's entry count is
+# only known at runtime — see book/builtins.md's @slice entry). readdir()
+# order isn't guaranteed by POSIX, so this checks presence/count rather
+# than assuming a specific order.
+
+import(file = "std/file")
+import(str  = "std/str")
+
+fn contains(entries: []str, want: str) -> bool {
+    i: usize = 0
+    while i < @len(entries) {
+        if str.eq(entries[i], want) { ret true }
+        i += 1
+    }
+    ret false
+}
+
+fn main() -> i32 {
+    entries, err: ![]str = file.list("tests/run/fixtures/listdir")
+    if err != 0 {
+        @pf("list failed: {err}\n")
+        ret 1
+    }
+
+    count: usize = @len(entries)
+    has_alpha: bool = contains(entries, "tests/run/fixtures/listdir/alpha.txt")
+    has_beta: bool = contains(entries, "tests/run/fixtures/listdir/beta.txt")
+    has_sub: bool = contains(entries, "tests/run/fixtures/listdir/sub")
+    @pf("count={count}\n")
+    @pf("has alpha.txt={has_alpha}\n")
+    @pf("has beta.txt={has_beta}\n")
+    @pf("has sub={has_sub}\n")
+
+    alpha_is_file: bool = file.is_file("tests/run/fixtures/listdir/alpha.txt")
+    alpha_is_dir: bool  = file.is_dir("tests/run/fixtures/listdir/alpha.txt")
+    sub_is_dir: bool    = file.is_dir("tests/run/fixtures/listdir/sub")
+    sub_is_file: bool   = file.is_file("tests/run/fixtures/listdir/sub")
+    @pf("is_file(alpha.txt)={alpha_is_file}\n")
+    @pf("is_dir(alpha.txt)={alpha_is_dir}\n")
+    @pf("is_dir(sub)={sub_is_dir}\n")
+    @pf("is_file(sub)={sub_is_file}\n")
+
+    nx_is_file: bool = file.is_file("tests/run/fixtures/nonexistent_xyz")
+    nx_is_dir: bool  = file.is_dir("tests/run/fixtures/nonexistent_xyz")
+    @pf("is_file(nonexistent)={nx_is_file}\n")
+    @pf("is_dir(nonexistent)={nx_is_dir}\n")
+
+    bad_entries, bad_err: ![]str = file.list("tests/run/fixtures/nonexistent_dir_xyz")
+    @pf("list(nonexistent) err={bad_err}\n")
+
+    ret 0
+}

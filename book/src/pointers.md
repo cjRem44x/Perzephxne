@@ -72,11 +72,24 @@ p.* = 42
 @free(p)
 ```
 
-Use `@new(T)` for reference-counted smart pointer allocation:
+`.* = ` writes a whole aggregate value through a pointer too, not just scalars — a struct or array literal, or another variable of the same type:
+
+```
+struct Point { x: i32, y: i32 }
+
+p: *Point = @alo(Point)
+p.* = Point{.x=1, .y=2}   # overwrites the whole struct
+
+nums: [3]i32 = [0, 0, 0]
+np: *[3]i32 = &nums
+np.* = [10, 20, 30]
+```
+
+Use `@new(T)` for reference-counted smart pointer allocation. Dereference a `^T` with `.^`, not `.*` — see [Smart Pointers](./smart-pointers.md) for why the two aren't interchangeable:
 
 ```
 p: ^i32 = @new(i32)
-p.* = 42
+p.^ = 42
 @release(p)    # RC drop; frees when count reaches 0
 ```
 

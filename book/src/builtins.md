@@ -88,22 +88,23 @@ b3: bool = @bool("yes")    # false
 
 ## Memory
 
-| Builtin | Description |
-|---|---|
-| `@size(T)` | byte size of type `T` |
-| `@align(T)` | alignment of type `T` |
-| `@offsetof(T, field)` | byte offset of a struct field |
-| `@bitcast(T, val)` | reinterpret bits — same size required |
-| `@zeroed(T)` | zero value of type `T` |
-| `@alo(T)` | heap-allocate one `T`, return `*T` (raw pointer, manual `@free`) |
-| `@new(T)` | heap-allocate one `T`, return `^T` (RC-managed) |
-| `@clone(val)` | increment RC of a `^T`, return shared `^T` |
-| `@free(ptr)` | free raw `*T` heap memory |
-| `@memcpy(dst, src, n)` | copy `n` bytes from src to dst |
-| `@memmove(dst, src, n)` | copy `n` bytes, handles overlap |
-| `@memset(dst, byte, n)` | fill `n` bytes with `byte` |
-| `@addr(expr)` | address of a variable, field, or index expression — like `&` but usable in more contexts |
-| `@str_raw(ptr, len)` | construct a `str` fat pointer from a raw `*u8` and a `usize` length |
+| Builtin | Returns | Description |
+|---|---|---|
+| `@size(T)` | `usize` | byte size of type `T` |
+| `@align(T)` | `usize` | alignment of type `T` |
+| `@offsetof(T, field)` | `usize` | byte offset of a struct field |
+| `@bitcast(T, val)` | `T` | reinterpret bits — same size required |
+| `@zeroed(T)` | `T` | zero value of type `T` |
+| `@alo(T)` | `*T` | heap-allocate one `T`, return `*T` (raw pointer, manual `@free`) |
+| `@new(T)` | `^T` | heap-allocate one `T`, return `^T` (RC-managed) |
+| `@clone(val)` | `^T` | increment RC of a `^T`, return shared `^T` |
+| `@free(ptr)` | `void` | free raw `*T` heap memory |
+| `@memcpy(dst, src, n)` | `void` | copy `n` bytes from src to dst |
+| `@memmove(dst, src, n)` | `void` | copy `n` bytes, handles overlap |
+| `@memset(dst, byte, n)` | `void` | fill `n` bytes with `byte` |
+| `@addr(expr)` | `*T` | address of a variable, field, or index expression — like `&` but usable in more contexts |
+| `@str_raw(ptr, len)` | `str` | construct a `str` fat pointer from a raw `*u8` and a `usize` length |
+| `@slice(ptr, len)` | `[]T` | construct a slice fat pointer from a raw `*T` and a `usize` length — the `@str_raw` of slices, for when a count is only known at runtime (e.g. `std/file.list`) |
 
 ```
 f: f32    = 1.0
@@ -112,38 +113,42 @@ bits: u32 = @bitcast(u32, f)   # raw bit pattern — 0x3F800000
 
 ## Collections
 
-| Builtin | Description |
-|---|---|
-| `@len(arr_or_slice)` | element count — compile time for arrays, runtime for slices |
+| Builtin | Returns | Description |
+|---|---|---|
+| `@len(arr_or_slice)` | `usize` | element count — compile time for arrays, runtime for slices |
 
 ## Math
 
-| Builtin | Description |
-|---|---|
-| `@sqrt(x)` | square root |
-| `@abs(x)` | absolute value |
-| `@min(a, b)` | minimum |
-| `@max(a, b)` | maximum |
+`@sqrt` always returns `f64`; `@abs`/`@min`/`@max` return whatever numeric type their argument(s) are — the same type going in comes back out, no widening or narrowing.
+
+| Builtin | Returns | Description |
+|---|---|---|
+| `@sqrt(x)` | `f64` | square root |
+| `@abs(x)` | same as `x` | absolute value |
+| `@min(a, b)` | same as `a`/`b` | minimum |
+| `@max(a, b)` | same as `a`/`b` | maximum |
 
 ## Bit Operations
 
-| Builtin | Description |
-|---|---|
-| `@clz(x)` | count leading zeros |
-| `@ctz(x)` | count trailing zeros |
-| `@popcount(x)` | count set bits |
-| `@bswap(x)` | reverse byte order |
+| Builtin | Returns | Description |
+|---|---|---|
+| `@clz(x)` | same as `x` | count leading zeros |
+| `@ctz(x)` | same as `x` | count trailing zeros |
+| `@popcount(x)` | same as `x` | count set bits |
+| `@bswap(x)` | same as `x` | reverse byte order |
 
 ## Diagnostics
 
-| Builtin | Description |
-|---|---|
-| `@assert(cond, msg)` | panic if false (debug only) |
-| `@panic(msg)` | unconditional panic with message |
-| `@unreachable()` | mark code path as unreachable |
-| `@todo()` | placeholder — panics at runtime |
-| `@pass()` | stop the current test immediately, marking it passed — see [Testing](./testing.md) |
-| `@fail(msg?)` | stop the current test immediately, marking it failed (same shape as `@panic`) — see [Testing](./testing.md) |
+None of these return a usable value — `@assert`/`@panic`/`@unreachable`/`@todo`/`@fail` either return `void` or never return at all (the process exits or panics first), and `@pass`/`@fail` specifically stop the *test*, not just the call.
+
+| Builtin | Returns | Description |
+|---|---|---|
+| `@assert(cond, msg)` | `void` | panic if false (debug only) |
+| `@panic(msg)` | never returns | unconditional panic with message |
+| `@unreachable()` | never returns (debug); optimizer hint (release) | mark code path as unreachable |
+| `@todo()` | never returns | placeholder — panics at runtime |
+| `@pass()` | never returns | stop the current test immediately, marking it passed — see [Testing](./testing.md) |
+| `@fail(msg?)` | never returns | stop the current test immediately, marking it failed (same shape as `@panic`) — see [Testing](./testing.md) |
 
 ## Compile-Time Info
 

@@ -1,0 +1,56 @@
+# Two classic sorts over a []i32 slice, in place. Bubble sort for the
+# simplest possible O(n^2) baseline; quicksort for a real divide-and-conquer
+# algorithm — both work directly on slices, no generics needed here since
+# the point is the algorithm, not the container.
+
+fn bubble_sort(arr: []i32) {
+    n: usize = @len(arr)
+    for i => 0..n {
+        for j => 0..n-1-i {
+            if arr[j] > arr[j+1] {
+                tmp: i32 = arr[j]
+                arr[j] = arr[j+1]
+                arr[j+1] = tmp
+            }
+        }
+    }
+}
+
+fn partition(arr: []i32, lo: i64, hi: i64) -> i64 {
+    pivot: i32 = arr[hi]
+    i: i64 = lo - 1
+    for j => lo..hi {
+        if arr[j] <= pivot {
+            i += 1
+            tmp: i32 = arr[i]
+            arr[i] = arr[j]
+            arr[j] = tmp
+        }
+    }
+    i += 1
+    tmp: i32 = arr[i]
+    arr[i] = arr[hi]
+    arr[hi] = tmp
+    ret i
+}
+
+fn quicksort_range(arr: []i32, lo: i64, hi: i64) {
+    if lo >= hi { ret }
+    p: i64 = partition(arr, lo, hi)
+    quicksort_range(arr, lo, p - 1)
+    quicksort_range(arr, p + 1, hi)
+}
+
+fn quicksort(arr: []i32) {
+    n: usize = @len(arr)
+    if n < 2 { ret }
+    quicksort_range(arr, 0, @i64(n) - 1)
+}
+
+fn is_sorted(arr: []i32) -> bool {
+    n: usize = @len(arr)
+    for i => 1..n {
+        if arr[i-1] > arr[i] { ret false }
+    }
+    ret true
+}

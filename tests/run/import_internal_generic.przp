@@ -1,0 +1,12 @@
+# regression: a module using a generic type purely internally (no cross-
+# module qualification at all) failed to compile the moment something else
+# imported it — import-mangling never propagated the importing module's own
+# gen_insts into the merged module, and never rewrote a generic-instantiation
+# name ("Box__i32") to match the newly-mangled struct it actually referred to.
+
+import(h = "helpers/generic_internal")
+
+fn main() -> i32 {
+    @pf("{h.make_five()}\n")
+    ret 0
+}

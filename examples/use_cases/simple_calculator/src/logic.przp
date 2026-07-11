@@ -1,0 +1,27 @@
+# A tiny calculator: evaluate("3 + 4") — split on spaces into
+# lhs/operator/rhs and apply the matching operator. No general expression
+# parsing (no precedence, no parens) — that's a much bigger project; this is
+# deliberately the simplest useful slice.
+
+import(str = "std/str")
+
+fn evaluate(expr: str) -> !f64 {
+    pos: usize = 0
+    lhs_str: str = str.split_next(expr, " ", &pos)
+    op:      str = str.split_next(expr, " ", &pos)
+    rhs_str: str = str.split_next(expr, " ", &pos)
+
+    lhs, lerr: !f64 = @f64(lhs_str)
+    if lerr != 0 { ret @err(1) }
+    rhs, rerr: !f64 = @f64(rhs_str)
+    if rerr != 0 { ret @err(1) }
+
+    if op == "+" { ret @ok(lhs + rhs) }
+    if op == "-" { ret @ok(lhs - rhs) }
+    if op == "*" { ret @ok(lhs * rhs) }
+    if op == "/" {
+        if rhs == 0.0 { ret @err(2) }
+        ret @ok(lhs / rhs)
+    }
+    ret @err(3)
+}

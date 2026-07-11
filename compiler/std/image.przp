@@ -1,0 +1,175 @@
+# std/image — image decoding. PNG only, for now (see std/graphics's
+# Texture, the only current consumer): 8-bit-per-channel RGB or RGBA,
+# non-interlaced, no palette. That covers the overwhelming majority of
+# real-world PNG exports (every common browser/paint-tool default is
+# 8-bit truecolor) — 16-bit, palette (indexed-color), grayscale, and
+# interlaced PNGs are rejected with a clear error rather than silently
+# misdecoded. Broadening this later is a matter of extending the per-pixel
+# unpacking after defiltering, not touching the chunk/defilter machinery
+# itself, so it's deferred until something real needs one of those
+# variants rather than built preemptively.
+#
+# DEFLATE decompression (PNG's IDAT payload is a zlib stream) goes through
+# the system zlib via its one-shot uncompress() — real, exported, and
+# available basically everywhere Perzephxne already assumes libX11/libGL
+# are (see [build].link in book/build-system.md); writing INFLATE by hand
+# would be a much larger, self-contained undertaking with no upside over
+# linking a library every Linux system already ships. Everything else
+# (chunk framing, scanline defiltering) is hand-written here — there's no
+# "the rest of PNG" library worth taking on for that.
+
+import(file = "std/file")
+
+extern fn malloc(n: usize) -> *u8
+extern fn realloc(p: *u8, n: usize) -> *u8
+extern fn free(p: *u8)
+extern fn memcpy(dst: *u8, src: *u8, n: usize) -> *u8
+
+# zlib's one-shot decompressor: given a big-enough destination buffer,
+# inflates a complete zlib stream in a single call — no need for the
+# incremental z_stream API PNG doesn't require.
+extern fn uncompress(dest: *u8, dest_len: *u64, source: *u8, source_len: u64) -> i32
+
+struct Image {
+    width:    i32,
+    height:   i32,
+    channels: i32,   # 3 (RGB) or 4 (RGBA)
+    pixels:   *u8,   # width * height * channels bytes, row-major, top row first
+}
+
+fn free_image(img: Image) {
+    if img.pixels != null { free(img.pixels) }
+}
+
+# read_be32: big-endian u32 at buf[0..4] — every PNG chunk length/CRC, and
+# IHDR's width/height, are big-endian.
+fn read_be32(buf: *u8) -> u32 {
+    b0: u32 = @u32(buf.*)
+    b1: u32 = @u32((buf + 1).*)
+    b2: u32 = @u32((buf + 2).*)
+    b3: u32 = @u32((buf + 3).*)
+    ret (b0 << 24) | (b1 << 16) | (b2 << 8) | b3
+}
+
+fn chunk_type_is(buf: *u8, t0: u8, t1: u8, t2: u8, t3: u8) -> bool {
+    ret buf.* == t0 && (buf+1).* == t1 && (buf+2).* == t2 && (buf+3).* == t3
+}
+
+fn paeth_predictor(a: i32, b: i32, c: i32) -> i32 {
+    p: i32 = a + b - c
+    pa: i32 = p - a
+    if pa < 0 { pa = -pa }
+    pb: i32 = p - b
+    if pb < 0 { pb = -pb }
+    pc: i32 = p - c
+    if pc < 0 { pc = -pc }
+    if pa <= pb && pa <= pc { ret a }
+    if pb <= pc { ret b }
+    ret c
+}
+
+fn load_png(path: str) -> !Image {
+    data: str = file.read_all(path)
+    if data.len < 8 { ret @err(1) }
+
+    sig: *u8 = data.data
+    if sig.* != 0x89u8 || (sig+1).* != 0x50u8 || (sig+2).* != 0x4eu8 || (sig+3).* != 0x47u8 {
+        ret @err(1) # not a PNG (bad signature)
+    }
+
+    width: i32 = 0
+    height: i32 = 0
+    bit_depth: u8 = 0
+    color_type: u8 = 0
+    have_ihdr: bool = false
+
+    idat: *u8 = null
+    idat_len: usize = 0
+    idat_cap: usize = 0
+
+    pos: usize = 8
+    done: bool = false
+    while !done && pos + 8 <= data.len {
+        chunk: *u8 = data.data + pos
+        clen: u32 = read_be32(chunk)
+        ctype: *u8 = chunk + 4
+        cdata: *u8 = chunk + 8
+
+        if chunk_type_is(ctype, 73u8, 72u8, 68u8, 82u8) { # "IHDR"
+            if clen != 13 { ret @err(2) }
+            width  = @i32(read_be32(cdata))
+            height = @i32(read_be32(cdata + 4))
+            bit_depth  = (cdata + 8).*
+            color_type = (cdata + 9).*
+            interlace: u8 = (cdata + 12).*
+            if interlace != 0u8 { ret @err(3) } # interlaced PNG not supported
+            if bit_depth != 8u8 { ret @err(3) } # only 8-bit-per-channel supported
+            if color_type != 2u8 && color_type != 6u8 { ret @err(3) } # only RGB/RGBA supported
+            have_ihdr = true
+        } elif chunk_type_is(ctype, 73u8, 68u8, 65u8, 84u8) { # "IDAT"
+            n: usize = @usize(clen)
+            if idat_len + n > idat_cap {
+                new_cap: usize = idat_cap * 2 + n + 4096
+                idat = realloc(idat, new_cap)
+                idat_cap = new_cap
+            }
+            memcpy(idat + idat_len, cdata, n)
+            idat_len += n
+        } elif chunk_type_is(ctype, 73u8, 69u8, 78u8, 68u8) { # "IEND"
+            done = true
+        }
+
+        pos += 8 + @usize(clen) + 4 # length + type + data + crc
+    }
+
+    if !have_ihdr || width <= 0 || height <= 0 || idat == null {
+        if idat != null { free(idat) }
+        ret @err(4)
+    }
+
+    channels: i32 = if color_type == 6u8 { 4 } else { 3 }
+    stride: usize = @usize(width) * @usize(channels)
+    filtered_len: u64 = @u64(@usize(height) * (stride + 1))
+
+    filtered: *u8 = malloc(@usize(filtered_len))
+    inflated_len: u64 = filtered_len
+    zret: i32 = uncompress(filtered, &inflated_len, idat, @u64(idat_len))
+    free(idat)
+    if zret != 0 || inflated_len != filtered_len {
+        free(filtered)
+        ret @err(5) # corrupt or truncated IDAT stream
+    }
+
+    pixels: *u8 = malloc(@usize(height) * stride)
+
+    y: i32 = 0
+    while y < height {
+        row_start: usize = @usize(y) * (stride + 1)
+        ftype: u8 = (filtered + row_start).*
+        src: *u8 = filtered + row_start + 1
+        dst: *u8 = pixels + @usize(y) * stride
+
+        x: usize = 0
+        while x < stride {
+            raw: i32 = @i32((src + x).*)
+            a: i32 = if x >= @usize(channels) { @i32((dst + x - @usize(channels)).*) } else { 0 }
+            b: i32 = if y > 0 { @i32((dst - stride + x).*) } else { 0 }
+            c: i32 = if y > 0 && x >= @usize(channels) { @i32((dst - stride + x - @usize(channels)).*) } else { 0 }
+
+            recon: i32 = raw
+            if ftype == 1u8 { recon = raw + a }
+            elif ftype == 2u8 { recon = raw + b }
+            elif ftype == 3u8 { recon = raw + (a + b) / 2 }
+            elif ftype == 4u8 { recon = raw + paeth_predictor(a, b, c) }
+
+            (dst + x).* = @u8(recon)
+            x += 1
+        }
+        y += 1
+    }
+
+    free(filtered)
+
+    img: Image = Image{.width=width, .height=height, .channels=channels, .pixels=pixels}
+    ret @ok(img)
+}

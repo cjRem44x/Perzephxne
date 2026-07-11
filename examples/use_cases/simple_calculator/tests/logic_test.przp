@@ -1,0 +1,17 @@
+import(t = "../src/logic")
+
+test "add" {
+    r, err: !f64 = t.evaluate("3 + 4")
+    @assert(err == 0)
+    @assert(r == 7.0)
+}
+
+test "divide by zero is an error" {
+    _, err: !f64 = t.evaluate("5 / 0")
+    @assert(err != 0)
+}
+
+test "unknown operator is an error" {
+    _, err: !f64 = t.evaluate("5 ^ 2")
+    @assert(err != 0)
+}

@@ -1,0 +1,31 @@
+# examples/dsa/sorting — bubble sort and quicksort over a []i32 slice.
+# Run it with: przp run   (from this directory)
+
+import(logic = "logic")
+
+fn print_slice(arr: []i32) {
+    for v => arr {
+        @pf("{v} ")
+    }
+    @pf("\n")
+}
+
+fn main() -> i32 {
+    a: [8]i32 = [5, 2, 8, 1, 9, 3, 7, 4]
+    @pf("before: ")
+    print_slice(a)
+    logic.bubble_sort(a)
+    @pf("bubble_sort: ")
+    print_slice(a)
+    @pf("sorted? {logic.is_sorted(a)}\n")
+
+    b: [8]i32 = [5, 2, 8, 1, 9, 3, 7, 4]
+    @pf("\nbefore: ")
+    print_slice(b)
+    logic.quicksort(b)
+    @pf("quicksort: ")
+    print_slice(b)
+    @pf("sorted? {logic.is_sorted(b)}\n")
+
+    ret 0
+}

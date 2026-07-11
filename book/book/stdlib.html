@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-b3a4d4a9.js";
+            window.path_to_searchindex_js = "searchindex-c52d590b.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-4e58bc13.js"></script>
@@ -288,9 +288,13 @@
 <tr><td><code>append(path, content)</code></td><td>append to file, creating if missing</td></tr>
 <tr><td><code>remove_file(path)</code></td><td>delete file</td></tr>
 <tr><td><code>rename_file(old, new_path)</code></td><td>rename/move file</td></tr>
+<tr><td><code>is_file(path)</code></td><td>true if path exists and is a regular file</td></tr>
+<tr><td><code>is_dir(path)</code></td><td>true if path exists and is a directory</td></tr>
+<tr><td><code>list(dir)</code></td><td><code>![]str</code> — dir-joined paths of <code>dir</code>’s entries (<code>.</code>/<code>..</code> skipped), ready to pass to <code>is_file</code>/<code>is_dir</code>/<code>read_all</code></td></tr>
 </tbody>
 </table>
 </div>
+<p><code>list</code> builds its result with the <a href="./builtins.html#memory"><code>@slice</code></a> builtin, since a directory’s entry count is only known at runtime, and a slice otherwise only ever comes from an array (whose size is a compile-time constant) decaying or being range-indexed.</p>
 <h2 id="stdfmt"><a class="header" href="#stdfmt"><code>std/fmt</code></a></h2>
 <p>String formatting helpers. For interpolation-style formatting, use the <code>@fmt</code> builtin directly with named expressions, for example <code>@fmt("x={x}")</code>.</p>
 <div class="table-wrapper">

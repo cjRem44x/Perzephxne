@@ -37,6 +37,19 @@ MASK:    u32   : 0xFF00FF00
 PREFIX:  str   : "api/v2/"
 ```
 
+A constant initializer isn't limited to a single literal — struct and array literals count too, built recursively from other constants, and a bare function name is a valid constant for a fn-pointer-typed field (handy for building a fixed table of operations, like `std/graphics/gl`'s `GL_BACKEND`):
+
+```
+struct Vec2 { x: f32, y: f32 }
+ORIGIN: Vec2 : Vec2{.x=0.0, .y=0.0}
+
+struct Ops { double: fn(i32) -> i32 }
+fn doubler(x: i32) -> i32 { ret x * 2 }
+MY_OPS: Ops : Ops{.double = doubler}
+```
+
+Anything else — a function call, a reference to another variable, an arithmetic expression on a non-constant — isn't a compile-time constant and is a compile error rather than a silently zero-initialized global.
+
 ## Mutable Globals
 
 Mutable globals persist for the lifetime of the process:

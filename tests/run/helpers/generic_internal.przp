@@ -1,0 +1,16 @@
+# A module that uses a generic type entirely internally (unqualified, no
+# alias) — this used to break the moment anything imported this file, since
+# import-mangling only renamed the exact bare names of top-level items, never
+# recognizing "Box__i32" as a reference to "Box" once it had been mangled.
+
+struct Box<T> { value: T }
+
+impl Box<T> {
+    fn new(v: T) -> Box<T> { ret Box<T>{.value=v} }
+    fn get(self: *Box<T>) -> T { ret self.value }
+}
+
+fn make_five() -> i32 {
+    b: Box<i32> = Box<i32>.new(5)
+    ret b.get()
+}

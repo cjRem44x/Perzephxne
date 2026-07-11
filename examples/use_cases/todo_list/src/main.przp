@@ -1,0 +1,27 @@
+# examples/use_cases/todo_list — a small in-memory to-do list: structs plus
+# a growable collection, wired into a realistic-shaped use case.
+# Run it with: przp run   (from this directory)
+
+import(logic = "logic")
+
+fn main() -> i32 {
+    list: logic.TodoList = logic.TodoList.new()
+    list.add("write example")
+    list.add("test example")
+    list.add("ship example")
+
+    list.complete(0)
+    list.complete(1)
+
+    @pf("tasks:\n")
+    for i => 0..list.len {
+        t: logic.Task = list.tasks[i]
+        status: str = "pending"
+        if t.done { status = "done" }
+        @pf("  [{status}] {t.title}\n")
+    }
+
+    @pf("\npending: {list.pending_count()}\n")
+    @pf("done\n")
+    ret 0
+}

@@ -1,0 +1,33 @@
+# examples/core/error_handling — !T failable returns, @ok/@err, @checked_*,
+# and @panic. Errors are values here, not exceptions.
+# Run it with: przp run   (from this directory)
+
+import(logic = "logic")
+
+fn main() -> i32 {
+    @pf("-- divide --\n")
+    q, err: !i32 = logic.divide(10, 2)
+    if err != 0 { @pf("divide failed\n") } else { @pf("10 / 2 = {q}\n") }
+
+    _, err2: !i32 = logic.divide(10, 0)
+    if err2 != 0 { @pf("10 / 0 failed as expected (err={err2})\n") }
+
+    @pf("\n-- parse_port --\n")
+    inputs: [3]str = ["8080", "not-a-number", "99999"]
+    for input => inputs {
+        port, perr: !i32 = logic.parse_port(input)
+        if perr != 0 {
+            @pf("'{input}' -> invalid (err={perr})\n")
+        } else {
+            @pf("'{input}' -> listening on {port}\n")
+        }
+    }
+
+    @pf("\n-- checked arithmetic --\n")
+    big: i32 = 2147483647            # i32::MAX
+    sum, oerr: !i32 = @checked_add(big, 1)
+    if oerr != 0 { @pf("checked_add overflowed as expected\n") } else { @pf("sum={sum}\n") }
+
+    @pf("\ndone\n")
+    ret 0
+}

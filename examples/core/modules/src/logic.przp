@@ -1,0 +1,75 @@
+# examples/core/modules — mod blocks group related declarations within a
+# single file, reached with either . or => (fully interchangeable — mix
+# them freely, as report() below does on purpose to show it). Useful for
+# splitting one file's own namespace without creating a separate file
+# just to avoid a name collision: Shapes.describe and Units.describe
+# below intentionally share a name, which is exactly what mod lets exist
+# in one file at all.
+#
+# mod is purely an in-file organization tool, not a real cross-file
+# scoping mechanism — this file exposes a plain top-level function API
+# (report/circle_area/rectangle_area/degrees_to_radians) for importers to
+# call, rather than having them reach into Shapes=>/Units=> themselves.
+# That's not just style: today, reaching a mod's non-generic members
+# (a plain function, a non-generic struct's static method, or an enum
+# variant) through both an import alias *and* a mod name in the same
+# expression doesn't resolve — see book/status-next.md's "Two-level
+# non-generic access through mod + import" entry. Keeping mod access on
+# one side of the import boundary, as below, sidesteps that entirely.
+
+mod Shapes {
+    struct Circle    { radius: f64 }
+    struct Rectangle { width: f64, height: f64 }
+
+    impl Circle {
+        fn new(radius: f64) -> Circle { ret Circle{.radius=radius} }
+        fn area(self) -> f64 { ret 3.14159265358979 * self.radius * self.radius }
+    }
+
+    impl Rectangle {
+        fn new(w: f64, h: f64) -> Rectangle { ret Rectangle{.width=w, .height=h} }
+        fn area(self) -> f64 { ret self.width * self.height }
+    }
+
+    fn describe(name: str, area: f64) -> str {
+        ret @fmt("{name} covers {area} square units")
+    }
+}
+
+mod Units {
+    fn deg_to_rad(deg: f64) -> f64 { ret deg * 3.14159265358979 / 180.0 }
+    fn rad_to_deg(rad: f64) -> f64 { ret rad * 180.0 / 3.14159265358979 }
+
+    fn describe(deg: f64) -> str {
+        rad: f64 = deg_to_rad(deg)
+        ret @fmt("{deg} degrees is {rad} radians")
+    }
+}
+
+fn circle_area(radius: f64) -> f64 {
+    c: Shapes.Circle = Shapes.Circle.new(radius)
+    ret c.area()
+}
+
+fn rectangle_area(w: f64, h: f64) -> f64 {
+    r: Shapes=>Rectangle = Shapes=>Rectangle=>new(w, h)
+    ret r.area()
+}
+
+fn degrees_to_radians(deg: f64) -> f64 {
+    ret Units.deg_to_rad(deg)
+}
+
+# report: exercises both mods, mixing . and => within the same function
+# to show they're really the same operator under the hood.
+fn report() -> str {
+    c: Shapes.Circle = Shapes.Circle.new(2.0)
+    c_line: str = Shapes.describe("circle", c.area())
+
+    r: Shapes=>Rectangle = Shapes=>Rectangle=>new(3.0, 4.0)
+    r_line: str = Shapes=>describe("rectangle", r.area())
+
+    u_line: str = Units.describe(90.0)
+
+    ret @fmt("{c_line}\n{r_line}\n{u_line}")
+}

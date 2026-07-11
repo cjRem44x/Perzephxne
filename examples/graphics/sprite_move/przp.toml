@@ -1,0 +1,7 @@
+[package]
+name = "sprite_move"
+version = "0.1.0"
+
+[build]
+entry = "src/main.przp"
+link  = ["X11", "GL", "z"]

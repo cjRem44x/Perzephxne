@@ -17,6 +17,9 @@ typedef struct {
     GenInstList gen_insts; /* generic instantiations seen during parse */
     int         no_struct_lit;    /* suppress struct-literal parsing in conditions */
     int         in_when_arm_body; /* parsing a when-arm body: stop .ident => eagerly */
+    int         in_when_pattern;  /* parsing a when-arm pattern: never consume => as
+                                      a module-path operator, that's the arm's own
+                                      separator (see the mod=>item postfix handling) */
     /* type params currently in scope (set while parsing a generic fn/struct body) */
     const char **cur_type_params;
     size_t       n_cur_type_params;
@@ -307,9 +310,9 @@ static Type *parse_type(Parser *p) {
             return mktype(p, (TypeKind)pk, span);
         }
         Type *ty = mktype(p, TY_NAMED, span);
-        /* support module-qualified types: alias.TypeName → alias__TypeName */
-        if (cur(p).kind == TOK_DOT && peek(p).kind == TOK_IDENT) {
-            advance(p); /* consume '.' */
+        /* support module-qualified types: alias.TypeName / alias=>TypeName → alias__TypeName */
+        if ((cur(p).kind == TOK_DOT || cur(p).kind == TOK_FATARROW) && peek(p).kind == TOK_IDENT) {
+            advance(p); /* consume '.' or '=>' */
             Token member = cur(p); advance(p);
             char *buf = arena_alloc(p->arena, strlen(t.sval) + 2 + strlen(member.sval) + 1);
             sprintf(buf, "%s__%s", t.sval, member.sval);
@@ -946,12 +949,14 @@ static Expr *parse_primary(Parser *p) {
                 arm.span = cur(p).span;
                 /* parse pattern(s): pat1 | pat2 | ...
                    use BP=9 so '|' (lbp=8) is not consumed inside a pattern */
+                p->in_when_pattern = 1;
                 Expr *pat = parse_expr_bp(p, 9);
                 LIST_PUSH(p->arena, &arm.pats, Expr, pat);
                 while (eat(p, TOK_PIPE)) {
                     pat = parse_expr_bp(p, 9);
                     LIST_PUSH(p->arena, &arm.pats, Expr, pat);
                 }
+                p->in_when_pattern = 0;
                 /* optional bind: `i32 name =>` or `i32 _ =>` */
                 if ((check(p, TOK_IDENT) || check(p, TOK_UNDER)) && check2(p, TOK_FATARROW)) {
                     arm.bind = cur(p).sval;
@@ -989,6 +994,27 @@ static Expr *parse_primary(Parser *p) {
     }
 }
 
+/* Flatten a chain of pure alias/mod-path segments (EXPR_IDENT, or EXPR_FIELD
+   nesting only other such segments — no calls/indices in between) into a
+   single "a__b__c" string, e.g. FIELD(FIELD(IDENT("lib"),"Y"),"Box") →
+   "lib__Y". Returns NULL if e isn't a pure path (e.g. it's already a call
+   or some other expression), so callers can tell "not a qualified-path
+   prefix" apart from a real flattened name. Needed so alias.mod=>Generic<T>
+   and alias.mod=>TypeName{...} recognize a two-(or more)-level qualified
+   path, not just a single bare alias, as the LHS of a generic/struct-literal
+   qualifier. */
+static const char *flatten_ident_chain(Parser *p, Expr *e) {
+    if (e->kind == EXPR_IDENT) return e->ident.name;
+    if (e->kind == EXPR_FIELD) {
+        const char *base = flatten_ident_chain(p, e->field.obj);
+        if (!base) return NULL;
+        char buf[512];
+        snprintf(buf, sizeof(buf), "%s__%s", base, e->field.field);
+        return arena_strdup(p->arena, buf);
+    }
+    return NULL;
+}
+
 /* postfix: call, index, field access, .*, .^ */
 static Expr *parse_postfix(Parser *p, Expr *e) {
     for (;;) {
@@ -1018,17 +1044,27 @@ static Expr *parse_postfix(Parser *p, Expr *e) {
             Expr *d = mkexpr(p, EXPR_SMARTDEREF, span_merge(span, cur(p).span));
             d->deref.operand = e;
             e = d;
-        } else if (check(p, TOK_DOT)) {
+        } else if (check(p, TOK_DOT) ||
+                   (check(p, TOK_FATARROW) && !p->in_when_pattern)) {
+            /* `=>` is the module-path spelling of the same access `.` already
+               handles (mod=>item, import-alias=>item, including generic
+               struct literals/static calls) — Perzephxne has no separate
+               scoping mechanism yet, so both operators resolve identically
+               here; `=>` is guarded off entirely while parsing a when-arm
+               pattern, where it's that arm's own separator instead. */
             /* Don't consume .ident as field access when it looks like the start
-               of the next when-arm pattern.
-               Inside a when-arm body (in_when_arm_body=1), always stop.
-               Outside a body (parsing the arm's own pattern), stop only for
-               non-ident LHS so that Enum.Variant patterns still work. */
-            if (p->peek.kind == TOK_IDENT &&
+               of the next when-arm pattern's leading-dot tag-variant (.Variant).
+               Only matters inside a when-arm BODY: a pattern is always
+               explicitly terminated by '=>' regardless of chain depth, so a
+               dot-chain there (Mod.Enum.Variant, arbitrarily deep) can never
+               be confused with a following arm — but a bare trailing
+               identifier at the end of a body expression could otherwise
+               swallow the next arm's ".Variant" as if it were a field. */
+            if (p->in_when_arm_body && check(p, TOK_DOT) && p->peek.kind == TOK_IDENT &&
                 (p->peek2.kind == TOK_FATARROW ||
                  ((p->peek2.kind == TOK_IDENT || p->peek2.kind == TOK_UNDER) &&
                   p->peek3.kind == TOK_FATARROW))) {
-                if (p->in_when_arm_body || e->kind != EXPR_IDENT) break;
+                break;
             }
             advance(p);
             /* tuple element access: t.0, t.1 */
@@ -1044,8 +1080,73 @@ static Expr *parse_postfix(Parser *p, Expr *e) {
                 continue;
             }
             Token fname = expect(p, TOK_IDENT);
-            /* qualified struct literal: alias.TypeName { .x = ... } */
-            if (!p->no_struct_lit && e->kind == EXPR_IDENT
+            /* qualified generic type: alias.Name<T,...>{ ... } or alias.Name<T,...>.method(...)
+               (alias may itself be a multi-level path, e.g. import-alias.mod-name).
+               Mirrors the bare Name<T,...> handling in parse_primary, but the
+               mangled base is "alias__Name" — that's the name the imported
+               module's own generic template ends up registered under, since
+               mangle_items() already ran on it during import resolution. */
+            const char *qual_base = flatten_ident_chain(p, e);
+            if (qual_base && check(p, TOK_LT) && looks_like_generic_args(p)) {
+                advance(p); /* consume '<' */
+                char base_buf[256];
+                snprintf(base_buf, sizeof(base_buf), "%s__%s", qual_base, fname.sval);
+                char mangled_buf[512];
+                snprintf(mangled_buf, sizeof(mangled_buf), "%s", base_buf);
+                Type **args = NULL;
+                size_t n_args = 0;
+                while (!check(p, TOK_GT) && !check(p, TOK_EOF)) {
+                    Type *arg = parse_type(p);
+                    const char *arg_str = type_to_str(arg, p->arena);
+                    size_t curlen = strlen(mangled_buf);
+                    snprintf(mangled_buf + curlen, sizeof(mangled_buf) - curlen, "__%s", arg_str);
+                    Type **new_args = arena_alloc(p->arena, (n_args + 1) * sizeof(Type *));
+                    if (n_args) memcpy(new_args, args, n_args * sizeof(Type *));
+                    new_args[n_args++] = arg;
+                    args = new_args;
+                    eat(p, TOK_COMMA);
+                }
+                expect(p, TOK_GT);
+                const char *base    = arena_strdup(p->arena, base_buf);
+                const char *mangled = arena_strdup(p->arena, mangled_buf);
+                record_gen_inst(p, mangled, base, args, n_args);
+                if (!p->no_struct_lit && check(p, TOK_LBRACE) && peek(p).kind == TOK_DOT) {
+                    /* qualified generic struct literal */
+                    advance(p); /* consume '{' */
+                    FieldInitList fields = {0};
+                    while (!check(p, TOK_RBRACE) && !check(p, TOK_EOF)) {
+                        expect(p, TOK_DOT);
+                        Token fn = expect(p, TOK_IDENT);
+                        Expr *val;
+                        if (eat(p, TOK_EQ)) {
+                            val = parse_expr(p);
+                        } else {
+                            val = mkexpr(p, EXPR_UNDEF, fn.span);
+                        }
+                        FieldInit fi = { .name = fn.sval, .val = val };
+                        SLICE_PUSH(p->arena, &fields, FieldInit, fi);
+                        eat(p, TOK_COMMA);
+                    }
+                    Span end = cur(p).span;
+                    expect(p, TOK_RBRACE);
+                    Expr *sl = mkexpr(p, EXPR_STRUCT_LIT, span_merge(span, end));
+                    sl->struct_lit.ty_name = mangled;
+                    sl->struct_lit.fields  = fields;
+                    e = sl;
+                } else {
+                    /* qualified generic type reference / static call, e.g.
+                       alias.Name<T>.method(...) — same shape as the bare-name
+                       case: emit the mangled identifier and let the rest of
+                       this postfix loop chain .method(...) off of it. */
+                    Expr *ie = mkexpr(p, EXPR_IDENT, span);
+                    ie->ident.name = mangled;
+                    e = ie;
+                }
+                continue;
+            }
+            /* qualified struct literal: alias.TypeName { .x = ... } (alias may
+               itself be a multi-level path, e.g. import-alias.mod-name) */
+            if (!p->no_struct_lit && qual_base
                     && check(p, TOK_LBRACE) && peek(p).kind == TOK_DOT) {
                 advance(p); /* consume '{' */
                 FieldInitList fields = {0};
@@ -1061,8 +1162,8 @@ static Expr *parse_postfix(Parser *p, Expr *e) {
                 Span end = cur(p).span;
                 expect(p, TOK_RBRACE);
                 char *mangled = arena_alloc(p->arena,
-                    strlen(e->ident.name) + 2 + strlen(fname.sval) + 1);
-                sprintf(mangled, "%s__%s", e->ident.name, fname.sval);
+                    strlen(qual_base) + 2 + strlen(fname.sval) + 1);
+                sprintf(mangled, "%s__%s", qual_base, fname.sval);
                 Expr *sl = mkexpr(p, EXPR_STRUCT_LIT, span_merge(span, end));
                 sl->struct_lit.ty_name = mangled;
                 sl->struct_lit.fields  = fields;
@@ -1296,6 +1397,7 @@ static int ident_colon_starts_label(Parser *p) {
     if (p3 == TOK_LT) return 0;
     if (p3 == TOK_COLON) return 0;
     if (p3 == TOK_DOT) return 0;
+    if (p3 == TOK_FATARROW) return 0; /* mod-qualified type: r: Shapes=>Rectangle = ... */
     return 1;
 }
 
@@ -1335,6 +1437,17 @@ static Stmt *parse_stmt(Parser *p) {
             Stmt *s = mkstmt(p, STMT_WHILE, span);
             s->while_.cond  = cond;
             s->while_.do_fn = do_fn;
+            s->while_.body  = body;
+            s->while_.label = lname;
+            return s;
+        }
+        if (check(p, TOK_LOOP)) {
+            advance(p);
+            StmtList body = parse_block(p);
+            Expr *always_true = mkexpr(p, EXPR_BOOL, span);
+            always_true->bval = 1;
+            Stmt *s = mkstmt(p, STMT_WHILE, span);
+            s->while_.cond  = always_true;
             s->while_.body  = body;
             s->while_.label = lname;
             return s;
@@ -1529,6 +1642,18 @@ static Stmt *parse_stmt(Parser *p) {
         return s;
     }
 
+    /* loop — sugar for `while true`; requires an explicit break */
+    if (check(p, TOK_LOOP)) {
+        advance(p);
+        StmtList body = parse_block(p);
+        Expr *always_true = mkexpr(p, EXPR_BOOL, span);
+        always_true->bval = 1;
+        Stmt *s = mkstmt(p, STMT_WHILE, span);
+        s->while_.cond = always_true;
+        s->while_.body = body;
+        return s;
+    }
+
     /* when (statement) */
     if (check(p, TOK_WHEN)) {
         advance(p);
@@ -1541,12 +1666,14 @@ static Stmt *parse_stmt(Parser *p) {
             WhenArm arm = {0};
             arm.span = cur(p).span;
             /* use BP=9 so '|' (lbp=8) is not consumed inside a pattern */
+            p->in_when_pattern = 1;
             Expr *pat = parse_expr_bp(p, 9);
             LIST_PUSH(p->arena, &arm.pats, Expr, pat);
             while (eat(p, TOK_PIPE)) {
                 pat = parse_expr_bp(p, 9);
                 LIST_PUSH(p->arena, &arm.pats, Expr, pat);
             }
+            p->in_when_pattern = 0;
             if ((check(p, TOK_IDENT) || check(p, TOK_UNDER)) && check2(p, TOK_FATARROW)) {
                 arm.bind = cur(p).sval;
                 advance(p);
@@ -2046,6 +2173,27 @@ static Item *parse_item(Parser *p) {
         item->impl.methods          = methods;
         item->impl.type_params      = type_params;
         item->impl.n_type_params    = n_type_params;
+        return item;
+    }
+
+    /* mod Name { ...items... } — an inline namespace; sema mangles its
+       contents the same way an import does (Name__item), so a mod's
+       members are reached from outside as Name=>item. */
+    if (check(p, TOK_MOD)) {
+        advance(p);
+        const char *name = expect(p, TOK_IDENT).sval;
+        expect(p, TOK_LBRACE);
+        ItemList items = {0};
+        while (!check(p, TOK_RBRACE) && !check(p, TOK_EOF)) {
+            Item *m = parse_item(p);
+            LIST_PUSH(p->arena, &items, Item, m);
+        }
+        expect(p, TOK_RBRACE);
+        Item *item = ARENA_NEW(p->arena, Item);
+        item->kind      = ITEM_MOD;
+        item->name      = name;
+        item->span      = span_merge(span, cur(p).span);
+        item->mod_.items = items;
         return item;
     }
 

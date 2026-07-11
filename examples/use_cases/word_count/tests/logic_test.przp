@@ -1,0 +1,9 @@
+import(t = "../src/logic")
+
+test "count_words counts frequencies" {
+    wc: t.WordCounts = t.count_words("a b a c a b")
+    @assert(wc.count_of("a") == 3)
+    @assert(wc.count_of("b") == 2)
+    @assert(wc.count_of("c") == 1)
+    @assert(wc.count_of("z") == 0)
+}

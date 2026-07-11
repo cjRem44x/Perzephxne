@@ -1,0 +1,17 @@
+# examples/use_cases/simple_calculator — evaluate("3 + 4")-shaped expressions.
+# Run it with: przp run   (from this directory)
+
+import(logic = "logic")
+
+fn main() -> i32 {
+    exprs: [5]str = ["3 + 4", "10 - 2", "6 * 7", "20 / 4", "5 / 0"]
+    for e => exprs {
+        result, err: !f64 = logic.evaluate(e)
+        if err != 0 {
+            @pf("{e} = error ({err})\n")
+        } else {
+            @pf("{e} = {result}\n")
+        }
+    }
+    ret 0
+}

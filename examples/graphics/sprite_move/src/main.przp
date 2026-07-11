@@ -1,0 +1,56 @@
+# examples/graphics/sprite_move — a tour of std/graphics's layer 2 API:
+# open a window, load a PNG texture (src/assets/player.png, decoded by
+# std/image), respond to keyboard input, and draw a texture alongside the
+# plain 2D primitives (rectangle, circle) in the same frame.
+#
+# Runs a fixed number of frames rather than waiting on should_close() /
+# a real close click, so it finishes on its own under both an interactive
+# X session and a virtual display (Xvfb) — see tests/gl/graphics_layer2
+# and tests/gl/texture_load for the same "run to completion" shape this
+# gallery's other graphics examples use, since full manual interactivity
+# isn't something an automated `przp run` can exercise anyway.
+# Needs a real (or virtual, e.g. Xvfb) X display to run against.
+# Run it with: przp run   (from this directory)
+
+import(gfx = "std/graphics")
+
+FRAMES: i32 = 90
+
+fn main() -> i32 {
+    win: gfx.Window = gfx.Window.open("sprite_move", 320, 240)
+
+    player, err: !gfx.Texture = gfx.Texture.load("src/assets/player.png")
+    if err != 0 {
+        @epf("failed to load player texture: {err}\n")
+        ret 1
+    }
+
+    pos_x: f32 = 20.0
+    pos_y: f32 = 100.0
+    speed: f32 = 2.0
+
+    frame: i32 = 0
+    while frame < FRAMES && !win.should_close() {
+        if gfx.is_key_down(gfx.Key.Right) { pos_x += speed }
+        if gfx.is_key_down(gfx.Key.Left)  { pos_x -= speed }
+        if gfx.is_key_down(gfx.Key.Down)  { pos_y += speed }
+        if gfx.is_key_down(gfx.Key.Up)    { pos_y -= speed }
+
+        gfx.begin_drawing()
+        gfx.clear_background(gfx.RAYWHITE)
+
+        gfx.draw_rectangle(0.0, 220.0, 320.0, 20.0, gfx.GREEN)   # a floor
+        gfx.draw_circle(280.0, 30.0, 16.0, gfx.YELLOW)           # a sun
+        gfx.draw_texture(player, pos_x, pos_y)
+
+        gfx.end_drawing()
+        frame += 1
+    }
+
+    mx, my: f32 = gfx.mouse_position()
+    @pf("ran {frame} frames, player ended at ({pos_x}, {pos_y}), mouse last at ({mx}, {my})\n")
+
+    player.unload()
+    win.close()
+    ret 0
+}

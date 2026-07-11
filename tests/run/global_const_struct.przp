@@ -1,0 +1,26 @@
+# regression: global variables initialized with a struct-literal expression
+# used to silently zero-initialize instead of actually applying the literal
+# (codegen's constant emitter didn't recognize EXPR_STRUCT_LIT and fell back
+# to zeroinitializer with no diagnostic). Also covers a struct field that's
+# a bare function reference (needed for the std/graphics backend contract's
+# Backend struct of function pointers), nested structs, partial init
+# (undef for the omitted field), and an array of struct-literal constants.
+
+struct Vec2 { x: f32, y: f32 }
+struct Line { start: Vec2, end: Vec2 }
+struct Ops  { double: fn(i32) -> i32 }
+
+fn doubler(x: i32) -> i32 { ret x * 2 }
+
+L: Line : Line{.start=Vec2{.x=1.0, .y=2.0}, .end=Vec2{.x=3.0, .y=4.0}}
+PARTIAL: Vec2 = Vec2{.x=9.0}
+PTS: [2]Vec2 = [Vec2{.x=1.0,.y=1.0}, Vec2{.x=2.0,.y=2.0}]
+MY_OPS: Ops : Ops{.double = doubler}
+
+fn main() -> i32 {
+    @pf("{L.start.x} {L.start.y} {L.end.x} {L.end.y}\n")
+    @pf("partial.x={PARTIAL.x}\n")
+    @pf("pts: {PTS[0].x} {PTS[1].x}\n")
+    @pf("ops: {MY_OPS.double(21)}\n")
+    ret 0
+}

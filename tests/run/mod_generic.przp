@@ -1,0 +1,24 @@
+# A generic struct + impl declared inside a mod block, accessed with the
+# same alias.Name<T>.method(...) qualified-generic syntax used for imports,
+# with alias spelled either => or . (both work, interchangeably). Note: a
+# generic's closing '>' immediately followed by '=>' lexes as '>=' + '>'
+# (maximal munch), so '=>' right after a generic close needs a space (or
+# just use '.') — this mirrors '>>' needing care in other C-like languages.
+
+mod Boxes {
+    struct Box<T> {
+        val: T,
+    }
+
+    impl Box<T> {
+        fn new(v: T) -> Box<T> { ret Box<T>{.val=v} }
+        fn get(self) -> T { ret self.val }
+    }
+}
+
+fn main() -> i32 {
+    a := Boxes=>Box<i32> => new(7)
+    b := Boxes.Box<str>.new("hi")
+    @pf("{a.get()} {b.get()}\n")
+    ret 0
+}

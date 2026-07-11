@@ -239,6 +239,7 @@ static TokenKind keyword_or_ident(const char *s) {
     if (!strcmp(s, "else"))     return TOK_ELSE;
     if (!strcmp(s, "when"))     return TOK_WHEN;
     if (!strcmp(s, "while"))    return TOK_WHILE;
+    if (!strcmp(s, "loop"))     return TOK_LOOP;
     if (!strcmp(s, "for"))      return TOK_FOR;
     if (!strcmp(s, "struct"))   return TOK_STRUCT;
     if (!strcmp(s, "impl"))     return TOK_IMPL;
@@ -262,6 +263,7 @@ static TokenKind keyword_or_ident(const char *s) {
     if (!strcmp(s, "goto"))     return TOK_GOTO;
     if (!strcmp(s, "test"))     return TOK_TEST;
     if (!strcmp(s, "pub"))      return TOK_PUB;
+    if (!strcmp(s, "mod"))      return TOK_MOD;
     if (!strcmp(s, "_"))        return TOK_UNDER;
     return TOK_IDENT;
 }
@@ -402,6 +404,7 @@ const char *tok_kind_str(TokenKind k) {
         case TOK_ELSE:     return "'else'";
         case TOK_WHEN:     return "'when'";
         case TOK_WHILE:    return "'while'";
+        case TOK_LOOP:     return "'loop'";
         case TOK_FOR:      return "'for'";
         case TOK_STRUCT:   return "'struct'";
         case TOK_IMPL:     return "'impl'";
@@ -423,6 +426,7 @@ const char *tok_kind_str(TokenKind k) {
         case TOK_GOTO:       return "'goto'";
         case TOK_TEST:       return "'test'";
         case TOK_PUB:        return "'pub'";
+        case TOK_MOD:        return "'mod'";
         case TOK_IDENT:      return "identifier";
         case TOK_BUILTIN:  return "builtin";
         case TOK_UNDER:    return "'_'";
