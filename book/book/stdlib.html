@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-c52d590b.js";
+            window.path_to_searchindex_js = "searchindex-a6802ed5.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-4e58bc13.js"></script>
@@ -180,6 +180,7 @@
                         <h1 id="standard-library"><a class="header" href="#standard-library">Standard Library</a></h1>
 <p>The standard library ships with the compiler under <code>compiler/std</code>. Import modules with <code>import(alias = "std/module")</code>.</p>
 <p>There is no external package resolver yet. <code>[deps]</code> in <code>przp.toml</code> is reserved for future packages; the modules below are the standard library that currently ships with the language.</p>
+<p>Every module below has a runnable usage snippet. For complete projects using several modules together, see the <code>examples/</code> gallery at the repo root (also pointed to from <a href="./getting-started.html#next-steps">Getting Started</a>).</p>
 <h2 id="stdio"><a class="header" href="#stdio"><code>std/io</code></a></h2>
 <p>File I/O via libc. Open files are raw <code>*u8</code> handles (<code>FILE *</code>).</p>
 <div class="table-wrapper">
@@ -199,6 +200,17 @@
 </tbody>
 </table>
 </div>
+<pre><code>import(io = "std/io")
+
+f: *u8 = io.open("greeting.txt", "w")
+io.write_str(f, "hello, przp\n")
+io.close(f)
+
+r: *u8 = io.open("greeting.txt", "r")
+line: str = io.read_line(r)
+io.print(line)   # "hello, przp" — read_line keeps the trailing newline
+io.close(r)
+</code></pre>
 <h2 id="stdstr"><a class="header" href="#stdstr"><code>std/str</code></a></h2>
 <p>String helpers. Functions that produce new strings allocate.</p>
 <div class="table-wrapper">
@@ -229,6 +241,15 @@
 </tbody>
 </table>
 </div>
+<pre><code>import(str = "std/str")
+
+s: str = "  Hello, World!  "
+t: str = str.trim(s)
+u: str = str.to_lower(t)
+@pf("{u}\n")                             # "hello, world!"
+@assert(str.starts_with(u, "hello"))
+n: usize = str.split_count(u, ", ")      # 2 — "hello" and "world!"
+</code></pre>
 <h2 id="stdmath"><a class="header" href="#stdmath"><code>std/math</code></a></h2>
 <p>Math wrappers and constants.</p>
 <div class="table-wrapper">
@@ -255,6 +276,12 @@
 </tbody>
 </table>
 </div>
+<pre><code>import(m = "std/math")
+
+d: f64 = m.sqrt(2.0) * m.sqrt(2.0)   # 2.0 (up to floating-point error)
+c: i32 = m.clamp_i32(15, 0, 10)      # 10
+@pf("{d} {c}\n")
+</code></pre>
 <h2 id="stdos"><a class="header" href="#stdos"><code>std/os</code></a></h2>
 <p>Process, environment, and directory helpers.</p>
 <div class="table-wrapper">
@@ -273,6 +300,13 @@
 </tbody>
 </table>
 </div>
+<pre><code>import(os = "std/os")
+
+dir: str = os.cwd()
+os.mkdir_dir("scratch")
+os.rmdir_dir("scratch")
+@pf("running in {dir}\n")
+</code></pre>
 <h2 id="stdfile"><a class="header" href="#stdfile"><code>std/file</code></a></h2>
 <p>Path-based file utilities.</p>
 <div class="table-wrapper">
@@ -295,6 +329,19 @@
 </table>
 </div>
 <p><code>list</code> builds its result with the <a href="./builtins.html#memory"><code>@slice</code></a> builtin, since a directory’s entry count is only known at runtime, and a slice otherwise only ever comes from an array (whose size is a compile-time constant) decaying or being range-indexed.</p>
+<pre><code>import(file = "std/file")
+
+file.write_all("notes.txt", "line one\n")
+file.append("notes.txt", "line two\n")
+content: str = file.read_all("notes.txt")
+@pf("{content}")
+
+entries, err: ![]str = file.list(".")
+if err == 0 {
+    is_f: bool = file.is_file("notes.txt")
+    @pf("{@len(entries)} entries here, notes.txt is_file={is_f}\n")
+}
+</code></pre>
 <h2 id="stdfmt"><a class="header" href="#stdfmt"><code>std/fmt</code></a></h2>
 <p>String formatting helpers. For interpolation-style formatting, use the <code>@fmt</code> builtin directly with named expressions, for example <code>@fmt("x={x}")</code>.</p>
 <div class="table-wrapper">
@@ -316,6 +363,13 @@
 </tbody>
 </table>
 </div>
+<pre><code>import(fmt = "std/fmt")
+
+h: str = fmt.hex(255u64)          # "ff"
+p: str = fmt.zero_pad(7, 3)       # "007"
+f: str = fmt.fixed(3.14159, 2)    # "3.14"
+@pf("{h} {p} {f}\n")
+</code></pre>
 <h2 id="stdcollections"><a class="header" href="#stdcollections"><code>std/collections</code></a></h2>
 <p>The current collection module provides a growable <code>Vec</code> of <code>i64</code> values.</p>
 <div class="table-wrapper">
@@ -337,6 +391,15 @@
 </tbody>
 </table>
 </div>
+<pre><code>import(vec = "std/collections")
+
+v: vec.Vec = vec.Vec.new()
+v.push(10)
+v.push(20)
+v.push(30)
+@pf("{v.len_of()} {v.get(1)}\n")   # 3 20
+v.free_vec()
+</code></pre>
 <h2 id="stdatomic"><a class="header" href="#stdatomic"><code>std/atomic</code></a></h2>
 <p>Atomic operations on <code>i64</code> values. Operations use sequentially consistent ordering.</p>
 <div class="table-wrapper">
@@ -359,6 +422,13 @@
 </tbody>
 </table>
 </div>
+<pre><code>import(atomic = "std/atomic")
+
+counter: i64 = 0
+old: i64 = atomic.add(&amp;counter, 5)
+v: i64 = atomic.load(&amp;counter)
+@pf("{old} {v}\n")   # 0 5
+</code></pre>
 <h2 id="stdsync"><a class="header" href="#stdsync"><code>std/sync</code></a></h2>
 <p>Mutex and read-write lock wrappers over pthread types. The compiler links generated binaries with pthread support, so programs can import this module without extra linker flags.</p>
 <div class="table-wrapper">
@@ -384,6 +454,13 @@
 </tbody>
 </table>
 </div>
+<pre><code>import(sync = "std/sync")
+
+mu: sync.Mutex = sync.mutex_new()
+sync.lock(&amp;mu)
+defer sync.unlock(&amp;mu)
+# ... critical section ...
+</code></pre>
 <h2 id="stdcrypto"><a class="header" href="#stdcrypto"><code>std/crypto</code></a></h2>
 <p>Hashing and simple byte-buffer crypto helpers.</p>
 <div class="table-wrapper">
