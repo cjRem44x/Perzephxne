@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-fc40d596.js";
+            window.path_to_searchindex_js = "searchindex-a1838e84.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-4e58bc13.js"></script>
@@ -1072,7 +1072,7 @@ fn process_file(path: str) {
     if f == null { ret }
     defer io.close(f)    # runs when the function returns
 
-    line: str = io.read_line(f)
+    line: str = io.rstr(f)
     @pf("{line}\n")
 }
 </code></pre>
@@ -2333,7 +2333,11 @@ b: i32 = @rng(i32, 1, 100)
 <p>There is no external package resolver yet. <code>[deps]</code> in <code>przp.toml</code> is reserved for future packages; the modules below are the standard library that currently ships with the language.</p>
 <p>Every module below has a runnable usage snippet. For complete projects using several modules together, see the <code>examples/</code> gallery at the repo root (also pointed to from <a href="#next-steps">Getting Started</a>).</p>
 <h2 id="stdio"><a class="header" href="#stdio"><code>std/io</code></a></h2>
-<p>File I/O via libc. Open files are raw <code>*u8</code> handles (<code>FILE *</code>).</p>
+<p>File I/O via libc. Open files are raw <code>*u8</code> handles (<code>FILE *</code>). Naming mirrors
+C’s stdio, just shorter: <code>r</code>/<code>w</code> picks the direction, the suffix picks what’s
+being moved — <code>chr</code> (one char), <code>str</code> (one line), <code>raw</code> (n arbitrary bytes),
+or a bit width (<code>8</code>/<code>16</code>/<code>32</code>/<code>64</code>, with <code>le</code>/<code>be</code> on the multi-byte ones
+since a single byte has no order to pick).</p>
 <div class="table-wrapper">
 <table>
 <thead>
@@ -2343,24 +2347,48 @@ b: i32 = @rng(i32, 1, 100)
 <tr><td><code>SEEK_SET</code>, <code>SEEK_CUR</code>, <code>SEEK_END</code></td><td>seek constants</td></tr>
 <tr><td><code>open(path, mode)</code></td><td>open a file; returns <code>null</code> on failure</td></tr>
 <tr><td><code>close(f)</code></td><td>close file handle</td></tr>
-<tr><td><code>write_str(f, s)</code></td><td>write a <code>str</code> to a file</td></tr>
-<tr><td><code>read_line(f)</code></td><td>read one line into a heap string</td></tr>
-<tr><td><code>file_size(f)</code></td><td>byte size of an open file</td></tr>
+<tr><td><code>eof(f)</code></td><td>true once <code>f</code> has been read past its end</td></tr>
+<tr><td><code>err(f)</code></td><td>true if <code>f</code>’s error indicator is set</td></tr>
+<tr><td><code>flush(f)</code></td><td>push <code>f</code>’s buffered writes out now</td></tr>
+<tr><td><code>seek(f, off, whence)</code></td><td>reposition <code>f</code>’s read/write offset</td></tr>
+<tr><td><code>tell(f)</code></td><td><code>f</code>’s current read/write offset</td></tr>
+<tr><td><code>fsize(f)</code></td><td>byte size of an open file</td></tr>
+<tr><td><code>rchr(f)</code></td><td>read one byte as <code>fgetc</code> does: 0-255, or <code>-1</code> at EOF/error</td></tr>
+<tr><td><code>wchr(f, c)</code></td><td>write one <code>char</code>; returns it, or <code>-1</code> on error</td></tr>
+<tr><td><code>rstr(f)</code></td><td>read one line into a heap string</td></tr>
+<tr><td><code>wstr(f, s)</code></td><td>write a <code>str</code> to a file, no newline added</td></tr>
+<tr><td><code>rraw(f, buf, n)</code></td><td>read up to <code>n</code> bytes into <code>buf</code>; returns count read</td></tr>
+<tr><td><code>wraw(f, buf, n)</code></td><td>write <code>n</code> bytes from <code>buf</code>; returns count written</td></tr>
+<tr><td><code>r8</code>/<code>w8(f, v)</code></td><td>read/write a single raw byte (<code>u8</code>)</td></tr>
+<tr><td><code>r16le</code>/<code>w16le</code>, <code>r32le</code>/<code>w32le</code>, <code>r64le</code>/<code>w64le</code></td><td>fixed-width read/write, little-endian</td></tr>
+<tr><td><code>r16be</code>/<code>w16be</code>, <code>r32be</code>/<code>w32be</code>, <code>r64be</code>/<code>w64be</code></td><td>fixed-width read/write, big-endian</td></tr>
 <tr><td><code>print(s)</code></td><td>print a string</td></tr>
 <tr><td><code>println(s)</code></td><td>print a string plus newline</td></tr>
 </tbody>
 </table>
 </div>
+<p>The fixed-width readers return <code>0</code> on a short read (same sentinel-on-failure
+tradeoff <code>std/file.stat_mode</code> already makes) — check <code>eof(f)</code>/<code>err(f)</code>
+afterward if a genuine zero-valued byte must be told apart from a failed read.
+<code>rchr</code> doesn’t need that: like C’s <code>fgetc</code>, it returns <code>i32</code> specifically so
+<code>-1</code> (EOF) can’t collide with any real byte value 0-255.</p>
 <pre><code>import(io = "std/io")
 
 f: *u8 = io.open("greeting.txt", "w")
-io.write_str(f, "hello, przp\n")
+io.wchr(f, 'h')
+io.wstr(f, "ello, przp\n")
 io.close(f)
 
 r: *u8 = io.open("greeting.txt", "r")
-line: str = io.read_line(r)
-io.print(line)   # "hello, przp" — read_line keeps the trailing newline
+line: str = io.rstr(r)
+io.print(line)   # "hello, przp" — rstr keeps the trailing newline
 io.close(r)
+
+# fixed-width binary, either byte order
+b: *u8 = io.open("packet.bin", "wb")
+io.w32be(b, 0x01020304u32)   # network byte order: bytes 01 02 03 04
+io.w32le(b, 0x01020304u32)   # native byte order:   bytes 04 03 02 01
+io.close(b)
 </code></pre>
 <h2 id="stdstr"><a class="header" href="#stdstr"><code>std/str</code></a></h2>
 <p>String helpers. Functions that produce new strings allocate.</p>
@@ -2745,7 +2773,7 @@ a += "!"          # a becomes "hello world!"
 </thead>
 <tbody>
 <tr><td>Variables</td><td><code>snake_case</code></td><td><code>byte_count</code>, <code>is_valid</code></td></tr>
-<tr><td>Functions</td><td><code>snake_case</code></td><td><code>parse_int</code>, <code>read_line</code></td></tr>
+<tr><td>Functions</td><td><code>snake_case</code></td><td><code>parse_int</code>, <code>mkdir_all</code></td></tr>
 <tr><td>Constants</td><td><code>UPPER_SNAKE_CASE</code></td><td><code>MAX_SIZE</code>, <code>PI</code></td></tr>
 <tr><td>Struct types</td><td><code>PascalCase</code></td><td><code>Vec2</code>, <code>HttpRequest</code></td></tr>
 <tr><td>Enum types</td><td><code>PascalCase</code></td><td><code>Direction</code>, <code>IoError</code></td></tr>

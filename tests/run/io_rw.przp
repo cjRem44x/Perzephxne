@@ -1,0 +1,62 @@
+import(io = "std/io")
+import(file = "std/file")
+
+fn main() -> i32 {
+    file.make("tests/tmp/io_rw/")
+
+    # --- char + line-oriented string ---
+    txt: str = "tests/tmp/io_rw/text.txt"
+    tf: *u8 = io.open(txt, "w")
+    io.wchr(tf, 'h')
+    io.wstr(tf, "ello, przp\n")
+    io.close(tf)
+
+    tr: *u8 = io.open(txt, "r")
+    c: i32 = io.rchr(tr)
+    @pf("first char: {c}\n")
+    rest: str = io.rstr(tr)
+    @pf("rest of line: {rest}")
+    io.close(tr)
+
+    # --- fixed-width binary, both byte orders ---
+    bin: str = "tests/tmp/io_rw/data.bin"
+    bw: *u8 = io.open(bin, "wb")
+    io.w8(bw, 0xABu8)
+    io.w16le(bw, 0x0102u16)
+    io.w16be(bw, 0x0102u16)
+    io.w32le(bw, 0x01020304u32)
+    io.w32be(bw, 0x01020304u32)
+    io.w64le(bw, 0x0102030405060708u64)
+    io.w64be(bw, 0x0102030405060708u64)
+    io.close(bw)
+
+    br: *u8 = io.open(bin, "rb")
+    b: u8 = io.r8(br)
+    @pf("b={b}\n")
+    le16: u16 = io.r16le(br)
+    be16: u16 = io.r16be(br)
+    @pf("le16={le16} be16={be16}\n")
+    le32: u32 = io.r32le(br)
+    be32: u32 = io.r32be(br)
+    @pf("le32={le32} be32={be32}\n")
+    le64: u64 = io.r64le(br)
+    be64: u64 = io.r64be(br)
+    @pf("le64={le64} be64={be64}\n")
+
+    @pf("eof before extra read: {io.eof(br)}\n")
+    extra: u8 = io.r8(br)
+    @pf("eof after extra read: {io.eof(br)}\n")
+
+    io.close(br)
+
+    # --- raw block transfer + seek/tell/fsize ---
+    br2: *u8 = io.open(bin, "rb")
+    buf: [4]u8 = undef
+    n: usize = io.rraw(br2, &buf[0], 4)
+    @pf("rraw n={n} first4={buf[0]},{buf[1]},{buf[2]},{buf[3]}\n")
+    @pf("tell={io.tell(br2)} fsize={io.fsize(br2)}\n")
+    io.close(br2)
+
+    file.delete("tests/tmp/io_rw")
+    ret 0
+}

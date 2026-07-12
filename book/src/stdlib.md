@@ -8,30 +8,59 @@ Every module below has a runnable usage snippet. For complete projects using sev
 
 ## `std/io`
 
-File I/O via libc. Open files are raw `*u8` handles (`FILE *`).
+File I/O via libc. Open files are raw `*u8` handles (`FILE *`). Naming mirrors
+C's stdio, just shorter: `r`/`w` picks the direction, the suffix picks what's
+being moved — `chr` (one char), `str` (one line), `raw` (n arbitrary bytes),
+or a bit width (`8`/`16`/`32`/`64`, with `le`/`be` on the multi-byte ones
+since a single byte has no order to pick).
 
 | Symbol | Description |
 |---|---|
 | `SEEK_SET`, `SEEK_CUR`, `SEEK_END` | seek constants |
 | `open(path, mode)` | open a file; returns `null` on failure |
 | `close(f)` | close file handle |
-| `write_str(f, s)` | write a `str` to a file |
-| `read_line(f)` | read one line into a heap string |
-| `file_size(f)` | byte size of an open file |
+| `eof(f)` | true once `f` has been read past its end |
+| `err(f)` | true if `f`'s error indicator is set |
+| `flush(f)` | push `f`'s buffered writes out now |
+| `seek(f, off, whence)` | reposition `f`'s read/write offset |
+| `tell(f)` | `f`'s current read/write offset |
+| `fsize(f)` | byte size of an open file |
+| `rchr(f)` | read one byte as `fgetc` does: 0-255, or `-1` at EOF/error |
+| `wchr(f, c)` | write one `char`; returns it, or `-1` on error |
+| `rstr(f)` | read one line into a heap string |
+| `wstr(f, s)` | write a `str` to a file, no newline added |
+| `rraw(f, buf, n)` | read up to `n` bytes into `buf`; returns count read |
+| `wraw(f, buf, n)` | write `n` bytes from `buf`; returns count written |
+| `r8`/`w8(f, v)` | read/write a single raw byte (`u8`) |
+| `r16le`/`w16le`, `r32le`/`w32le`, `r64le`/`w64le` | fixed-width read/write, little-endian |
+| `r16be`/`w16be`, `r32be`/`w32be`, `r64be`/`w64be` | fixed-width read/write, big-endian |
 | `print(s)` | print a string |
 | `println(s)` | print a string plus newline |
+
+The fixed-width readers return `0` on a short read (same sentinel-on-failure
+tradeoff `std/file.stat_mode` already makes) — check `eof(f)`/`err(f)`
+afterward if a genuine zero-valued byte must be told apart from a failed read.
+`rchr` doesn't need that: like C's `fgetc`, it returns `i32` specifically so
+`-1` (EOF) can't collide with any real byte value 0-255.
 
 ```
 import(io = "std/io")
 
 f: *u8 = io.open("greeting.txt", "w")
-io.write_str(f, "hello, przp\n")
+io.wchr(f, 'h')
+io.wstr(f, "ello, przp\n")
 io.close(f)
 
 r: *u8 = io.open("greeting.txt", "r")
-line: str = io.read_line(r)
-io.print(line)   # "hello, przp" — read_line keeps the trailing newline
+line: str = io.rstr(r)
+io.print(line)   # "hello, przp" — rstr keeps the trailing newline
 io.close(r)
+
+# fixed-width binary, either byte order
+b: *u8 = io.open("packet.bin", "wb")
+io.w32be(b, 0x01020304u32)   # network byte order: bytes 01 02 03 04
+io.w32le(b, 0x01020304u32)   # native byte order:   bytes 04 03 02 01
+io.close(b)
 ```
 
 ## `std/str`

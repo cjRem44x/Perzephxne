@@ -1,0 +1,10 @@
+first char: 104
+rest of line: ello, przp
+b=171
+le16=258 be16=258
+le32=16909060 be32=16909060
+le64=72623859790382856 be64=72623859790382856
+eof before extra read: 0
+eof after extra read: 1
+rraw n=4 first4=171,2,1,1
+tell=4 fsize=29
