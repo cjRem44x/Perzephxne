@@ -1,0 +1,46 @@
+# secure_notes/logic — a tiny password-gated note store, built entirely on
+# std/crypto's hardened algorithm choices: hshknd.Argon2id for the login
+# password, cphrknd.ChaCha20Poly1305 for the note file itself.
+
+import(crypto = "std/crypto")
+import(file = "std/file")
+
+# hash_password: returns a self-contained string safe to store (e.g. in a
+# config file next to the notes) — auth_password doesn't need anything
+# else back from it, the salt travels with the hash.
+fn hash_password(password: str) -> str {
+    ret crypto.hash_pk(crypto.hshknd.Argon2id, password)
+}
+
+# auth_password: true if `password` reproduces `stored_hash`.
+fn auth_password(password: str, stored_hash: str) -> bool {
+    ret crypto.auth_hash(crypto.hshknd.Argon2id, password, stored_hash)
+}
+
+# save_note: encrypt `text` and write it to `path`, keyed on `password`.
+fn save_note(path: str, text: str, password: str) -> bool {
+    if !file.write_all(path, text) { ret false }
+    ret crypto.enc_file(crypto.cphrknd.ChaCha20Poly1305, path, password)
+}
+
+# load_note: decrypt the note at `path` with `password`. Returns an error
+# (rather than garbage text) if the password is wrong or the file was
+# tampered with — ChaCha20Poly1305 is authenticated, so both are detected.
+fn load_note(path: str, password: str) -> !str {
+    ok: bool = crypto.dec_file(crypto.cphrknd.ChaCha20Poly1305, path, password)
+    if !ok { ret @err(1) }
+    text: str = file.read_all(path)
+    # re-encrypt immediately so the file on disk is never left in
+    # plaintext once we've read it
+    crypto.enc_file(crypto.cphrknd.ChaCha20Poly1305, path, password)
+    ret @ok(text)
+}
+
+# delete_note: remove the note file. Routed through here (rather than
+# main.przp importing std/file directly just for this one call) so this
+# example doesn't also import a module przp test's tests/ merging can't
+# currently de-duplicate when both the entry file and a tests/ file import
+# the same module under the same alias — see status-next.md.
+fn delete_note(path: str) -> bool {
+    ret file.remove_file(path)
+}

@@ -1,0 +1,33 @@
+import(t = "../src/logic")
+import(file = "std/file")
+
+test "hash_password / auth_password round trip" {
+    h: str = t.hash_password("hunter2")
+    @assert(t.auth_password("hunter2", h))
+    @assert(!t.auth_password("wrong", h))
+}
+
+test "hash_password salts each call differently" {
+    h1: str = t.hash_password("hunter2")
+    h2: str = t.hash_password("hunter2")
+    @assert(h1 != h2)
+    @assert(t.auth_password("hunter2", h1))
+    @assert(t.auth_password("hunter2", h2))
+}
+
+test "save_note / load_note round trip" {
+    path: str = "tests_tmp_note.enc"
+    t.save_note(path, "a secret message", "pw123")
+    text, err: !str = t.load_note(path, "pw123")
+    @assert(err == 0)
+    @assert(text == "a secret message")
+    file.remove_file(path)
+}
+
+test "load_note rejects the wrong password" {
+    path: str = "tests_tmp_note2.enc"
+    t.save_note(path, "a secret message", "pw123")
+    text, err: !str = t.load_note(path, "not the password")
+    @assert(err != 0)
+    file.remove_file(path)
+}

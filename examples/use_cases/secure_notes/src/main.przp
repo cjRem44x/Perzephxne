@@ -1,0 +1,31 @@
+# examples/use_cases/secure_notes — a password-gated note, encrypted at
+# rest with an authenticated cipher rather than a toy XOR. Run it with:
+# przp run   (from this directory)
+
+import(logic = "logic")
+
+fn main() -> i32 {
+    password: str = "correct horse battery staple"
+    stored_hash: str = logic.hash_password(password)
+    @pf("stored password hash: {stored_hash}\n")
+
+    ok: bool = logic.auth_password(password, stored_hash)
+    bad: bool = logic.auth_password("wrong password", stored_hash)
+    @pf("login with correct password: {ok}\n")
+    @pf("login with wrong password:   {bad}\n\n")
+
+    path: str = "note.enc"
+    logic.save_note(path, "Meet at the old dock, midnight.", password)
+    @pf("note saved (encrypted) to {path}\n")
+
+    text, err: !str = logic.load_note(path, password)
+    if err == 0 {
+        @pf("decrypted note: \"{text}\"\n\n")
+    }
+
+    guess_text, wrong_err: !str = logic.load_note(path, "guess")
+    @pf("loading with the wrong password fails: {wrong_err != 0}\n")
+
+    logic.delete_note(path)
+    ret 0
+}
