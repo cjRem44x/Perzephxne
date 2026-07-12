@@ -88,7 +88,15 @@ len: usize  = name.len
 first: char = name[0]    # indexing returns char
 ```
 
-Concatenation and mutation require the standard library (`std/str`).
+`+` concatenates two `str` values into a fresh one, and `+=` appends in place — the only operators the compiler special-cases for `str` (see [Operator Precedence](./operators.md#str-concatenation)):
+
+```
+a: str = "hello"
+a += " world"      # a is now "hello world"
+b: str = a + "!"   # b is "hello world!", a is unchanged
+```
+
+Everything else — slicing, searching, case conversion, number parsing — lives in the standard library (`std/str`).
 
 #### Multi-Line Strings
 

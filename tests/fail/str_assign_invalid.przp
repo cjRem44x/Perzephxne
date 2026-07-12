@@ -1,0 +1,7 @@
+fn main() -> i32 {
+    a: str = "hello"
+    b: str = "world"
+    a -= b
+    @pf("{a}\n")
+    ret 0
+}
