@@ -323,7 +323,7 @@ Hashing and simple byte-buffer crypto helpers.
 
 ### High-Level Helpers
 
-Pick an algorithm with the `HashKind` / `CipherKind` enums — today each has one member (`Sha256`, `XorSha`), leaving room to add more without changing call sites.
+Pick an algorithm with the `hshknd` / `cphrknd` enums — today each has one member (`Sha256`, `XorSha`), leaving room to add more without changing call sites.
 
 | Function | Description |
 |---|---|
@@ -336,13 +336,13 @@ Pick an algorithm with the `HashKind` / `CipherKind` enums — today each has on
 import(crypto = "std/crypto")
 
 # password hashing
-h: str = crypto.hash_pk(crypto.HashKind.Sha256, "hunter2")
-ok: bool = crypto.auth_hash(crypto.HashKind.Sha256, "hunter2", h)   # true
+h: str = crypto.hash_pk(crypto.hshknd.Sha256, "hunter2")
+ok: bool = crypto.auth_hash(crypto.hshknd.Sha256, "hunter2", h)   # true
 
 # file encryption — enc_file/dec_file use the same transform, so
 # calling either one twice with the same key restores the original bytes
-crypto.enc_file(crypto.CipherKind.XorSha, "secret.txt", "correct horse battery staple")
-crypto.dec_file(crypto.CipherKind.XorSha, "secret.txt", "correct horse battery staple")
+crypto.enc_file(crypto.cphrknd.XorSha, "secret.txt", "correct horse battery staple")
+crypto.dec_file(crypto.cphrknd.XorSha, "secret.txt", "correct horse battery staple")
 ```
 
-`CipherKind.XorSha` derives a keystream from `sha256(key || block_counter)` and XORs it against the file's bytes 32 bytes at a time — unlike a repeating-key XOR, the keystream never repeats within a file. It is not authenticated (no tamper detection) and has not been audited; treat it as a starting point for the standard library rather than a production cipher.
+`cphrknd.XorSha` derives a keystream from `sha256(key || block_counter)` and XORs it against the file's bytes 32 bytes at a time — unlike a repeating-key XOR, the keystream never repeats within a file. It is not authenticated (no tamper detection), always starts its counter at 0 (so reusing a key across two files leaks the XOR of their plaintexts), and has not been audited. `hash_pk` similarly hashes the input directly with no salt or work factor. **Neither is suitable for real password storage or confidentiality-sensitive encryption** — see [Status & Next Work](./status-next.md) for what a hardened version would need.

@@ -5,7 +5,7 @@
 # xor_encrypt  — XOR stream cipher (in-place; call twice to decrypt)
 # sha256       — SHA-256 cryptographic hash (returns 32-byte digest)
 #
-# High-level helpers (choose an algorithm with the HashKind / CipherKind enums):
+# High-level helpers (choose an algorithm with the hshknd / cphrknd enums):
 #   hash_pk(kind, plain)           — hash a password/key → lowercase hex string
 #   auth_hash(kind, plain, hashed) — check plain against a stored digest
 #   enc_file(kind, path, key)      — encrypt a file in place
@@ -281,24 +281,24 @@ fn sha256_hex(data: *u8, len: usize) -> str {
 # ── High-level helpers ────────────────────────────────────────────────────────
 
 # Algorithm selectors. Only one option today; the enums leave room to grow
-# (e.g. HashKind.Blake3, CipherKind.ChaCha20) without changing call sites.
-enum HashKind {
+# (e.g. hshknd.Blake3, cphrknd.ChaCha20) without changing call sites.
+enum hshknd {
     Sha256,
 }
 
-enum CipherKind {
+enum cphrknd {
     XorSha,   # SHA-256 keystream XOR (hash-based CTR-style stream cipher)
 }
 
 # hash_pk: hash a password or key, returning a lowercase hex digest string.
-fn hash_pk(kind: HashKind, plain: str) -> str {
+fn hash_pk(kind: hshknd, plain: str) -> str {
     ret when kind {
-        HashKind.Sha256 => sha256_hex(plain.data, plain.len),
+        hshknd.Sha256 => sha256_hex(plain.data, plain.len),
     }
 }
 
 # auth_hash: true when hashing `plain` with `kind` reproduces `hashed`.
-fn auth_hash(kind: HashKind, plain: str, hashed: str) -> bool {
+fn auth_hash(kind: hshknd, plain: str, hashed: str) -> bool {
     computed: str = hash_pk(kind, plain)
     ret computed == hashed
 }
@@ -343,7 +343,7 @@ fn crypt_buffer(data: *u8, len: usize, key: str) {
 
 # crypt_file: read path, transform its bytes with `kind`, write them back.
 # Returns false if the file can't be opened for reading or writing.
-fn crypt_file(kind: CipherKind, path: str, key: str) -> bool {
+fn crypt_file(kind: cphrknd, path: str, key: str) -> bool {
     fr: *u8 = fopen(path.data, "rb")
     if fr == null { ret false }
     fseek(fr, 0, 2)          # SEEK_END
@@ -356,7 +356,7 @@ fn crypt_file(kind: CipherKind, path: str, key: str) -> bool {
     fclose(fr)
 
     when kind {
-        CipherKind.XorSha => crypt_buffer(buf, got, key),
+        cphrknd.XorSha => crypt_buffer(buf, got, key),
     }
 
     fw: *u8 = fopen(path.data, "wb")
@@ -368,12 +368,12 @@ fn crypt_file(kind: CipherKind, path: str, key: str) -> bool {
 }
 
 # enc_file: encrypt the file at `path` in place using `key`.
-fn enc_file(kind: CipherKind, path: str, key: str) -> bool {
+fn enc_file(kind: cphrknd, path: str, key: str) -> bool {
     ret crypt_file(kind, path, key)
 }
 
 # dec_file: decrypt the file at `path` in place using `key`.
 # The XorSha cipher is symmetric, so this is the same transform as enc_file.
-fn dec_file(kind: CipherKind, path: str, key: str) -> bool {
+fn dec_file(kind: cphrknd, path: str, key: str) -> bool {
     ret crypt_file(kind, path, key)
 }
