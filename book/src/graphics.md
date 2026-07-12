@@ -2,19 +2,20 @@
 
 > **Layer 1 and layer 2's 2D surface are now real; `gdev`/`guix` remain a plan.** This is an architecture sketch — written to guide implementation — for a future media stack in the spirit of [raylib](https://www.raylib.com/): simple enough for a weekend game, capable enough for a native GUI app. **This is not a raylib binding.** The plan is to write Perzephxne's own renderer and windowing layer from scratch, on raw platform APIs, and shape its call-level ergonomics after raylib's — because raylib's API is a genuinely good design, not because the library itself is a dependency worth taking on. Every other chapter in this book documents the compiler as it is; this one documents a plan, with a growing exception: `std/graphics/window` (open/close, resize, keyboard/mouse input), the backend contract, `std/graphics/gl` (context setup, clear/present, 2D immediate-mode drawing, and texture upload), `std/image` (PNG decoding), and `std/graphics` itself (window lifecycle, input queries, `Color`, `draw_rectangle`/`draw_circle`/`draw_line`, and `Texture`/`draw_texture`) are real, shipped, and regression-tested — see their sections below. Only `draw_text` (needs text layout) is still sketched in layer 2; `gdev` and `guix` remain unbuilt.
 
-The stack splits into two purpose-specific libraries built on one shared foundation:
+The stack splits into purpose-specific libraries built on one shared foundation:
 
 - **`gdev`** — game-dev primitives: sprites, 3D cameras, audio, animation.
 - **`guix`** — native GUI widgets: buttons, sliders, text editing, window chrome, DPI scaling.
-- **`std/graphics`** — the shared foundation both depend on: window lifecycle, input, the raw GPU backend, and the 2D/3D draw primitives neither `gdev` nor `guix` needs to reimplement.
+- **`gmed`** *(proposed, unbuilt — see [Layer 3c](#layer-3c--gmed-media-editing-primitives-proposed))* — media-editing primitives: clip/timeline data model, video/audio codec I/O, trim/compositing operations. Unlike `gdev` and `guix`, it depends on `guix` as well as `std/graphics` — it borrows `guix`'s generic widgets (buttons, sliders, panels) rather than reimplementing them, and adds only what's genuinely editor-specific (timeline scrubber, clip thumbnails, waveform display) on top.
+- **`std/graphics`** — the shared foundation every one of the above depends on: window lifecycle, input, the raw GPU backend, and the 2D/3D draw primitives none of them needs to reimplement.
 
-A game doesn't need `guix`'s text-editing and clipboard code any more than a settings panel needs `gdev`'s 3D camera and audio mixer — splitting them means each stays as small as the thing it's actually for, without either depending on the other.
+A game doesn't need `guix`'s text-editing and clipboard code any more than a settings panel needs `gdev`'s 3D camera and audio mixer — splitting them means each stays as small as the thing it's actually for, without either depending on the other. `gmed` is the exception to "without depending on the other": a timeline-based editor is close enough to a native app that reusing `guix`'s generic widgets is a better trade than duplicating them, the same reasoning that keeps `guix`'s own widgets out of `gdev`.
 
 ## Goals
 
 - **Fast, with nothing between the call and the GPU.** Draw calls should reach the GPU backend directly — no bound C library's abstractions, no extra indirection layer, no per-frame hidden allocation. Perzephxne already has no GC and manual/RC memory control; the graphics layer should spend that advantage on latency, especially input-to-frame latency for mouse-driven interaction, not give it back to a middleman.
 - **Simple by default, advanced the deeper you go.** The raylib-level call (`draw_circle(x, y, r, color)`, `Window.open(...)`) is the front door and stays trivially learnable — closer to Python's "simple things are simple" than to a AAA engine's config-first onboarding. Depth is opt-in, not mandatory: the same layering that lets `gdev`/`guix` sit above the backend contract also lets an advanced user drop down a level (raw `std/graphics` primitives, or `std/graphics/gl`'s own functions) exactly when the high-level call doesn't cover what they need, never before.
-- **Versatile, `gdev` first.** `gdev` (2D and 3D games) and `guix` (native GUI applications, editor tools, visualizers) both sit on `std/graphics`, the same way Qt or GTK cover custom-rendered content and native-feeling widgets from one toolkit family — but `gdev` is the priority once layer 1 (windowing + backend contract + GL) is solid; `guix` starts once `gdev`'s 2D surface is in good shape, not in lockstep with it (see the build order below). Within `gdev` itself, 2D ships before 3D — a raylib-shaped 2D core is the actual near-term target, not a checkbox on the way to `Camera3D`.
+- **Versatile, `gdev` first.** `gdev` (2D and 3D games), `guix` (native GUI applications, editor tools, visualizers), and `gmed` (media editors) all sit on `std/graphics`, the same way Qt or GTK cover custom-rendered content and native-feeling widgets from one toolkit family — but `gdev` is the priority once layer 1 (windowing + backend contract + GL) is solid; `guix` starts once `gdev`'s 2D surface is in good shape, not in lockstep with it (see the build order below); `gmed` starts once `guix` has real generic widgets to borrow, since it depends on `guix` rather than sitting beside it. Within `gdev` itself, 2D ships before 3D — a raylib-shaped 2D core is the actual near-term target, not a checkbox on the way to `Camera3D`.
 - **Idiomatic.** `snake_case` functions, `struct` + `impl` for resources, enums for key/button constants, tuples for multi-value returns (`get_mouse_position() -> (f32, f32)`), and `!T` failable returns for anything that can fail to load (a missing texture file should be a caught error, not a null-pointer crash).
 
 ## Why build our own renderer instead of binding raylib
@@ -37,13 +38,22 @@ The tradeoff is honest either way: this is a much bigger undertaking than bindin
 ## Layered architecture
 
 ```
-┌────────────────────────────┐   ┌────────────────────────────┐
-│ guix   native GUI widgets  │   │ gdev   game-dev primitives │
-│ (button, slider, text      │   │ (sprites, 3D camera,       │
-│  editing, window chrome,   │   │  batching, audio,          │
-│  DPI scaling, clipboard)   │   │  animation helpers)        │
-└──────────────┬─────────────┘   └──────────────┬─────────────┘
-               └────────────────┬────────────────┘
+                                                  ┌─────────────────────────────┐
+                                                  │ gmed   media-editing        │
+                                                  │ primitives (proposed)       │
+                                                  │ (clip/timeline model,       │
+                                                  │  codec I/O, trim/composite) │
+                                                  └──────────────┬──────────────┘
+                                                                 │ borrows generic
+                                                                 │ widgets from ↓
+┌────────────────────────────┐   ┌────────────────────────────┐ │
+│ guix   native GUI widgets  │◄──┼────────────────────────────┼─┘
+│ (button, slider, text      │   │ gdev   game-dev primitives │
+│  editing, window chrome,   │   │ (sprites, 3D camera,       │
+│  DPI scaling, clipboard)   │   │  batching, audio,          │
+└──────────────┬─────────────┘   │  animation helpers)        │
+               │                 └──────────────┬─────────────┘
+               └────────────────┬─────────────────┘
                      std/graphics — shared foundation
              (2D/3D draw primitives, plain-data types, window
               lifecycle, input, snake_case idiomatic wrapper)
@@ -59,6 +69,8 @@ The tradeoff is honest either way: this is a much bigger undertaking than bindin
         └───────────────────────┴───────────────────────┘
       libGL.so, libX11.so / Wayland client libs (system, not shipped)
 ```
+
+`gmed`'s own codec I/O (demuxing/decoding/encoding video and audio) isn't in this diagram at all — it's not a graphics concern, so it doesn't route through the backend contract or `std/graphics` the way rendering a decoded frame as a texture does. See [Layer 3c](#layer-3c--gmed-media-editing-primitives-proposed) below.
 
 ### Layer 1 — platform bindings and the backend contract
 
@@ -355,6 +367,53 @@ fn main() -> i32 {
 }
 ```
 
+### Layer 3c — `gmed`, media-editing primitives (proposed)
+
+`gmed` is a proposed name, not a decision — pick another if a better one turns up once real code exists. **Nothing here is built. This is a plan, sketched the same way `gdev` and `guix` were sketched before either had real code, because the same "settle the shape before writing it" reasoning applies.** Its reason for existing: an app like a simple video editor needs a *clip/timeline data model* and *codec I/O*, neither of which is a game concern or a generic-widget concern — it doesn't belong inside `gdev` (nothing here is about sprites or a 3D camera) or inside `guix` (a timeline scrubber and a waveform display aren't generic widgets any more than a 3D camera is), so it gets its own library that *depends on* both `std/graphics` and `guix` instead of sitting beside them.
+
+**What's shared, unmodified, from the rest of the stack:**
+- `std/graphics`'s window lifecycle, input, and 2D draw/texture primitives — a decoded video frame is just pixel data uploaded as a `Texture` and drawn with `draw_texture`, exactly like any other image.
+- `guix`'s generic widgets — buttons, sliders, panels, text boxes — for anything in the editor's UI that isn't specific to media editing (a "trim" button is just `guix.button`).
+
+**What's new and not shared with anything:**
+- **Codec I/O** — demuxing an MP4/MKV/etc. container and decoding its video/audio streams, then encoding and muxing back out on export. This is not a `std/graphics` concern (it produces frame buffers and audio samples, not draw calls) and not remotely the same class of effort as `std/image`'s hand-written PNG decoder — H.264/AAC decode involves motion compensation, entropy coding, and enough surface area that hand-writing it isn't realistic. The plan is to bind an existing library (`ffmpeg`'s `libavformat`/`libavcodec`/`libswscale`) via `extern fn` + `[build].link`, the same FFI mechanism `std/graphics/window` already uses for `libX11`. This is also the one place this design is most likely to run into the documented struct-by-value `extern fn` limitation (see [Status & Next Work](./status-next.md)), since ffmpeg's C API leans on structs passed by value — expect to need the same "wrap it in its own module, reached via `import()`" workaround already established there, or to fix that limitation for real before this gets far.
+- **The clip/timeline data model** — tracks, clips, in/out trim points, and simple compositing (cut/cross-fade, not a full node graph) — this is genuinely editor-specific application logic, not a library concern shared with anything else in the stack.
+- **Editor-specific widgets** — a timeline scrubber, clip thumbnails, a waveform display. These stay local to `gmed` rather than migrating into `guix`'s generic widget set, the same discipline that keeps `gdev`'s sprite/camera code out of `guix` — a widget belongs next to the thing that needs it until something *else* also needs it.
+
+A sketch of the rough shape (illustrative only — nothing here is a settled API):
+
+```
+import(gmed = "std/gmed")
+import(guix = "std/guix")
+
+fn main() -> i32 {
+    win: gmed.Window = gmed.Window.open("clip editor", 1280, 720)
+    proj: gmed.Project = gmed.Project.new()
+    clip: gmed.Clip = gmed.Clip.load("input.mp4")     # demux + probe, no full decode yet
+    proj.add_clip(clip, track: 0, start: 0.0)
+
+    playhead: f32 = 0.0
+    while !win.should_close() {
+        frame: gmed.Texture = proj.frame_at(playhead)  # decode + upload just this frame
+        gmed.begin_drawing()
+        gmed.draw_texture(frame, 0.0, 0.0)
+        playhead = gmed.timeline(gmed.Rectangle{.x=0.0, .y=640.0, .width=1280.0, .height=60.0},
+                                  proj, playhead)        # gmed-specific widget
+        if guix.button(guix.Rectangle{.x=1100.0, .y=20.0, .width=120.0, .height=32.0}, "Export") {
+            proj.export("output.mp4")                   # encode + mux via the codec layer
+        }
+        gmed.end_drawing()
+    }
+    win.close()
+    ret 0
+}
+```
+
+**Open questions, unresolved on purpose (this is a plan, not a spec):**
+- Does `gmed` wait for `guix` to have real generic widgets before starting, or build its own minimal button/slider equivalents first and adopt `guix`'s once they exist? The dependency arrow in the diagram above is the intent, not a hard blocker if `guix` is still far off when someone wants to start on codec I/O first.
+- Is codec I/O scoped as `gmed`'s own problem, or does it belong in `std/video` (or similar) as a generally useful capability — a program that just wants to decode a video for analysis, with no timeline or editing UI at all, shouldn't have to pull in `gmed`'s editor-specific data model to get it.
+- How much compositing is in scope before this stops being "nothing complicated" — a cut/trim/cross-fade timeline is a very different scope than anything approaching a node-based effects graph, and the design should stay deliberately on the simple side of that line unless something concrete demands more.
+
 ## Resolved prerequisites
 
 The compiler defects this chapter has surfaced have all since been fixed and regression-tested — they're recorded here because they were found while building this design, not because they're still blocking it:
@@ -381,6 +440,7 @@ This means the FFI mechanics and linking layer 1 depends on (struct-by-value cal
 | 5 | **Text layout.** `guix` needs real text shaping/layout (cursor positioning, line wrapping, at minimum) to be a credible native-app toolkit; `gdev` only needs simple bitmap-font text draw calls. This is a `guix`-specific investment, not a `std/graphics` one. |
 | 6 | **Variadic/macro helpers.** Small conveniences like a `printf`-style text-formatting helper for on-screen debug text are built on `@fmt` rather than needing any new compiler feature — a non-issue, listed for completeness. |
 | 7 | **Threading model.** GPU contexts are tied to the thread that created them; the wrapper should document a single-threaded main loop (window, input, and drawing calls all from one thread) as the initial supported model rather than attempt general multi-threaded rendering from the start. |
+| 8 | **Video/audio codec I/O**, for `gmed`. Demux/decode/encode/mux isn't something to hand-write (unlike `std/image`'s PNG decoder — H.264/AAC are a different class of complexity), so this needs a real FFI binding to an existing library (`ffmpeg`'s `libavformat`/`libavcodec`/`libswscale`, most likely). **Not started** — and likely to run into the struct-by-value `extern fn` limitation (see [Status & Next Work](./status-next.md)) given ffmpeg's C API, which may need a real fix rather than the existing "wrap it in an `import()`ed module" workaround. |
 
 ## Suggested build order
 
@@ -392,3 +452,4 @@ This means the FFI mechanics and linking layer 1 depends on (struct-by-value cal
 6. Start `gdev` once `std/graphics`'s 2D primitives, input, and texture loading are solid, and finish its 2D surface (sprites, 2D camera/scrolling, basic audio) before touching 3D or starting `guix`. `gdev` is the priority once layer 1 is done — `guix` is deliberately sequenced after, not developed in lockstep with it, so effort doesn't split across both toolkits while neither is finished.
 7. `gdev`: only once the 2D surface above is solid, extend to 3D (`Camera3D`-equivalent, cube/grid primitives).
 8. `guix`: start once `gdev`'s 2D surface is solid (does not need to wait for `gdev`'s 3D work). Extend to DPI scaling, text editing/cursor handling, focus/tab order, and clipboard. Prioritize mouse-interaction latency here specifically, since that's the axis this design most wants to win on: input state should be sampled once per frame with nothing between the OS event and code reading it.
+9. `gmed`: start on the codec I/O binding (prerequisite #8) independently of `guix`'s progress if there's appetite to de-risk it early — it has no dependency on `guix` internals, only on `std/graphics`'s texture upload for displaying decoded frames. The clip/timeline data model and editor-specific widgets (scrubber, thumbnails, waveform) come once `guix` has real generic widgets to borrow from; stay on cut/trim/cross-fade compositing, not a full effects graph, until something concrete demands more.
