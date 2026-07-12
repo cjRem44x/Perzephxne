@@ -3,6 +3,7 @@
 # przp run   (from this directory)
 
 import(logic = "logic")
+import(file = "std/file")
 
 fn main() -> i32 {
     password: str = "correct horse battery staple"
@@ -26,6 +27,6 @@ fn main() -> i32 {
     guess_text, wrong_err: !str = logic.load_note(path, "guess")
     @pf("loading with the wrong password fails: {wrong_err != 0}\n")
 
-    logic.delete_note(path)
+    file.remove_file(path)
     ret 0
 }

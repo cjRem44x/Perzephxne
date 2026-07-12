@@ -760,6 +760,55 @@ EOF
     fi
 }
 
+# regression: przp test used to fail with "redefinition of ..." whenever the
+# entry file and a tests/ file both imported the same (non-generic) stdlib
+# module under the same alias — merge_items() concatenated each independent
+# top-level file's own mangled copy of that module with no de-duplication
+# by resolved path, so every one of that module's symbols ended up defined
+# twice. Both src/main.przp and tests/*.przp import std/str as `str` here,
+# an extremely ordinary thing for a real project to do.
+run_tests_dir_dedup_case() {
+    local work="$TMP/tests_dir_dedup/proj"
+    local stdout="$TMP/out/tests_dir_dedup.stdout"
+    local stderr="$TMP/err/tests_dir_dedup.stderr"
+
+    printf 'run   tests_dir_dedup\n'
+    mkdir -p "$work/src" "$work/tests"
+    cat > "$work/przp.toml" <<'EOF'
+[package]
+name = "tddedup"
+version = "0.1.0"
+EOF
+    cat > "$work/src/main.przp" <<'EOF'
+import(str = "std/str")
+fn main() -> i32 {
+    @pf("{str.to_upper(\"hello\")}\n")
+    ret 0
+}
+EOF
+    cat > "$work/tests/str_test.przp" <<'EOF'
+import(str = "std/str")
+test "same module, same alias, as the entry file's own direct import" {
+    @assert(str.to_upper("hi") == "HI")
+}
+EOF
+
+    (cd "$work" && PRZP_STDLIB="$STDLIB" "$PRZP" run >"$stdout" 2>"$stderr")
+    if [ "$?" -ne 0 ] || ! grep -Fq "HELLO" "$stdout"; then
+        printf 'FAIL  tests_dir_dedup: przp run did not print HELLO\n' >&2
+        sed -n '1,40p' "$stdout" "$stderr" >&2
+        failures=$((failures + 1))
+        return
+    fi
+
+    (cd "$work" && PRZP_STDLIB="$STDLIB" "$PRZP" test >"$stdout" 2>"$stderr")
+    if [ "$?" -ne 0 ] || ! grep -Fq "1 passed, 0 failed" "$stdout"; then
+        printf 'FAIL  tests_dir_dedup: przp test did not pass\n' >&2
+        sed -n '1,40p' "$stdout" "$stderr" >&2
+        failures=$((failures + 1))
+    fi
+}
+
 for src in "$ROOT"/tests/run/*.przp; do
     [ -e "$src" ] || continue
     run_success_case "$src"
@@ -807,6 +856,7 @@ run_freshness_case
 run_test_cmd_case
 run_tests_dir_case
 run_tests_dir_generic_case
+run_tests_dir_dedup_case
 
 run_cli_fail unknown_command "unknown command 'nope'" "$PRZP" nope
 run_cli_fail sac_no_files "przp sac: no input files" "$PRZP" sac

@@ -35,12 +35,3 @@ fn load_note(path: str, password: str) -> !str {
     crypto.enc_file(crypto.cphrknd.ChaCha20Poly1305, path, password)
     ret @ok(text)
 }
-
-# delete_note: remove the note file. Routed through here (rather than
-# main.przp importing std/file directly just for this one call) so this
-# example doesn't also import a module przp test's tests/ merging can't
-# currently de-duplicate when both the entry file and a tests/ file import
-# the same module under the same alias — see status-next.md.
-fn delete_note(path: str) -> bool {
-    ret file.remove_file(path)
-}
