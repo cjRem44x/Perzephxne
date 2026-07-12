@@ -140,6 +140,9 @@ Path-based file utilities.
 | `is_file(path)` | true if path exists and is a regular file |
 | `is_dir(path)` | true if path exists and is a directory |
 | `list(dir)` | `![]str` — dir-joined paths of `dir`'s entries (`.`/`..` skipped), ready to pass to `is_file`/`is_dir`/`read_all` |
+| `mkdir_all(dir_path)` | create `dir_path` and any missing parent directories (`mkdir -p`); true if the directory exists afterward either way |
+| `make(path)` | create `path`: a trailing `/` makes a directory (plus missing parents); otherwise an empty file (plus missing parent directories) — truncates an existing file, leaves an existing directory alone |
+| `delete(path)` | remove the file or directory at `path`; a directory is removed recursively (contents deleted first) even if non-empty |
 
 `list` builds its result with the [`@slice`](./builtins.md#memory) builtin, since a directory's entry count is only known at runtime, and a slice otherwise only ever comes from an array (whose size is a compile-time constant) decaying or being range-indexed.
 
@@ -156,6 +159,14 @@ if err == 0 {
     is_f: bool = file.is_file("notes.txt")
     @pf("{@len(entries)} entries here, notes.txt is_file={is_f}\n")
 }
+```
+
+```
+import(file = "std/file")
+
+file.make("build/assets/")           # mkdir -p — creates build/ and build/assets/
+file.make("build/assets/readme.txt") # an empty file, parent dirs already there
+file.delete("build")                 # gone — recursively, even though non-empty
 ```
 
 ## `std/fmt`

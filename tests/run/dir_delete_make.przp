@@ -1,0 +1,47 @@
+import(file = "std/file")
+
+fn main() -> i32 {
+    # make(path) with a trailing '/' creates a directory, plus any
+    # missing parent directories (mkdir -p).
+    ok1: bool = file.make("tests/tmp/delete_make/a/b/c/")
+    d1: bool = file.is_dir("tests/tmp/delete_make/a/b/c")
+    @pf("make dir (nested): {ok1} is_dir={d1}\n")
+
+    # make(path) without a trailing '/' creates an empty file, plus any
+    # missing parent directories.
+    ok2: bool = file.make("tests/tmp/delete_make/x/y/hello.txt")
+    f1: bool = file.is_file("tests/tmp/delete_make/x/y/hello.txt")
+    @pf("make file (nested): {ok2} is_file={f1}\n")
+
+    # make(path) on an existing file truncates it to empty.
+    file.write_all("tests/tmp/delete_make/x/y/hello.txt", "some content")
+    sz1: i64 = file.size("tests/tmp/delete_make/x/y/hello.txt")
+    ok3: bool = file.make("tests/tmp/delete_make/x/y/hello.txt")
+    sz2: i64 = file.size("tests/tmp/delete_make/x/y/hello.txt")
+    @pf("truncate: before={sz1} after_make={sz2} ok={ok3}\n")
+
+    # make(path) on an already-existing directory is a no-op success.
+    ok4: bool = file.make("tests/tmp/delete_make/a/b/c/")
+    @pf("make existing dir: {ok4}\n")
+
+    # delete(path) removes a non-empty directory recursively.
+    file.write_all("tests/tmp/delete_make/a/top.txt", "top")
+    file.write_all("tests/tmp/delete_make/a/b/mid.txt", "mid")
+    file.write_all("tests/tmp/delete_make/a/b/c/deep.txt", "deep")
+    del_ok: bool = file.delete("tests/tmp/delete_make/a")
+    exists_after: bool = file.exists("tests/tmp/delete_make/a")
+    @pf("delete non-empty dir: {del_ok} still_exists={exists_after}\n")
+
+    # delete(path) on a plain file.
+    del_file_ok: bool = file.delete("tests/tmp/delete_make/x/y/hello.txt")
+    file_exists_after: bool = file.exists("tests/tmp/delete_make/x/y/hello.txt")
+    @pf("delete file: {del_file_ok} still_exists={file_exists_after}\n")
+
+    # delete(path) on a nonexistent path fails rather than pretending to succeed.
+    del_missing: bool = file.delete("tests/tmp/delete_make/does_not_exist_xyz")
+    @pf("delete missing: {del_missing}\n")
+
+    # clean up remaining scaffolding this test created
+    file.delete("tests/tmp/delete_make")
+    ret 0
+}
