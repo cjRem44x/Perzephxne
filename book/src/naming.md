@@ -7,7 +7,7 @@ These are conventions, not compiler-enforced rules. Following them makes code ea
 | Item | Convention | Example |
 |---|---|---|
 | Variables | `snake_case` | `byte_count`, `is_valid` |
-| Functions | `snake_case` | `parse_int`, `read_line` |
+| Functions | `snake_case` | `parse_int`, `mkdir_all` |
 | Constants | `UPPER_SNAKE_CASE` | `MAX_SIZE`, `PI` |
 | Struct types | `PascalCase` | `Vec2`, `HttpRequest` |
 | Enum types | `PascalCase` | `Direction`, `IoError` |

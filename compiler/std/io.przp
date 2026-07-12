@@ -1,9 +1,24 @@
-# std/io — file I/O via libc
+# std/io — file I/O via libc: handle management, char/string/raw-byte
+# transfer, and fixed-width binary read/write in either byte order.
+#
+# Naming mirrors C's stdio, just shorter: r/w picks the direction, the
+# suffix picks what's being moved — chr (one char), str (one line), raw
+# (n arbitrary bytes), or a bit width (8/16/32/64, with le/be on the
+# multi-byte ones since a single byte has no order to pick).
+#
+# EOF/error convention: rchr follows C's fgetc exactly (returns -1, since
+# a byte value 0-255 can't otherwise be told apart from EOF). The fixed-
+# width binary readers (r8/r16le/...) return 0 on a short read instead,
+# same sentinel-on-failure tradeoff std/file.stat_mode already makes —
+# call eof(f)/err(f) after if a genuine zero-valued byte must be told
+# apart from a failed read.
 
 extern fn fopen(path: *u8, mode: *u8) -> *u8
 extern fn fclose(f: *u8) -> i32
 extern fn fread(buf: *u8, size: usize, n: usize, f: *u8) -> usize
 extern fn fwrite(buf: *u8, size: usize, n: usize, f: *u8) -> usize
+extern fn fgetc(f: *u8) -> i32
+extern fn fputc(c: i32, f: *u8) -> i32
 extern fn fgets(buf: *u8, n: i32, f: *u8) -> *u8
 extern fn fputs(s: *u8, f: *u8) -> i32
 extern fn fprintf(f: *u8, fmt: *u8, ..) -> i32
@@ -34,13 +49,55 @@ fn close(f: *u8) -> i32 {
     ret fclose(f)
 }
 
-# write_str: write a str to a file handle
-fn write_str(f: *u8, s: str) -> usize {
-    ret fwrite(s.data, 1, s.len, f)
+# eof: true once f has been read past its end
+fn eof(f: *u8) -> bool {
+    ret feof(f) != 0
 }
 
-# read_line: read one line from f into a 4096-byte heap buffer, return str view
-fn read_line(f: *u8) -> str {
+# err: true if f's error indicator is set
+fn err(f: *u8) -> bool {
+    ret ferror(f) != 0
+}
+
+# flush: push f's buffered writes out now
+fn flush(f: *u8) -> i32 {
+    ret fflush(f)
+}
+
+# seek: reposition f's read/write offset (SEEK_SET/SEEK_CUR/SEEK_END)
+fn seek(f: *u8, off: i64, whence: i32) -> i32 {
+    ret fseek(f, off, whence)
+}
+
+# tell: f's current read/write offset
+fn tell(f: *u8) -> i64 {
+    ret ftell(f)
+}
+
+# fsize: byte size of an open file (repositions to start on return)
+fn fsize(f: *u8) -> i64 {
+    fseek(f, 0, SEEK_END)
+    sz: i64 = ftell(f)
+    rewind(f)
+    ret sz
+}
+
+# --- char --------------------------------------------------------------
+
+# rchr: read one byte as fgetc does — 0-255 on success, -1 at EOF/error
+fn rchr(f: *u8) -> i32 {
+    ret fgetc(f)
+}
+
+# wchr: write one char; returns the char written, or -1 on error
+fn wchr(f: *u8, c: char) -> i32 {
+    ret fputc(c, f)
+}
+
+# --- string (line-oriented) ---------------------------------------------
+
+# rstr: read one line from f into a 4096-byte heap buffer, return str view
+fn rstr(f: *u8) -> str {
     buf: *u8 = malloc(4097)
     got: *u8 = fgets(buf, 4096, f)
     if got == null { ret @str_raw(buf, 0) }
@@ -48,13 +105,98 @@ fn read_line(f: *u8) -> str {
     ret @str_raw(buf, n)
 }
 
-# file_size: return byte size of an open file (repositions to start on return)
-fn file_size(f: *u8) -> i64 {
-    fseek(f, 0, SEEK_END)
-    sz: i64 = ftell(f)
-    rewind(f)
-    ret sz
+# wstr: write a str to f verbatim (no newline added)
+fn wstr(f: *u8, s: str) -> usize {
+    ret fwrite(s.data, 1, s.len, f)
 }
+
+# --- raw bytes (arbitrary length) ---------------------------------------
+
+# rraw: read up to n bytes into buf, return the count actually read
+fn rraw(f: *u8, buf: *u8, n: usize) -> usize {
+    ret fread(buf, 1, n, f)
+}
+
+# wraw: write n bytes from buf, return the count actually written
+fn wraw(f: *u8, buf: *u8, n: usize) -> usize {
+    ret fwrite(buf, 1, n, f)
+}
+
+# --- fixed-width binary --------------------------------------------------
+
+# r8/w8: a single byte — no endianness to pick for one byte
+fn r8(f: *u8) -> u8 {
+    b: u8 = 0
+    fread(&b, 1, 1, f)
+    ret b
+}
+
+fn w8(f: *u8, v: u8) -> usize {
+    ret fwrite(&v, 1, 1, f)
+}
+
+# r16le/w16le: 2 bytes, little-endian (the native order on every platform
+# this compiler currently targets)
+fn r16le(f: *u8) -> u16 {
+    v: u16 = 0
+    fread(&v, 1, 2, f)
+    ret v
+}
+
+fn w16le(f: *u8, v: u16) -> usize {
+    ret fwrite(&v, 1, 2, f)
+}
+
+# r16be/w16be: 2 bytes, big-endian
+fn r16be(f: *u8) -> u16 {
+    ret @bswap(r16le(f))
+}
+
+fn w16be(f: *u8, v: u16) -> usize {
+    ret w16le(f, @bswap(v))
+}
+
+# r32le/w32le: 4 bytes, little-endian
+fn r32le(f: *u8) -> u32 {
+    v: u32 = 0
+    fread(&v, 1, 4, f)
+    ret v
+}
+
+fn w32le(f: *u8, v: u32) -> usize {
+    ret fwrite(&v, 1, 4, f)
+}
+
+# r32be/w32be: 4 bytes, big-endian
+fn r32be(f: *u8) -> u32 {
+    ret @bswap(r32le(f))
+}
+
+fn w32be(f: *u8, v: u32) -> usize {
+    ret w32le(f, @bswap(v))
+}
+
+# r64le/w64le: 8 bytes, little-endian
+fn r64le(f: *u8) -> u64 {
+    v: u64 = 0
+    fread(&v, 1, 8, f)
+    ret v
+}
+
+fn w64le(f: *u8, v: u64) -> usize {
+    ret fwrite(&v, 1, 8, f)
+}
+
+# r64be/w64be: 8 bytes, big-endian
+fn r64be(f: *u8) -> u64 {
+    ret @bswap(r64le(f))
+}
+
+fn w64be(f: *u8, v: u64) -> usize {
+    ret w64le(f, @bswap(v))
+}
+
+# --- stdout convenience --------------------------------------------------
 
 # print: write a string to stdout without a trailing newline
 fn print(s: str) {

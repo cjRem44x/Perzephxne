@@ -12,7 +12,7 @@ fn process_file(path: str) {
     if f == null { ret }
     defer io.close(f)    # runs when the function returns
 
-    line: str = io.read_line(f)
+    line: str = io.rstr(f)
     @pf("{line}\n")
 }
 ```
