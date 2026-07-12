@@ -9,10 +9,13 @@ You need:
 
 ```sh
 git clone https://github.com/cjRem44x/Perzephxne
-cd Perzephxne/compiler
-make
-sudo cp przp /usr/local/bin/
+cd Perzephxne
+./deploy.sh              # builds compiler/przp, installs it + std/ to /usr/local (needs sudo)
+# or, no sudo needed:
+PREFIX="$HOME/.local" ./deploy.sh
 ```
+
+Don't just `cp compiler/przp /usr/local/bin/` by hand — `przp` resolves every `import(x = "std/...")` against a `std/` directory it finds relative to its own binary path (or `$PRZP_STDLIB`, if set), so a bare binary with no `std/` deployed anywhere near it fails to import anything from the standard library. `deploy.sh` installs both, in the layout `przp` already knows how to find on its own (`$PREFIX/bin/przp` + `$PREFIX/lib/przp/std/`) — see `deploy.sh --help`, or `make deploy` / `make uninstall` from the repo root.
 
 ## Hello World
 
