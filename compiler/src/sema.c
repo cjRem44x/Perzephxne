@@ -708,7 +708,26 @@ static Type *check_expr(Sema *s, Expr *e) {
                     e->ty = s->ty_usize; ptr_arith = 1;
                 }
             }
-            if (!ptr_arith) switch (e->binop.op) {
+            /* str + str → str (concatenation); any other binary op between
+               two str operands besides ==/!= is not defined for str, so
+               reject it here rather than letting it reach codegen's generic
+               numeric path (which can't operate on the { ptr, i64 } aggregate). */
+            int str_op = 0;
+            if (lt && lt->kind == TY_STR && rt && rt->kind == TY_STR) {
+                if (e->binop.op == BINOP_ADD) {
+                    e->ty = s->ty_str;
+                    str_op = 1;
+                } else if (e->binop.op != BINOP_EQ && e->binop.op != BINOP_NE) {
+                    sema_error(s, e->span,
+                               "operator not valid for 'str' operands (only '+', '==', '!=' are supported)");
+                    /* keep e->ty as str (not bool) so a wrong-op error here
+                       doesn't cascade into a second, spurious type-mismatch
+                       error at whatever consumes this expression's value */
+                    e->ty = s->ty_str;
+                    str_op = 1;
+                }
+            }
+            if (!ptr_arith && !str_op) switch (e->binop.op) {
                 case BINOP_EQ: case BINOP_NE:
                 case BINOP_LT: case BINOP_GT:
                 case BINOP_LE: case BINOP_GE:
@@ -1497,6 +1516,16 @@ static void check_stmt(Sema *s, Stmt *st) {
             if (lhs && rhs && !ty_coerces(rhs, lhs))
                 sema_error(s, st->span, "cannot assign '%s' to '%s'",
                            ty_str(rhs), ty_str(lhs));
+
+            /* a str target only supports '=' and '+=' (concatenation);
+               ty_coerces above can't catch this since it only checks that
+               the value type fits, not that the operator itself is valid
+               for that type — codegen's generic compound-assign path can't
+               operate on the { ptr, i64 } aggregate for anything else. */
+            if (lhs && lhs->kind == TY_STR
+                    && st->assign.op != ASSIGN_EQ && st->assign.op != ASSIGN_ADD)
+                sema_error(s, st->span,
+                           "operator not valid for 'str' target (only '=' and '+=' are supported)");
             break;
         }
 

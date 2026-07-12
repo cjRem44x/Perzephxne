@@ -824,6 +824,38 @@ static Val emit_str_eq(CG *cg, Val l, Val r) {
     return val_tmp(both);
 }
 
+/* str concatenation: alloc len(l)+len(r)+1 bytes (the +1 for a NUL
+   terminator, matching the convention every other str-producing builtin/
+   stdlib function uses), memcpy both operands' bytes in, NUL-terminate,
+   and return a fresh { ptr, i64 } fat pointer whose length excludes that
+   trailing NUL (same convention as std/file.read_all / std/str.concat). */
+static Val emit_str_concat(CG *cg, Val l, Val r) {
+    int lp = new_tmp(cg), rp = new_tmp(cg);
+    int ll = new_tmp(cg), rl = new_tmp(cg);
+    emit(cg, "  %%t%d = extractvalue { ptr, i64 } %s, 0\n", lp, l.buf);
+    emit(cg, "  %%t%d = extractvalue { ptr, i64 } %s, 0\n", rp, r.buf);
+    emit(cg, "  %%t%d = extractvalue { ptr, i64 } %s, 1\n", ll, l.buf);
+    emit(cg, "  %%t%d = extractvalue { ptr, i64 } %s, 1\n", rl, r.buf);
+    int total = new_tmp(cg);
+    emit(cg, "  %%t%d = add i64 %%t%d, %%t%d\n", total, ll, rl);
+    int total1 = new_tmp(cg);
+    emit(cg, "  %%t%d = add i64 %%t%d, 1\n", total1, total);
+    int buf = new_tmp(cg);
+    emit(cg, "  %%t%d = call ptr @malloc(i64 %%t%d)\n", buf, total1);
+    emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%d, ptr %%t%d, i64 %%t%d, i1 false)\n", buf, lp, ll);
+    int roff = new_tmp(cg);
+    emit(cg, "  %%t%d = getelementptr i8, ptr %%t%d, i64 %%t%d\n", roff, buf, ll);
+    emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%d, ptr %%t%d, i64 %%t%d, i1 false)\n", roff, rp, rl);
+    int noff = new_tmp(cg);
+    emit(cg, "  %%t%d = getelementptr i8, ptr %%t%d, i64 %%t%d\n", noff, buf, total);
+    emit(cg, "  store i8 0, ptr %%t%d\n", noff);
+    int t0 = new_tmp(cg);
+    emit(cg, "  %%t%d = insertvalue { ptr, i64 } undef, ptr %%t%d, 0\n", t0, buf);
+    int t1 = new_tmp(cg);
+    emit(cg, "  %%t%d = insertvalue { ptr, i64 } %%t%d, i64 %%t%d, 1\n", t1, t0, total);
+    return val_tmp(t1);
+}
+
 /* Increment RC given the smart ptr value buf (e.g. "%t5"). */
 static void emit_rc_inc(CG *cg, const char *smart_ptr_buf) {
     int rc  = new_tmp(cg);
@@ -2845,6 +2877,13 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
             int is_flt = type_is_float(op_ty);
             int is_sgn = type_is_signed(op_ty);
 
+            /* string concatenation: '+' on two str operands — see emit_str_concat */
+            if (e->binop.op == BINOP_ADD && lt && lt->kind == TY_STR) {
+                Val cat = emit_str_concat(cg, l, r);
+                if (out_ty) *out_ty = e->ty;
+                return cat;
+            }
+
             /* string equality/inequality: not a plain icmp — see emit_str_eq */
             int is_str_cmp = (e->binop.op == BINOP_EQ || e->binop.op == BINOP_NE)
                              && lt && lt->kind == TY_STR;
@@ -4241,6 +4280,14 @@ static void cg_stmt(CG *cg, Stmt *s) {
                         }
                     }
                     emit(cg, "  store %s %s, ptr %s\n", llt, rhs.buf, sym->llvm_name);
+                } else if (sym->ty && sym->ty->kind == TY_STR && s->assign.op == ASSIGN_ADD) {
+                    /* str += str: concatenate, then store the fresh fat pointer.
+                       sema guarantees ASSIGN_ADD is the only compound op reachable
+                       here for a str target — anything else is rejected earlier. */
+                    int cur_str = new_tmp(cg);
+                    emit(cg, "  %%t%d = load { ptr, i64 }, ptr %s\n", cur_str, sym->llvm_name);
+                    Val cat = emit_str_concat(cg, val_tmp(cur_str), rhs);
+                    emit(cg, "  store { ptr, i64 } %s, ptr %s\n", cat.buf, sym->llvm_name);
                 } else {
                     /* coerce rhs integer/float width to match lhs for compound assignment */
                     if (vty && strcmp(llvm_type(vty), llt) != 0) {

@@ -1,0 +1,19 @@
+fn main() -> i32 {
+    a: str = "hello"
+    b: str = " world"
+
+    # '+' on two str values: a fresh, non-mutating concatenation
+    c: str = a + b
+    @pf("{c}\n")
+    @pf("a unchanged: {a}\n")
+
+    # '+=' on a str binding: concatenates in place
+    a += b
+    @pf("{a}\n")
+
+    # repeated '+=' keeps growing the string
+    a += "!"
+    @pf("{a}\n")
+
+    ret 0
+}

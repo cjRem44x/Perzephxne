@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-117ffc50.js";
+            window.path_to_searchindex_js = "searchindex-fc40d596.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-4e58bc13.js"></script>
@@ -232,6 +232,20 @@ v: f64 = p.*.x        # deref p, then access field x
 
 c: Vec2 = Vec2.add(a, b)    # not: a + b
 </code></pre>
+<h2 id="str-concatenation"><a class="header" href="#str-concatenation"><code>str</code> Concatenation</a></h2>
+<p><code>str</code> is the one built-in exception: <code>+</code> and <code>+=</code> are wired into the
+compiler for concatenation (not user overloading, and not extendable to
+other types). <code>+</code> builds a fresh string; <code>+=</code> appends onto an existing
+binding in place. Every other operator — <code>-</code>, <code>*</code>, <code>-=</code>, etc. — is
+rejected with a compile error when either side is a <code>str</code>.</p>
+<pre><code>a: str = "hello"
+b: str = " world"
+
+c: str = a + b   # "hello world" — a and b are unchanged
+a += b            # a becomes "hello world"
+a += "!"          # a becomes "hello world!"
+</code></pre>
+<p><code>==</code>/<code>!=</code> on <code>str</code> are also built in (see <a href="./variables-types.html">Variables &amp; Types</a>) — they compare contents, not pointers.</p>
 
                     </main>
 

@@ -55,3 +55,22 @@ impl Vec2 {
 
 c: Vec2 = Vec2.add(a, b)    # not: a + b
 ```
+
+## `str` Concatenation
+
+`str` is the one built-in exception: `+` and `+=` are wired into the
+compiler for concatenation (not user overloading, and not extendable to
+other types). `+` builds a fresh string; `+=` appends onto an existing
+binding in place. Every other operator — `-`, `*`, `-=`, etc. — is
+rejected with a compile error when either side is a `str`.
+
+```
+a: str = "hello"
+b: str = " world"
+
+c: str = a + b   # "hello world" — a and b are unchanged
+a += b            # a becomes "hello world"
+a += "!"          # a becomes "hello world!"
+```
+
+`==`/`!=` on `str` are also built in (see [Variables & Types](./variables-types.md)) — they compare contents, not pointers.
