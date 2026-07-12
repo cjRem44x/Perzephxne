@@ -322,10 +322,11 @@ struct Item {
         struct { Type *ty; } type_alias;
 
         struct {
-            Type *ty;
+            Type *ty;         /* may be NULL (inferred) */
             int   mutable;
             Expr *init;
             int   is_extern;  /* extern name: T — symbol defined in C / another object */
+            int   infer;      /* 1 = := or ::, widen to platform max type */
         } global;
 
         ImportList imports;

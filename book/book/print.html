@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-b5eadce8.js";
+            window.path_to_searchindex_js = "searchindex-3bbea392.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-4e58bc13.js"></script>
@@ -2009,6 +2009,12 @@ MAX_SIZE: usize : 1024
 PI: f64 : 3.14159265358979
 </code></pre>
 <p>The same mutability rules apply as for locals: <code>:</code> is immutable, <code>=</code> is mutable.</p>
+<h2 id="inferred-types"><a class="header" href="#inferred-types">Inferred Types</a></h2>
+<p>Same as locals (see <a href="#variables--types">Variables &amp; Types</a>): <code>:=</code> (mutable) or <code>::</code> (immutable) infers the type from the initializer, widening a bare literal to its platform-native width:</p>
+<pre><code>request_count := 0        # i64
+name          :: "Alice"  # str, immutable
+</code></pre>
+<p>Globals still need a compile-time-constant initializer either way — inference only skips writing the type down, it doesn’t relax that rule.</p>
 <h2 id="zero-initialization"><a class="header" href="#zero-initialization">Zero Initialization</a></h2>
 <p>Mutable globals not explicitly initialized are zero-initialized:</p>
 <pre><code>flag: bool    # false

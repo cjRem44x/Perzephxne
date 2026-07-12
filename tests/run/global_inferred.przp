@@ -1,0 +1,38 @@
+# regression: `name := expr` / `name :: expr` (type inference) only parsed
+# at statement scope (inside a function body) -- at the top level, the
+# parser's global-variable branch only recognized the explicit-type forms
+# (`name: T = expr` / `name: T : expr`), so any global written with `:=`/
+# `::` failed with "unexpected token identifier at top level", including
+# inside a `mod` block.
+
+request_count := 0
+exact_ratio := 1.5f32
+name :: "Alice"
+
+mod inner {
+    counter := 0
+    label :: "hello"
+
+    fn bump() {
+        counter += 1
+    }
+}
+
+fn widen_check(x: i64) -> i64 { ret x }
+
+fn main() -> i32 {
+    request_count += 1
+    request_count += 1
+    @pf("request_count={request_count}\n")
+    @pf("exact_ratio={exact_ratio}\n")
+    @pf("name={name}\n")
+
+    # a bare int literal widens to i64, same rule as the local-variable form
+    widened: i64 = widen_check(request_count)
+    @pf("widened={widened}\n")
+
+    inner.bump()
+    inner.bump()
+    @pf("inner.counter={inner.counter} inner.label={inner.label}\n")
+    ret 0
+}

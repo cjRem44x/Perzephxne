@@ -1827,12 +1827,25 @@ static void check_impl(Sema *s, Item *item) {
 
 static void check_global(Sema *s, Item *item) {
     Type *ty = check_type(s, item->global.ty);
-    if (item->global.init) {
-        Type *init_ty = check_expr(s, item->global.init);
-        if (ty && init_ty && !ty_coerces(init_ty, ty))
-            sema_error(s, item->span, "global '%s': cannot initialize '%s' with '%s'",
-                       item->name, ty_str(ty), ty_str(init_ty));
+    Type *init_ty = item->global.init ? check_expr(s, item->global.init) : NULL;
+    if (ty && init_ty && !ty_coerces(init_ty, ty))
+        sema_error(s, item->span, "global '%s': cannot initialize '%s' with '%s'",
+                   item->name, ty_str(ty), ty_str(init_ty));
+
+    /* infer type from init for name := expr / name :: expr (same widening
+       rule as the local-variable form: a bare, unsuffixed literal widens
+       to the platform-native width; anything else keeps its exact type) */
+    if (!ty && item->global.infer && init_ty) {
+        ty = init_ty;
+        int is_bare_lit = item->global.init &&
+            (item->global.init->kind == EXPR_INT   || item->global.init->kind == EXPR_FLOAT ||
+             item->global.init->kind == EXPR_BOOL  || item->global.init->kind == EXPR_CHAR  ||
+             item->global.init->kind == EXPR_STR);
+        if (is_bare_lit && !item->global.init->lit_suffixed)
+            ty = widen_inferred(s, ty);
+        item->global.ty = ty;
     }
+
     /* update existing sym (pre-registered in pass 1.7) rather than re-defining */
     for (Sym *sym = s->scope->syms; sym; sym = sym->next) {
         if (!strcmp(sym->name, item->name)) { sym->ty = ty; return; }

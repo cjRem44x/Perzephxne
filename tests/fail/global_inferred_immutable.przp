@@ -1,0 +1,6 @@
+name :: "Alice"
+
+fn main() -> i32 {
+    name = "Bob"
+    ret 0
+}
