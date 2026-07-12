@@ -1,0 +1,7 @@
+make dir (nested): 1 is_dir=1
+make file (nested): 1 is_file=1
+truncate: before=12 after_make=0 ok=1
+make existing dir: 1
+delete non-empty dir: 1 still_exists=0
+delete file: 1 still_exists=0
+delete missing: 0

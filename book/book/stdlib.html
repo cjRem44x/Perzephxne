@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-d114b9fa.js";
+            window.path_to_searchindex_js = "searchindex-117ffc50.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-4e58bc13.js"></script>
@@ -325,6 +325,9 @@ os.rmdir_dir("scratch")
 <tr><td><code>is_file(path)</code></td><td>true if path exists and is a regular file</td></tr>
 <tr><td><code>is_dir(path)</code></td><td>true if path exists and is a directory</td></tr>
 <tr><td><code>list(dir)</code></td><td><code>![]str</code> — dir-joined paths of <code>dir</code>’s entries (<code>.</code>/<code>..</code> skipped), ready to pass to <code>is_file</code>/<code>is_dir</code>/<code>read_all</code></td></tr>
+<tr><td><code>mkdir_all(dir_path)</code></td><td>create <code>dir_path</code> and any missing parent directories (<code>mkdir -p</code>); true if the directory exists afterward either way</td></tr>
+<tr><td><code>make(path)</code></td><td>create <code>path</code>: a trailing <code>/</code> makes a directory (plus missing parents); otherwise an empty file (plus missing parent directories) — truncates an existing file, leaves an existing directory alone</td></tr>
+<tr><td><code>delete(path)</code></td><td>remove the file or directory at <code>path</code>; a directory is removed recursively (contents deleted first) even if non-empty</td></tr>
 </tbody>
 </table>
 </div>
@@ -341,6 +344,12 @@ if err == 0 {
     is_f: bool = file.is_file("notes.txt")
     @pf("{@len(entries)} entries here, notes.txt is_file={is_f}\n")
 }
+</code></pre>
+<pre><code>import(file = "std/file")
+
+file.make("build/assets/")           # mkdir -p — creates build/ and build/assets/
+file.make("build/assets/readme.txt") # an empty file, parent dirs already there
+file.delete("build")                 # gone — recursively, even though non-empty
 </code></pre>
 <h2 id="stdfmt"><a class="header" href="#stdfmt"><code>std/fmt</code></a></h2>
 <p>String formatting helpers. For interpolation-style formatting, use the <code>@fmt</code> builtin directly with named expressions, for example <code>@fmt("x={x}")</code>.</p>

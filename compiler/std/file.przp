@@ -8,6 +8,7 @@
 # sizeof(struct stat) = 144 bytes needed for the stat() output buffer.
 
 import(str = "std/str")
+import(os  = "std/os")
 
 extern fn fopen(path: *u8, mode: *u8) -> *u8
 extern fn fclose(f: *u8) -> i32
@@ -167,4 +168,75 @@ fn list(dir: str) -> ![]str {
     closedir(d)
 
     ret @ok(@slice(arr, n))
+}
+
+# parent_dir: the portion of path before its last '/', or an empty str
+# if path has no '/' at all.
+fn parent_dir(path: str) -> str {
+    i: usize = path.len
+    while i > 0 {
+        i -= 1
+        p: *u8 = path.data + i
+        if p.* == 47u8 { ret str.slice(path, 0, i) } # '/'
+    }
+    ret @str_raw(path.data, 0)
+}
+
+# mkdir_all: create dir_path and any missing parent directories
+# (mkdir -p). Returns true if the directory exists afterward, whether
+# it already existed or was just created. Checks is_dir first at every
+# level rather than relying on os.mkdir_dir alone to tolerate an
+# already-existing directory, since that only checks mkdir()'s return
+# value and doesn't treat EEXIST as success despite what its own doc
+# comment claims (see book/status-next.md's "std/os.mkdir_dir doesn't
+# treat 'already exists' as success" entry).
+fn mkdir_all(dir_path: str) -> bool {
+    if dir_path.len == 0 { ret true }
+    if is_dir(dir_path) { ret true }
+    parent: str = parent_dir(dir_path)
+    if parent.len > 0 {
+        if !mkdir_all(parent) { ret false }
+    }
+    ret os.mkdir_dir(dir_path)
+}
+
+# make: create path, plus any missing parent directories. A trailing
+# '/' means "make this a directory" (mkdir -p); otherwise "make this an
+# empty file" (parent directories created first, same as mkdir -p would
+# for the directory case). An existing file is truncated to empty; an
+# existing directory is left as-is. Returns true on success.
+fn make(path: str) -> bool {
+    if path.len == 0 { ret false }
+    last: *u8 = path.data + path.len - 1
+    if last.* == 47u8 { # trailing '/'
+        dir_path: str = str.slice(path, 0, path.len - 1)
+        ret mkdir_all(dir_path)
+    }
+    parent: str = parent_dir(path)
+    if parent.len > 0 {
+        if !mkdir_all(parent) { ret false }
+    }
+    f: *u8 = fopen(path.data, "w")
+    if f == null { ret false }
+    fclose(f)
+    ret true
+}
+
+# delete: remove the file or directory at path. A directory is removed
+# recursively — its own contents deleted first — even if non-empty.
+# Returns true on success, false if path doesn't exist or a removal
+# along the way failed (e.g. a permission error partway through a
+# directory), in which case whatever was already removed stays removed.
+fn delete(path: str) -> bool {
+    if is_dir(path) {
+        entries, err: ![]str = list(path)
+        if err != 0 { ret false }
+        i: usize = 0
+        while i < @len(entries) {
+            if !delete(entries[i]) { ret false }
+            i += 1
+        }
+        ret os.rmdir_dir(path)
+    }
+    ret remove(path.data) == 0
 }

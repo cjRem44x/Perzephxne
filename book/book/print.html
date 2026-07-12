@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-d114b9fa.js";
+            window.path_to_searchindex_js = "searchindex-117ffc50.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-4e58bc13.js"></script>
@@ -2471,6 +2471,9 @@ os.rmdir_dir("scratch")
 <tr><td><code>is_file(path)</code></td><td>true if path exists and is a regular file</td></tr>
 <tr><td><code>is_dir(path)</code></td><td>true if path exists and is a directory</td></tr>
 <tr><td><code>list(dir)</code></td><td><code>![]str</code> — dir-joined paths of <code>dir</code>’s entries (<code>.</code>/<code>..</code> skipped), ready to pass to <code>is_file</code>/<code>is_dir</code>/<code>read_all</code></td></tr>
+<tr><td><code>mkdir_all(dir_path)</code></td><td>create <code>dir_path</code> and any missing parent directories (<code>mkdir -p</code>); true if the directory exists afterward either way</td></tr>
+<tr><td><code>make(path)</code></td><td>create <code>path</code>: a trailing <code>/</code> makes a directory (plus missing parents); otherwise an empty file (plus missing parent directories) — truncates an existing file, leaves an existing directory alone</td></tr>
+<tr><td><code>delete(path)</code></td><td>remove the file or directory at <code>path</code>; a directory is removed recursively (contents deleted first) even if non-empty</td></tr>
 </tbody>
 </table>
 </div>
@@ -2487,6 +2490,12 @@ if err == 0 {
     is_f: bool = file.is_file("notes.txt")
     @pf("{@len(entries)} entries here, notes.txt is_file={is_f}\n")
 }
+</code></pre>
+<pre><code>import(file = "std/file")
+
+file.make("build/assets/")           # mkdir -p — creates build/ and build/assets/
+file.make("build/assets/readme.txt") # an empty file, parent dirs already there
+file.delete("build")                 # gone — recursively, even though non-empty
 </code></pre>
 <h2 id="stdfmt"><a class="header" href="#stdfmt"><code>std/fmt</code></a></h2>
 <p>String formatting helpers. For interpolation-style formatting, use the <code>@fmt</code> builtin directly with named expressions, for example <code>@fmt("x={x}")</code>.</p>
@@ -2810,6 +2819,7 @@ r: f64 = m.sqrt(2.0)
 <tr><td><code>@bitcast</code> pointer type arguments</td><td><code>@bitcast(T, val)</code>’s type argument only accepts a bare type name (<code>u32</code>, <code>vec2</code>) — a compound type expression like <code>*u8</code> doesn’t parse. Not a practical limitation for pointer reinterpretation specifically, since a raw pointer already coerces to any other raw pointer type via plain assignment (see <a href="#pointers--memory">Pointers &amp; Memory</a>), but the parser gap is real for anyone trying to <code>@bitcast</code> to e.g. a slice or smart-pointer type.</td></tr>
 <tr><td>Array size via a named constant (<code>[CAP]T</code>)</td><td>An array type’s size is only evaluated as a compile-time constant when it’s a literal integer (<code>[64]T</code>) — a global constant identifier in that position (<code>CAP: usize : 64</code> used as <code>[CAP]T</code>) silently computes a size of 0 instead, corrupting the struct’s layout (fields after the array overlap it rather than following it). Fixing this means teaching every array-size call site in codegen to evaluate a constant expression generally, not just check for a literal <code>EXPR_INT</code>. Use a literal size for now.</td></tr>
 <tr><td>Two-level non-generic access through <code>mod</code> + <code>import</code></td><td>A plain free function, a non-generic struct’s static method, or an enum variant declared inside a <code>mod</code> block that itself lives inside an <em>imported</em> file isn’t reachable through the full two-level path (<code>lib.Y.someFreeFn()</code>, <code>lib.Y.Circle.new(...)</code>, <code>lib.Y.Direction.North</code>) — only one level of alias resolves for these today (mod access local to the current file, or plain import access to a non-mod item). <strong>Generic</strong> struct/impl access at that same depth (<code>lib.Y.Box&lt;i32&gt;.new(...)</code>) is unaffected, since it resolves entirely at parse time rather than through the post-hoc alias-collapsing pass the other cases rely on; see <a href="#modules">Modules</a>.</td></tr>
+<tr><td><code>std/os.mkdir_dir</code> doesn’t treat “already exists” as success</td><td>Its own doc comment promises <code>mkdir_dir</code> “returns true on success or if it already exists,” but the implementation only checks <code>mkdir()</code>’s return value — a directory that already exists makes <code>mkdir()</code> fail (<code>EEXIST</code>), so <code>mkdir_dir</code> returns <code>false</code> for it too, contradicting the comment. Found while adding <code>std/file.mkdir_all</code>/<code>make</code>, which need exactly that “already exists is fine” behavior — worked around there by checking <code>is_dir</code> before ever calling <code>mkdir_dir</code>, rather than fixing <code>mkdir_dir</code> itself: <code>std/file</code> already imports <code>std/os</code>, and <code>std/os</code> fixing this the same way (checking <code>is_dir</code> first) would need importing <code>std/file</code> back, which is a cycle (cycles are rejected — see <a href="#modules">Modules</a>). A real fix needs either a small stat-based directory check duplicated directly in <code>std/os</code> (avoiding the cross-import), or reading <code>errno</code> for <code>EEXIST</code> specifically, and there’s no established <code>errno</code>-reading idiom at the <code>.przp</code> level yet (<code>@perr</code> reads it internally in the compiler, not exposed as a value).</td></tr>
 </tbody>
 </table>
 </div>
