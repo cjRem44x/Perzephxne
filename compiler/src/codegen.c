@@ -4569,7 +4569,30 @@ static void cg_stmt(CG *cg, Stmt *s) {
                         rhs = val_tmp(ct);
                     }
                 }
-                emit(cg, "  store %s %s, ptr %s\n", store_ty, rhs.buf, ptr.buf);
+                if (s->assign.op == ASSIGN_EQ) {
+                    emit(cg, "  store %s %s, ptr %s\n", store_ty, rhs.buf, ptr.buf);
+                } else {
+                    /* compound op: load current, operate, store */
+                    int cur = new_tmp(cg);
+                    emit(cg, "  %%t%d = load %s, ptr %s\n", cur, store_ty, ptr.buf);
+                    int res = new_tmp(cg);
+                    int is_flt_d = inner_ty && type_is_float(inner_ty);
+                    int is_sgn_d = type_is_signed(inner_ty);
+                    switch (s->assign.op) {
+                        case ASSIGN_ADD: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res, is_flt_d?"fadd":"add",  store_ty, cur, rhs.buf); break;
+                        case ASSIGN_SUB: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res, is_flt_d?"fsub":"sub",  store_ty, cur, rhs.buf); break;
+                        case ASSIGN_MUL: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res, is_flt_d?"fmul":"mul",  store_ty, cur, rhs.buf); break;
+                        case ASSIGN_DIV: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res, is_flt_d?"fdiv":(is_sgn_d?"sdiv":"udiv"), store_ty, cur, rhs.buf); break;
+                        case ASSIGN_MOD: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res, is_flt_d?"frem":(is_sgn_d?"srem":"urem"), store_ty, cur, rhs.buf); break;
+                        case ASSIGN_AMP: emit(cg, "  %%t%d = and  %s %%t%d, %s\n", res, store_ty, cur, rhs.buf); break;
+                        case ASSIGN_PIPE:emit(cg, "  %%t%d = or   %s %%t%d, %s\n", res, store_ty, cur, rhs.buf); break;
+                        case ASSIGN_XOR: emit(cg, "  %%t%d = xor  %s %%t%d, %s\n", res, store_ty, cur, rhs.buf); break;
+                        case ASSIGN_SHL: emit(cg, "  %%t%d = shl  %s %%t%d, %s\n", res, store_ty, cur, rhs.buf); break;
+                        case ASSIGN_SHR: emit(cg, "  %%t%d = %s %s %%t%d, %s\n", res, is_sgn_d?"ashr":"lshr", store_ty, cur, rhs.buf); break;
+                        default:         emit(cg, "  %%t%d = add  %s %%t%d, 0\n",  res, store_ty, cur); break;
+                    }
+                    emit(cg, "  store %s %%t%d, ptr %s\n", store_ty, res, ptr.buf);
+                }
             } else if (s->assign.target->kind == EXPR_SMARTDEREF) {
                 /* p.^ = val : store into data portion of the RC block */
                 Type *pt = NULL;
