@@ -17,6 +17,17 @@ PI: f64 : 3.14159265358979
 
 The same mutability rules apply as for locals: `:` is immutable, `=` is mutable.
 
+## Inferred Types
+
+Same as locals (see [Variables & Types](./variables-types.md)): `:=` (mutable) or `::` (immutable) infers the type from the initializer, widening a bare literal to its platform-native width:
+
+```
+request_count := 0        # i64
+name          :: "Alice"  # str, immutable
+```
+
+Globals still need a compile-time-constant initializer either way — inference only skips writing the type down, it doesn't relax that rule.
+
 ## Zero Initialization
 
 Mutable globals not explicitly initialized are zero-initialized:

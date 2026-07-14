@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-a1838e84.js";
+            window.path_to_searchindex_js = "searchindex-9c64659c.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-4e58bc13.js"></script>
@@ -249,7 +249,7 @@ comment
 <ul>
 <li><code>examples/core/</code> — language fundamentals: control flow, error handling, pointers/memory, structs &amp; generics</li>
 <li><code>examples/dsa/</code> — data structures: linked list, binary search tree, stack/queue, sorting</li>
-<li><code>examples/use_cases/</code> — small complete programs: a calculator, a to-do list, a word counter</li>
+<li><code>examples/use_cases/</code> — small complete programs: a calculator, a to-do list, a word counter, a password-gated encrypted note (<code>std/crypto</code>)</li>
 <li><code>examples/graphics/</code> — windowing and 2D drawing via <code>std/graphics</code> (needs a real or virtual X display — see <a href="#graphics--design-sketch-layer-1-implemented-layer-2-in-progress">Graphics</a>)</li>
 </ul>
 <p>The <a href="#standard-library">Standard Library</a> reference page also has a runnable code snippet for every module.</p>
@@ -964,6 +964,11 @@ for v =&gt; nums {
 <p>With index:</p>
 <pre><code>for v, i =&gt; nums {
     @pf("[{i}] = {v}\n")
+}
+</code></pre>
+<p><code>v</code> is a mutable per-iteration copy of the element (same as <code>i</code> in the range form above), not a reference into <code>nums</code> — reassigning it is useful as a scratch value for the rest of that iteration, but it never writes back into the array/slice itself. Mutating the source needs the index form and an indexed assignment instead:</p>
+<pre><code>for v, i =&gt; nums {
+    if v &lt; 0 { nums[i] = 0 }   # nums[i] = ... actually changes nums
 }
 </code></pre>
 <h3 id="break-and-continue"><a class="header" href="#break-and-continue"><code>break</code> and <code>continue</code></a></h3>
@@ -2009,6 +2014,12 @@ MAX_SIZE: usize : 1024
 PI: f64 : 3.14159265358979
 </code></pre>
 <p>The same mutability rules apply as for locals: <code>:</code> is immutable, <code>=</code> is mutable.</p>
+<h2 id="inferred-types"><a class="header" href="#inferred-types">Inferred Types</a></h2>
+<p>Same as locals (see <a href="#variables--types">Variables &amp; Types</a>): <code>:=</code> (mutable) or <code>::</code> (immutable) infers the type from the initializer, widening a bare literal to its platform-native width:</p>
+<pre><code>request_count := 0        # i64
+name          :: "Alice"  # str, immutable
+</code></pre>
+<p>Globals still need a compile-time-constant initializer either way — inference only skips writing the type down, it doesn’t relax that rule.</p>
 <h2 id="zero-initialization"><a class="header" href="#zero-initialization">Zero Initialization</a></h2>
 <p>Mutable globals not explicitly initialized are zero-initialized:</p>
 <pre><code>flag: bool    # false
@@ -2666,32 +2677,58 @@ defer sync.unlock(&amp;mu)
 </table>
 </div>
 <h3 id="high-level-helpers"><a class="header" href="#high-level-helpers">High-Level Helpers</a></h3>
-<p>Pick an algorithm with the <code>HashKind</code> / <code>CipherKind</code> enums — today each has one member (<code>Sha256</code>, <code>XorSha</code>), leaving room to add more without changing call sites.</p>
+<p>Pick an algorithm with the <code>hshknd</code> / <code>cphrknd</code> enums:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th><code>hshknd</code></th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>Sha256</code></td><td>fast, unsalted — fine for checksums, <strong>not</strong> for password storage (rainbow-tableable, GPU-crackable)</td></tr>
+<tr><td><code>Argon2id</code></td><td><a href="https://www.rfc-editor.org/rfc/rfc9106">RFC 9106</a> — memory-hard, salted; use this for real passwords</td></tr>
+</tbody>
+</table>
+</div>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th><code>cphrknd</code></th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>XorSha</code></td><td>fast, but unauthenticated and reuses its keystream from byte 0 on every call — not suitable for real confidentiality</td></tr>
+<tr><td><code>ChaCha20Poly1305</code></td><td><a href="https://www.rfc-editor.org/rfc/rfc8439">RFC 8439</a> — authenticated (AEAD), random nonce per call; use this for real encryption</td></tr>
+</tbody>
+</table>
+</div>
 <div class="table-wrapper">
 <table>
 <thead>
 <tr><th>Function</th><th>Description</th></tr>
 </thead>
 <tbody>
-<tr><td><code>hash_pk(kind, plain)</code></td><td>hash a password/key → lowercase hex digest string</td></tr>
+<tr><td><code>hash_pk(kind, plain)</code></td><td>hash a password/key → a string safe to store directly</td></tr>
 <tr><td><code>auth_hash(kind, plain, hashed)</code></td><td><code>true</code> if hashing <code>plain</code> reproduces <code>hashed</code></td></tr>
 <tr><td><code>enc_file(kind, path, key)</code></td><td>encrypt the file at <code>path</code> in place</td></tr>
-<tr><td><code>dec_file(kind, path, key)</code></td><td>decrypt the file at <code>path</code> in place (symmetric with <code>enc_file</code>)</td></tr>
+<tr><td><code>dec_file(kind, path, key)</code></td><td>decrypt the file at <code>path</code> in place</td></tr>
 </tbody>
 </table>
 </div>
 <pre><code>import(crypto = "std/crypto")
 
-# password hashing
-h: str = crypto.hash_pk(crypto.HashKind.Sha256, "hunter2")
-ok: bool = crypto.auth_hash(crypto.HashKind.Sha256, "hunter2", h)   # true
+# password hashing — Argon2id embeds a fresh random salt in its output,
+# so two calls with the same password produce two different strings
+h1: str = crypto.hash_pk(crypto.hshknd.Argon2id, "hunter2")
+h2: str = crypto.hash_pk(crypto.hshknd.Argon2id, "hunter2")
+different: bool = h1 != h2                                   # true
+ok: bool = crypto.auth_hash(crypto.hshknd.Argon2id, "hunter2", h1)   # true
 
-# file encryption — enc_file/dec_file use the same transform, so
-# calling either one twice with the same key restores the original bytes
-crypto.enc_file(crypto.CipherKind.XorSha, "secret.txt", "correct horse battery staple")
-crypto.dec_file(crypto.CipherKind.XorSha, "secret.txt", "correct horse battery staple")
+# authenticated file encryption — dec_file returns false (and leaves the
+# file untouched) on a wrong key or a tampered/corrupted ciphertext
+crypto.enc_file(crypto.cphrknd.ChaCha20Poly1305, "secret.txt", "correct horse battery staple")
+verified: bool = crypto.dec_file(crypto.cphrknd.ChaCha20Poly1305, "secret.txt", "correct horse battery staple")
 </code></pre>
-<p><code>CipherKind.XorSha</code> derives a keystream from <code>sha256(key || block_counter)</code> and XORs it against the file’s bytes 32 bytes at a time — unlike a repeating-key XOR, the keystream never repeats within a file. It is not authenticated (no tamper detection) and has not been audited; treat it as a starting point for the standard library rather than a production cipher.</p>
+<p><code>Sha256</code>/<code>XorSha</code> are the original, toy-grade helpers: <code>Sha256</code> hashes the input directly with no salt or work factor, and <code>XorSha</code> derives a keystream from <code>sha256(key || block_counter)</code> that’s never authenticated and always restarts from the same counter on every call (reusing a key across two files leaks the XOR of their plaintexts). Neither has been audited; treat them as a starting point rather than something to build real security on.</p>
+<p><code>Argon2id</code>/<code>ChaCha20Poly1305</code> are real, standard algorithms, implemented from their RFCs and verified byte-for-byte against the reference C implementation of Argon2 and against RFC 8439’s own test vectors — but this implementation itself still hasn’t been independently audited, so treat it the way you’d treat any unaudited crypto code: appropriate for learning, prototypes, and low-stakes use, not yet something to bet a production security boundary on without your own review. <code>Argon2id</code> runs at fixed production parameters (19 MiB, 2 iterations, 1 lane — OWASP’s recommended minimum for interactive logins); <code>ChaCha20Poly1305</code>’s nonce is generated via the kernel’s CSPRNG (<code>getrandom(2)</code>), never <code>std/math</code>’s <code>@rng</code> (that one is seeded from clock^pid and is not appropriate for anything security-sensitive).</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="operator-precedence"><a class="header" href="#operator-precedence">Operator Precedence</a></h1>
 <p>Operators are listed from highest to lowest precedence.</p>
@@ -2867,6 +2904,7 @@ r: f64 = m.sqrt(2.0)
 <tr><td>Array size via a named constant (<code>[CAP]T</code>)</td><td>An array type’s size is only evaluated as a compile-time constant when it’s a literal integer (<code>[64]T</code>) — a global constant identifier in that position (<code>CAP: usize : 64</code> used as <code>[CAP]T</code>) silently computes a size of 0 instead, corrupting the struct’s layout (fields after the array overlap it rather than following it). Fixing this means teaching every array-size call site in codegen to evaluate a constant expression generally, not just check for a literal <code>EXPR_INT</code>. Use a literal size for now.</td></tr>
 <tr><td>Two-level non-generic access through <code>mod</code> + <code>import</code></td><td>A plain free function, a non-generic struct’s static method, or an enum variant declared inside a <code>mod</code> block that itself lives inside an <em>imported</em> file isn’t reachable through the full two-level path (<code>lib.Y.someFreeFn()</code>, <code>lib.Y.Circle.new(...)</code>, <code>lib.Y.Direction.North</code>) — only one level of alias resolves for these today (mod access local to the current file, or plain import access to a non-mod item). <strong>Generic</strong> struct/impl access at that same depth (<code>lib.Y.Box&lt;i32&gt;.new(...)</code>) is unaffected, since it resolves entirely at parse time rather than through the post-hoc alias-collapsing pass the other cases rely on; see <a href="#modules">Modules</a>.</td></tr>
 <tr><td><code>std/os.mkdir_dir</code> doesn’t treat “already exists” as success</td><td>Its own doc comment promises <code>mkdir_dir</code> “returns true on success or if it already exists,” but the implementation only checks <code>mkdir()</code>’s return value — a directory that already exists makes <code>mkdir()</code> fail (<code>EEXIST</code>), so <code>mkdir_dir</code> returns <code>false</code> for it too, contradicting the comment. Found while adding <code>std/file.mkdir_all</code>/<code>make</code>, which need exactly that “already exists is fine” behavior — worked around there by checking <code>is_dir</code> before ever calling <code>mkdir_dir</code>, rather than fixing <code>mkdir_dir</code> itself: <code>std/file</code> already imports <code>std/os</code>, and <code>std/os</code> fixing this the same way (checking <code>is_dir</code> first) would need importing <code>std/file</code> back, which is a cycle (cycles are rejected — see <a href="#modules">Modules</a>). A real fix needs either a small stat-based directory check duplicated directly in <code>std/os</code> (avoiding the cross-import), or reading <code>errno</code> for <code>EEXIST</code> specifically, and there’s no established <code>errno</code>-reading idiom at the <code>.przp</code> level yet (<code>@perr</code> reads it internally in the compiler, not exposed as a value).</td></tr>
+<tr><td>A <code>let</code> declared inside a loop body allocates a fresh stack slot on every iteration</td><td>Codegen emits each <code>alloca</code> at the point the <code>let</code> appears in the source rather than hoisting it to the function’s entry block (the convention every mainstream C/LLVM frontend follows specifically to avoid this). At <code>-O0</code> (the default; <code>--release</code> sometimes lets LLVM’s optimizer clean this up, but that isn’t guaranteed) an <code>alloca</code> inside a loop body is a genuine per-iteration stack allocation that’s never freed until the <em>function</em> returns — a loop with even a couple of small locals declared in its body, run enough times in a single call, exhausts the stack. A trivial repro: <code>i: usize = 0; while i &lt; 50000000 { x: u64 = @u64(i) ... i += 1 }</code> segfaults. Found and worked around in <code>std/crypto</code>’s Argon2id implementation (<code>argon2_g</code>, <code>argon2_fill_segment</code>), which loop up to tens of thousands of times per call at real memory costs — every local that used to be declared inside those loop bodies is now declared once before the loop and reassigned (not redeclared) on each iteration. Any other loop-heavy code, standard library or user, should use the same pattern until this has a real compiler-level fix (hoisting every function’s <code>alloca</code>s to its entry block, matching standard practice) — that fix touches ~28 call sites across <code>codegen.c</code> that currently emit <code>alloca</code> inline and needs its own careful pass with full regression coverage, not a rushed patch alongside unrelated feature work.</td></tr>
 </tbody>
 </table>
 </div>
@@ -2877,18 +2915,19 @@ r: f64 = m.sqrt(2.0)
 <blockquote>
 <p><strong>Layer 1 and layer 2’s 2D surface are now real; <code>gdev</code>/<code>guix</code> remain a plan.</strong> This is an architecture sketch — written to guide implementation — for a future media stack in the spirit of <a href="https://www.raylib.com/">raylib</a>: simple enough for a weekend game, capable enough for a native GUI app. <strong>This is not a raylib binding.</strong> The plan is to write Perzephxne’s own renderer and windowing layer from scratch, on raw platform APIs, and shape its call-level ergonomics after raylib’s — because raylib’s API is a genuinely good design, not because the library itself is a dependency worth taking on. Every other chapter in this book documents the compiler as it is; this one documents a plan, with a growing exception: <code>std/graphics/window</code> (open/close, resize, keyboard/mouse input), the backend contract, <code>std/graphics/gl</code> (context setup, clear/present, 2D immediate-mode drawing, and texture upload), <code>std/image</code> (PNG decoding), and <code>std/graphics</code> itself (window lifecycle, input queries, <code>Color</code>, <code>draw_rectangle</code>/<code>draw_circle</code>/<code>draw_line</code>, and <code>Texture</code>/<code>draw_texture</code>) are real, shipped, and regression-tested — see their sections below. Only <code>draw_text</code> (needs text layout) is still sketched in layer 2; <code>gdev</code> and <code>guix</code> remain unbuilt.</p>
 </blockquote>
-<p>The stack splits into two purpose-specific libraries built on one shared foundation:</p>
+<p>The stack splits into purpose-specific libraries built on one shared foundation:</p>
 <ul>
 <li><strong><code>gdev</code></strong> — game-dev primitives: sprites, 3D cameras, audio, animation.</li>
 <li><strong><code>guix</code></strong> — native GUI widgets: buttons, sliders, text editing, window chrome, DPI scaling.</li>
-<li><strong><code>std/graphics</code></strong> — the shared foundation both depend on: window lifecycle, input, the raw GPU backend, and the 2D/3D draw primitives neither <code>gdev</code> nor <code>guix</code> needs to reimplement.</li>
+<li><strong><code>gmed</code></strong> <em>(proposed, unbuilt — see <a href="#layer-3c--gmed-media-editing-primitives-proposed">Layer 3c</a>)</em> — media-editing primitives: clip/timeline data model, video/audio codec I/O, trim/compositing operations. Unlike <code>gdev</code> and <code>guix</code>, it depends on <code>guix</code> as well as <code>std/graphics</code> — it borrows <code>guix</code>’s generic widgets (buttons, sliders, panels) rather than reimplementing them, and adds only what’s genuinely editor-specific (timeline scrubber, clip thumbnails, waveform display) on top.</li>
+<li><strong><code>std/graphics</code></strong> — the shared foundation every one of the above depends on: window lifecycle, input, the raw GPU backend, and the 2D/3D draw primitives none of them needs to reimplement.</li>
 </ul>
-<p>A game doesn’t need <code>guix</code>’s text-editing and clipboard code any more than a settings panel needs <code>gdev</code>’s 3D camera and audio mixer — splitting them means each stays as small as the thing it’s actually for, without either depending on the other.</p>
+<p>A game doesn’t need <code>guix</code>’s text-editing and clipboard code any more than a settings panel needs <code>gdev</code>’s 3D camera and audio mixer — splitting them means each stays as small as the thing it’s actually for, without either depending on the other. <code>gmed</code> is the exception to “without depending on the other”: a timeline-based editor is close enough to a native app that reusing <code>guix</code>’s generic widgets is a better trade than duplicating them, the same reasoning that keeps <code>guix</code>’s own widgets out of <code>gdev</code>.</p>
 <h2 id="goals"><a class="header" href="#goals">Goals</a></h2>
 <ul>
 <li><strong>Fast, with nothing between the call and the GPU.</strong> Draw calls should reach the GPU backend directly — no bound C library’s abstractions, no extra indirection layer, no per-frame hidden allocation. Perzephxne already has no GC and manual/RC memory control; the graphics layer should spend that advantage on latency, especially input-to-frame latency for mouse-driven interaction, not give it back to a middleman.</li>
 <li><strong>Simple by default, advanced the deeper you go.</strong> The raylib-level call (<code>draw_circle(x, y, r, color)</code>, <code>Window.open(...)</code>) is the front door and stays trivially learnable — closer to Python’s “simple things are simple” than to a AAA engine’s config-first onboarding. Depth is opt-in, not mandatory: the same layering that lets <code>gdev</code>/<code>guix</code> sit above the backend contract also lets an advanced user drop down a level (raw <code>std/graphics</code> primitives, or <code>std/graphics/gl</code>’s own functions) exactly when the high-level call doesn’t cover what they need, never before.</li>
-<li><strong>Versatile, <code>gdev</code> first.</strong> <code>gdev</code> (2D and 3D games) and <code>guix</code> (native GUI applications, editor tools, visualizers) both sit on <code>std/graphics</code>, the same way Qt or GTK cover custom-rendered content and native-feeling widgets from one toolkit family — but <code>gdev</code> is the priority once layer 1 (windowing + backend contract + GL) is solid; <code>guix</code> starts once <code>gdev</code>’s 2D surface is in good shape, not in lockstep with it (see the build order below). Within <code>gdev</code> itself, 2D ships before 3D — a raylib-shaped 2D core is the actual near-term target, not a checkbox on the way to <code>Camera3D</code>.</li>
+<li><strong>Versatile, <code>gdev</code> first.</strong> <code>gdev</code> (2D and 3D games), <code>guix</code> (native GUI applications, editor tools, visualizers), and <code>gmed</code> (media editors) all sit on <code>std/graphics</code>, the same way Qt or GTK cover custom-rendered content and native-feeling widgets from one toolkit family — but <code>gdev</code> is the priority once layer 1 (windowing + backend contract + GL) is solid; <code>guix</code> starts once <code>gdev</code>’s 2D surface is in good shape, not in lockstep with it (see the build order below); <code>gmed</code> starts once <code>guix</code> has real generic widgets to borrow, since it depends on <code>guix</code> rather than sitting beside it. Within <code>gdev</code> itself, 2D ships before 3D — a raylib-shaped 2D core is the actual near-term target, not a checkbox on the way to <code>Camera3D</code>.</li>
 <li><strong>Idiomatic.</strong> <code>snake_case</code> functions, <code>struct</code> + <code>impl</code> for resources, enums for key/button constants, tuples for multi-value returns (<code>get_mouse_position() -&gt; (f32, f32)</code>), and <code>!T</code> failable returns for anything that can fail to load (a missing texture file should be a caught error, not a null-pointer crash).</li>
 </ul>
 <h2 id="why-build-our-own-renderer-instead-of-binding-raylib"><a class="header" href="#why-build-our-own-renderer-instead-of-binding-raylib">Why build our own renderer instead of binding raylib</a></h2>
@@ -2904,13 +2943,22 @@ r: f64 = m.sqrt(2.0)
 <p>The mitigation is architectural, not a bet on OpenGL forever: <code>std/graphics</code> never calls GL functions directly. It calls through a small, fixed <strong>backend contract</strong> — init, clear, submit a batch of triangles/quads, upload a texture, bind a shader — and <code>std/graphics/gl</code> is just the first (and, for now, only) implementation of that contract. Adding Vulkan, Metal, or D3D12 later means writing a new backend that satisfies the same contract, not touching <code>std/graphics</code>, <code>gdev</code>, or <code>guix</code> at all. Getting this seam right <em>before</em> writing the GL backend — not retrofitting it once GL calls are already scattered through the wrapper — is listed explicitly in the build order below, because retrofitting it is exactly the kind of rewrite this boundary exists to avoid.</p>
 <p>The tradeoff is honest either way: this is a much bigger undertaking than binding an existing library. Window creation, GL context setup, function-pointer loading, a backend contract, an immediate-mode 2D/3D draw API, image decoding, and audio all have to be built, not bound. The sections below sketch that as a layered architecture so it can be built incrementally, starting from the smallest usable slice (open a window, clear it, draw a rectangle) rather than attempting the whole surface at once.</p>
 <h2 id="layered-architecture"><a class="header" href="#layered-architecture">Layered architecture</a></h2>
-<pre><code>┌────────────────────────────┐   ┌────────────────────────────┐
-│ guix   native GUI widgets  │   │ gdev   game-dev primitives │
-│ (button, slider, text      │   │ (sprites, 3D camera,       │
-│  editing, window chrome,   │   │  batching, audio,          │
-│  DPI scaling, clipboard)   │   │  animation helpers)        │
-└──────────────┬─────────────┘   └──────────────┬─────────────┘
-               └────────────────┬────────────────┘
+<pre><code>                                                  ┌─────────────────────────────┐
+                                                  │ gmed   media-editing        │
+                                                  │ primitives (proposed)       │
+                                                  │ (clip/timeline model,       │
+                                                  │  codec I/O, trim/composite) │
+                                                  └──────────────┬──────────────┘
+                                                                 │ borrows generic
+                                                                 │ widgets from ↓
+┌────────────────────────────┐   ┌────────────────────────────┐ │
+│ guix   native GUI widgets  │◄──┼────────────────────────────┼─┘
+│ (button, slider, text      │   │ gdev   game-dev primitives │
+│  editing, window chrome,   │   │ (sprites, 3D camera,       │
+│  DPI scaling, clipboard)   │   │  batching, audio,          │
+└──────────────┬─────────────┘   │  animation helpers)        │
+               │                 └──────────────┬─────────────┘
+               └────────────────┬─────────────────┘
                      std/graphics — shared foundation
              (2D/3D draw primitives, plain-data types, window
               lifecycle, input, snake_case idiomatic wrapper)
@@ -2926,6 +2974,7 @@ r: f64 = m.sqrt(2.0)
         └───────────────────────┴───────────────────────┘
       libGL.so, libX11.so / Wayland client libs (system, not shipped)
 </code></pre>
+<p><code>gmed</code>’s own codec I/O (demuxing/decoding/encoding video and audio) isn’t in this diagram at all — it’s not a graphics concern, so it doesn’t route through the backend contract or <code>std/graphics</code> the way rendering a decoded frame as a texture does. See <a href="#layer-3c--gmed-media-editing-primitives-proposed">Layer 3c</a> below.</p>
 <h3 id="layer-1--platform-bindings-and-the-backend-contract"><a class="header" href="#layer-1--platform-bindings-and-the-backend-contract">Layer 1 — platform bindings and the backend contract</a></h3>
 <p>Three pieces, each a thin, dumb layer — no idiomatic naming, no safety wrapping, so advanced users can always drop to the raw calls when a higher layer doesn’t cover something yet:</p>
 <ul>
@@ -3157,6 +3206,51 @@ fn main() -&gt; i32 {
     ret 0
 }
 </code></pre>
+<h3 id="layer-3c--gmed-media-editing-primitives-proposed"><a class="header" href="#layer-3c--gmed-media-editing-primitives-proposed">Layer 3c — <code>gmed</code>, media-editing primitives (proposed)</a></h3>
+<p><code>gmed</code> is a proposed name, not a decision — pick another if a better one turns up once real code exists. <strong>Nothing here is built. This is a plan, sketched the same way <code>gdev</code> and <code>guix</code> were sketched before either had real code, because the same “settle the shape before writing it” reasoning applies.</strong> Its reason for existing: an app like a simple video editor needs a <em>clip/timeline data model</em> and <em>codec I/O</em>, neither of which is a game concern or a generic-widget concern — it doesn’t belong inside <code>gdev</code> (nothing here is about sprites or a 3D camera) or inside <code>guix</code> (a timeline scrubber and a waveform display aren’t generic widgets any more than a 3D camera is), so it gets its own library that <em>depends on</em> both <code>std/graphics</code> and <code>guix</code> instead of sitting beside them.</p>
+<p><strong>What’s shared, unmodified, from the rest of the stack:</strong></p>
+<ul>
+<li><code>std/graphics</code>’s window lifecycle, input, and 2D draw/texture primitives — a decoded video frame is just pixel data uploaded as a <code>Texture</code> and drawn with <code>draw_texture</code>, exactly like any other image.</li>
+<li><code>guix</code>’s generic widgets — buttons, sliders, panels, text boxes — for anything in the editor’s UI that isn’t specific to media editing (a “trim” button is just <code>guix.button</code>).</li>
+</ul>
+<p><strong>What’s new and not shared with anything:</strong></p>
+<ul>
+<li><strong>Codec I/O</strong> — demuxing an MP4/MKV/etc. container and decoding its video/audio streams, then encoding and muxing back out on export. This is not a <code>std/graphics</code> concern (it produces frame buffers and audio samples, not draw calls) and not remotely the same class of effort as <code>std/image</code>’s hand-written PNG decoder — H.264/AAC decode involves motion compensation, entropy coding, and enough surface area that hand-writing it isn’t realistic. The plan is to bind an existing library (<code>ffmpeg</code>’s <code>libavformat</code>/<code>libavcodec</code>/<code>libswscale</code>) via <code>extern fn</code> + <code>[build].link</code>, the same FFI mechanism <code>std/graphics/window</code> already uses for <code>libX11</code>. This is also the one place this design is most likely to run into the documented struct-by-value <code>extern fn</code> limitation (see <a href="#status--next-work">Status &amp; Next Work</a>), since ffmpeg’s C API leans on structs passed by value — expect to need the same “wrap it in its own module, reached via <code>import()</code>” workaround already established there, or to fix that limitation for real before this gets far.</li>
+<li><strong>The clip/timeline data model</strong> — tracks, clips, in/out trim points, and simple compositing (cut/cross-fade, not a full node graph) — this is genuinely editor-specific application logic, not a library concern shared with anything else in the stack.</li>
+<li><strong>Editor-specific widgets</strong> — a timeline scrubber, clip thumbnails, a waveform display. These stay local to <code>gmed</code> rather than migrating into <code>guix</code>’s generic widget set, the same discipline that keeps <code>gdev</code>’s sprite/camera code out of <code>guix</code> — a widget belongs next to the thing that needs it until something <em>else</em> also needs it.</li>
+</ul>
+<p>A sketch of the rough shape (illustrative only — nothing here is a settled API):</p>
+<pre><code>import(gmed = "std/gmed")
+import(guix = "std/guix")
+
+fn main() -&gt; i32 {
+    win: gmed.Window = gmed.Window.open("clip editor", 1280, 720)
+    proj: gmed.Project = gmed.Project.new()
+    clip: gmed.Clip = gmed.Clip.load("input.mp4")     # demux + probe, no full decode yet
+    proj.add_clip(clip, track: 0, start: 0.0)
+
+    playhead: f32 = 0.0
+    while !win.should_close() {
+        frame: gmed.Texture = proj.frame_at(playhead)  # decode + upload just this frame
+        gmed.begin_drawing()
+        gmed.draw_texture(frame, 0.0, 0.0)
+        playhead = gmed.timeline(gmed.Rectangle{.x=0.0, .y=640.0, .width=1280.0, .height=60.0},
+                                  proj, playhead)        # gmed-specific widget
+        if guix.button(guix.Rectangle{.x=1100.0, .y=20.0, .width=120.0, .height=32.0}, "Export") {
+            proj.export("output.mp4")                   # encode + mux via the codec layer
+        }
+        gmed.end_drawing()
+    }
+    win.close()
+    ret 0
+}
+</code></pre>
+<p><strong>Open questions, unresolved on purpose (this is a plan, not a spec):</strong></p>
+<ul>
+<li>Does <code>gmed</code> wait for <code>guix</code> to have real generic widgets before starting, or build its own minimal button/slider equivalents first and adopt <code>guix</code>’s once they exist? The dependency arrow in the diagram above is the intent, not a hard blocker if <code>guix</code> is still far off when someone wants to start on codec I/O first.</li>
+<li>Is codec I/O scoped as <code>gmed</code>’s own problem, or does it belong in <code>std/video</code> (or similar) as a generally useful capability — a program that just wants to decode a video for analysis, with no timeline or editing UI at all, shouldn’t have to pull in <code>gmed</code>’s editor-specific data model to get it.</li>
+<li>How much compositing is in scope before this stops being “nothing complicated” — a cut/trim/cross-fade timeline is a very different scope than anything approaching a node-based effects graph, and the design should stay deliberately on the simple side of that line unless something concrete demands more.</li>
+</ul>
 <h2 id="resolved-prerequisites"><a class="header" href="#resolved-prerequisites">Resolved prerequisites</a></h2>
 <p>The compiler defects this chapter has surfaced have all since been fixed and regression-tested — they’re recorded here because they were found while building this design, not because they’re still blocking it:</p>
 <ul>
@@ -3184,6 +3278,7 @@ fn main() -&gt; i32 {
 <tr><td>5</td><td><strong>Text layout.</strong> <code>guix</code> needs real text shaping/layout (cursor positioning, line wrapping, at minimum) to be a credible native-app toolkit; <code>gdev</code> only needs simple bitmap-font text draw calls. This is a <code>guix</code>-specific investment, not a <code>std/graphics</code> one.</td><td></td></tr>
 <tr><td>6</td><td><strong>Variadic/macro helpers.</strong> Small conveniences like a <code>printf</code>-style text-formatting helper for on-screen debug text are built on <code>@fmt</code> rather than needing any new compiler feature — a non-issue, listed for completeness.</td><td></td></tr>
 <tr><td>7</td><td><strong>Threading model.</strong> GPU contexts are tied to the thread that created them; the wrapper should document a single-threaded main loop (window, input, and drawing calls all from one thread) as the initial supported model rather than attempt general multi-threaded rendering from the start.</td><td></td></tr>
+<tr><td>8</td><td><strong>Video/audio codec I/O</strong>, for <code>gmed</code>. Demux/decode/encode/mux isn’t something to hand-write (unlike <code>std/image</code>’s PNG decoder — H.264/AAC are a different class of complexity), so this needs a real FFI binding to an existing library (<code>ffmpeg</code>’s <code>libavformat</code>/<code>libavcodec</code>/<code>libswscale</code>, most likely). <strong>Not started</strong> — and likely to run into the struct-by-value <code>extern fn</code> limitation (see <a href="#status--next-work">Status &amp; Next Work</a>) given ffmpeg’s C API, which may need a real fix rather than the existing “wrap it in an <code>import()</code>ed module” workaround.</td><td></td></tr>
 </tbody>
 </table>
 </div>
@@ -3197,6 +3292,7 @@ fn main() -&gt; i32 {
 <li>Start <code>gdev</code> once <code>std/graphics</code>’s 2D primitives, input, and texture loading are solid, and finish its 2D surface (sprites, 2D camera/scrolling, basic audio) before touching 3D or starting <code>guix</code>. <code>gdev</code> is the priority once layer 1 is done — <code>guix</code> is deliberately sequenced after, not developed in lockstep with it, so effort doesn’t split across both toolkits while neither is finished.</li>
 <li><code>gdev</code>: only once the 2D surface above is solid, extend to 3D (<code>Camera3D</code>-equivalent, cube/grid primitives).</li>
 <li><code>guix</code>: start once <code>gdev</code>’s 2D surface is solid (does not need to wait for <code>gdev</code>’s 3D work). Extend to DPI scaling, text editing/cursor handling, focus/tab order, and clipboard. Prioritize mouse-interaction latency here specifically, since that’s the axis this design most wants to win on: input state should be sampled once per frame with nothing between the OS event and code reading it.</li>
+<li><code>gmed</code>: start on the codec I/O binding (prerequisite #8) independently of <code>guix</code>’s progress if there’s appetite to de-risk it early — it has no dependency on <code>guix</code> internals, only on <code>std/graphics</code>’s texture upload for displaying decoded frames. The clip/timeline data model and editor-specific widgets (scrubber, thumbnails, waveform) come once <code>guix</code> has real generic widgets to borrow from; stay on cut/trim/cross-fade compositing, not a full effects graph, until something concrete demands more.</li>
 </ol>
 
                     </main>

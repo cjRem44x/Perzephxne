@@ -323,26 +323,41 @@ Hashing and simple byte-buffer crypto helpers.
 
 ### High-Level Helpers
 
-Pick an algorithm with the `HashKind` / `CipherKind` enums — today each has one member (`Sha256`, `XorSha`), leaving room to add more without changing call sites.
+Pick an algorithm with the `hshknd` / `cphrknd` enums:
+
+| `hshknd` | Description |
+|---|---|
+| `Sha256` | fast, unsalted — fine for checksums, **not** for password storage (rainbow-tableable, GPU-crackable) |
+| `Argon2id` | [RFC 9106](https://www.rfc-editor.org/rfc/rfc9106) — memory-hard, salted; use this for real passwords |
+
+| `cphrknd` | Description |
+|---|---|
+| `XorSha` | fast, but unauthenticated and reuses its keystream from byte 0 on every call — not suitable for real confidentiality |
+| `ChaCha20Poly1305` | [RFC 8439](https://www.rfc-editor.org/rfc/rfc8439) — authenticated (AEAD), random nonce per call; use this for real encryption |
 
 | Function | Description |
 |---|---|
-| `hash_pk(kind, plain)` | hash a password/key → lowercase hex digest string |
+| `hash_pk(kind, plain)` | hash a password/key → a string safe to store directly |
 | `auth_hash(kind, plain, hashed)` | `true` if hashing `plain` reproduces `hashed` |
 | `enc_file(kind, path, key)` | encrypt the file at `path` in place |
-| `dec_file(kind, path, key)` | decrypt the file at `path` in place (symmetric with `enc_file`) |
+| `dec_file(kind, path, key)` | decrypt the file at `path` in place |
 
 ```
 import(crypto = "std/crypto")
 
-# password hashing
-h: str = crypto.hash_pk(crypto.HashKind.Sha256, "hunter2")
-ok: bool = crypto.auth_hash(crypto.HashKind.Sha256, "hunter2", h)   # true
+# password hashing — Argon2id embeds a fresh random salt in its output,
+# so two calls with the same password produce two different strings
+h1: str = crypto.hash_pk(crypto.hshknd.Argon2id, "hunter2")
+h2: str = crypto.hash_pk(crypto.hshknd.Argon2id, "hunter2")
+different: bool = h1 != h2                                   # true
+ok: bool = crypto.auth_hash(crypto.hshknd.Argon2id, "hunter2", h1)   # true
 
-# file encryption — enc_file/dec_file use the same transform, so
-# calling either one twice with the same key restores the original bytes
-crypto.enc_file(crypto.CipherKind.XorSha, "secret.txt", "correct horse battery staple")
-crypto.dec_file(crypto.CipherKind.XorSha, "secret.txt", "correct horse battery staple")
+# authenticated file encryption — dec_file returns false (and leaves the
+# file untouched) on a wrong key or a tampered/corrupted ciphertext
+crypto.enc_file(crypto.cphrknd.ChaCha20Poly1305, "secret.txt", "correct horse battery staple")
+verified: bool = crypto.dec_file(crypto.cphrknd.ChaCha20Poly1305, "secret.txt", "correct horse battery staple")
 ```
 
-`CipherKind.XorSha` derives a keystream from `sha256(key || block_counter)` and XORs it against the file's bytes 32 bytes at a time — unlike a repeating-key XOR, the keystream never repeats within a file. It is not authenticated (no tamper detection) and has not been audited; treat it as a starting point for the standard library rather than a production cipher.
+`Sha256`/`XorSha` are the original, toy-grade helpers: `Sha256` hashes the input directly with no salt or work factor, and `XorSha` derives a keystream from `sha256(key || block_counter)` that's never authenticated and always restarts from the same counter on every call (reusing a key across two files leaks the XOR of their plaintexts). Neither has been audited; treat them as a starting point rather than something to build real security on.
+
+`Argon2id`/`ChaCha20Poly1305` are real, standard algorithms, implemented from their RFCs and verified byte-for-byte against the reference C implementation of Argon2 and against RFC 8439's own test vectors — but this implementation itself still hasn't been independently audited, so treat it the way you'd treat any unaudited crypto code: appropriate for learning, prototypes, and low-stakes use, not yet something to bet a production security boundary on without your own review. `Argon2id` runs at fixed production parameters (19 MiB, 2 iterations, 1 lane — OWASP's recommended minimum for interactive logins); `ChaCha20Poly1305`'s nonce is generated via the kernel's CSPRNG (`getrandom(2)`), never `std/math`'s `@rng` (that one is seeded from clock^pid and is not appropriate for anything security-sensitive).

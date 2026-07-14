@@ -75,6 +75,37 @@ static void record_dep_file(const char *path) {
     g_n_dep_files++;
 }
 
+/* Every (resolved import path, alias) pair whose items have already been
+   mangled and merged into the single accumulating Module for the current
+   top-level compile — load_imports() is invoked independently for the
+   entry file and for every tests/ file (merge_tests_dir) or every extra
+   file (multi-file `sac`), each with no knowledge of what any of the
+   others already loaded. Without this, a module imported under the same
+   alias by two of those independent top-level files (a very ordinary
+   thing to happen — e.g. both the entry file and a tests/ file importing
+   "std/file" as `file`) gets parsed, mangled, and merged twice, and every
+   one of its symbols ends up defined twice ("redefinition of ..."). Reset
+   at the start of each top-level compile, same as g_dep_files. */
+#define MAX_MERGED_IMPORTS 512
+typedef struct { char path[1024]; char alias[256]; } MergedImport;
+static MergedImport g_merged_imports[MAX_MERGED_IMPORTS];
+static int          g_n_merged_imports = 0;
+
+static int already_merged_import(const char *path, const char *alias) {
+    for (int i = 0; i < g_n_merged_imports; i++)
+        if (!strcmp(g_merged_imports[i].path, path)
+                && !strcmp(g_merged_imports[i].alias, alias))
+            return 1;
+    return 0;
+}
+
+static void record_merged_import(const char *path, const char *alias) {
+    if (g_n_merged_imports >= MAX_MERGED_IMPORTS) return;
+    snprintf(g_merged_imports[g_n_merged_imports].path, sizeof(g_merged_imports[0].path), "%s", path);
+    snprintf(g_merged_imports[g_n_merged_imports].alias, sizeof(g_merged_imports[0].alias), "%s", alias);
+    g_n_merged_imports++;
+}
+
 /* The parser has no notion of a file path (only source text + a file_id
    used solely for span reporting), so `test "name" { ... }` blocks can't
    record their own origin file at parse time — stamp it here, right after
@@ -804,6 +835,30 @@ static int load_imports(Module *mod, const char *src_path, const char *src,
                 return 0;
             }
 
+            /* already loaded, mangled, and merged under this exact alias by
+               some other independent top-level file in this same compile
+               (the entry file, another tests/ file, another multi-file sac
+               argument) — its items are already present in the final
+               module under these same mangled names, so skip re-parsing
+               and re-merging a duplicate copy. `alias` still needs adding
+               below so rw_item rewrites this file's own `alias.foo` uses
+               to the (already-merged) mangled names.
+               n_loading == 1 restricts this to *top-level* imports only —
+               mod itself is one of those independent top-level files, not
+               something reached via another file's import(). A nested
+               import (n_loading > 1) gets an additional mangle pass applied
+               by whichever file imported *it*, so the same (path, alias)
+               pair produces a different final name depending on nesting
+               depth; deduping those against a top-level import of the same
+               (path, alias) would skip a merge whose mangled names never
+               actually end up in the final module, leaving a dangling
+               reference to a name that was never defined. */
+            if (n_loading == 1 && already_merged_import(full, alias)) {
+                record_dep_file(full);
+                aliases[n_aliases++] = alias;
+                continue;
+            }
+
             /* cycle detection */
             int cycle = 0;
             for (size_t k = 0; k < n_loading; k++)
@@ -838,6 +893,7 @@ static int load_imports(Module *mod, const char *src_path, const char *src,
             /* mangle imported items, merge into main module */
             mangle_items(imp, alias, arena);
             merge_items(mod, imp);
+            if (n_loading == 1) record_merged_import(full, alias);
 
             aliases[n_aliases++] = alias;
         }
@@ -971,6 +1027,7 @@ static int compile_file(const char *src_path, const char *out_path, int release,
                          const char **extra_links, int n_extra, int test_mode,
                          const char *tests_dir) {
     g_n_dep_files = 0;
+    g_n_merged_imports = 0;
     record_dep_file(src_path);
 
     char err[256];
@@ -1066,6 +1123,7 @@ static void cmd_sac(int argc, char **argv) {
     }
 
     /* Multi-file: parse all files, merge into one module, then compile. */
+    g_n_merged_imports = 0;
     Arena arena;
     arena_init(&arena);
 

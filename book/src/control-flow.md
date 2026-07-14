@@ -120,6 +120,14 @@ for v, i => nums {
 }
 ```
 
+`v` is a mutable per-iteration copy of the element (same as `i` in the range form above), not a reference into `nums` — reassigning it is useful as a scratch value for the rest of that iteration, but it never writes back into the array/slice itself. Mutating the source needs the index form and an indexed assignment instead:
+
+```
+for v, i => nums {
+    if v < 0 { nums[i] = 0 }   # nums[i] = ... actually changes nums
+}
+```
+
 ### `break` and `continue`
 
 ```

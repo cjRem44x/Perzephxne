@@ -137,9 +137,15 @@ fn repeat(s: str, n: usize) -> str {
     if n == 0 { ret @str_raw(malloc(1), 0) }
     total: usize = s.len * n
     buf: *u8 = malloc(total + 1)
+    # `off` is declared once, before the loop, and reassigned (not
+    # redeclared) inside it: a `let` inside a loop body allocates a fresh
+    # stack slot on every iteration in this compiler (it isn't hoisted to
+    # the function's entry block), which for a large `n` can exhaust the
+    # stack well before the loop finishes.
+    off: *u8 = buf
     i: usize = 0
     while i < n {
-        off: *u8 = buf + i * s.len
+        off = buf + i * s.len
         memcpy(off, s.data, s.len)
         i = i + 1
     }

@@ -1,0 +1,29 @@
+# regression: for e => arr's element binding used to be immutable, with no
+# documented reason and no way to opt in/out — inconsistent with for i =>
+# 0..10 (range form), whose loop variable is mutable. Now matches: e can be
+# reassigned as a scratch value for the rest of that iteration, though (by
+# design, not a bug) that never writes back into the array/slice itself --
+# indexed assignment (arr[i] = ...) is still what does that.
+
+fn main() -> i32 {
+    dice: [5]u8 = [1, 2, 3, 4, 5]
+
+    for e => dice {
+        if e > 2 { e = e + 100 }
+        @pf("{e} ")
+    }
+    @pf("\n")
+
+    # the array itself is untouched by reassigning e above
+    for e => dice { @pf("{e} ") }
+    @pf("\n")
+
+    # indexed form actually mutates the array
+    for e, i => dice {
+        if e > 2 { dice[i] = e + 100 }
+    }
+    for e => dice { @pf("{e} ") }
+    @pf("\n")
+
+    ret 0
+}

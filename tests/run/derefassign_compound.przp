@@ -1,0 +1,36 @@
+# regression: compound assignment through a pointer dereference (`p.* += x`,
+# `p.* -= x`, etc.) used to silently compile as a plain overwrite (`p.* = x`),
+# discarding whatever was already at *p instead of combining with it —
+# codegen's EXPR_DEREF assign-target path always emitted an unconditional
+# `store`, never checking the assignment operator, unlike the EXPR_INDEX and
+# EXPR_FIELD paths which already special-cased ASSIGN_EQ vs everything else.
+
+extern fn malloc(n: usize) -> *u8
+
+fn accumulate(total: *usize, n: usize) {
+    total.* += n
+}
+
+fn main() -> i32 {
+    x: i32 = 10
+    p: *i32 = &x
+    p.* += 5
+    p.* -= 2
+    p.* *= 3
+    @pf("{x}\n")
+
+    total: usize = 0
+    accumulate(&total, 3)
+    accumulate(&total, 4)
+    accumulate(&total, 5)
+    @pf("{total}\n")
+
+    buf: *u8 = malloc(8)
+    bp: *u8 = buf
+    bp.* = 1u8
+    bp.* |= 2u8
+    bp.* ^= 4u8
+    @pf("{bp.*}\n")
+
+    ret 0
+}

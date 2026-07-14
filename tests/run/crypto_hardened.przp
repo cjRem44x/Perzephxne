@@ -1,0 +1,44 @@
+import(crypto = "std/crypto")
+import(file = "std/file")
+
+fn main() -> i32 {
+    # hshknd.Argon2id: salted, memory-hard password hashing. Two hashes of
+    # the same password must differ (random salt) but both must verify.
+    h1: str = crypto.hash_pk(crypto.hshknd.Argon2id, "hunter2")
+    h2: str = crypto.hash_pk(crypto.hshknd.Argon2id, "hunter2")
+    same: bool = h1 == h2
+    ok1: bool = crypto.auth_hash(crypto.hshknd.Argon2id, "hunter2", h1)
+    ok2: bool = crypto.auth_hash(crypto.hshknd.Argon2id, "hunter2", h2)
+    bad: bool = crypto.auth_hash(crypto.hshknd.Argon2id, "wrong", h1)
+    @pf("argon2id: same_hash={same} ok1={ok1} ok2={ok2} bad={bad} len={h1.len}\n")
+
+    # cphrknd.ChaCha20Poly1305: authenticated file encryption round trip.
+    path: str = "tests/tmp/crypto_hardened.bin"
+    plain: str = "The quick brown fox jumps over the lazy dog."
+    file.write_all(path, plain)
+    crypto.enc_file(crypto.cphrknd.ChaCha20Poly1305, path, "correct horse battery staple")
+    encrypted: str = file.read_all(path)
+    changed: bool = encrypted != plain
+    dec_ok: bool = crypto.dec_file(crypto.cphrknd.ChaCha20Poly1305, path, "correct horse battery staple")
+    decrypted: str = file.read_all(path)
+    roundtrip: bool = decrypted == plain
+    @pf("chacha20poly1305: changed={changed} dec_ok={dec_ok} roundtrip={roundtrip}\n")
+
+    # wrong key must be *rejected*, not silently produce garbage plaintext
+    crypto.enc_file(crypto.cphrknd.ChaCha20Poly1305, path, "keyA")
+    wrong_key_ok: bool = crypto.dec_file(crypto.cphrknd.ChaCha20Poly1305, path, "keyB")
+    still_encrypted: bool = file.read_all(path) != plain
+    @pf("wrong key rejected={!wrong_key_ok} file_untouched={still_encrypted}\n")
+
+    # a tampered ciphertext must also be rejected, not silently decrypted
+    crypto.enc_file(crypto.cphrknd.ChaCha20Poly1305, path, "correct horse battery staple")
+    tampered: str = file.read_all(path)
+    tb: *u8 = &tampered.data[0]
+    tb.* = tb.* ^ 1u8
+    file.write_all(path, tampered)
+    tamper_ok: bool = crypto.dec_file(crypto.cphrknd.ChaCha20Poly1305, path, "correct horse battery staple")
+    @pf("tampered ciphertext rejected={!tamper_ok}\n")
+
+    file.remove_file(path)
+    ret 0
+}

@@ -5,15 +5,18 @@
 # xor_encrypt  — XOR stream cipher (in-place; call twice to decrypt)
 # sha256       — SHA-256 cryptographic hash (returns 32-byte digest)
 #
-# High-level helpers (choose an algorithm with the HashKind / CipherKind enums):
+# High-level helpers (choose an algorithm with the hshknd / cphrknd enums):
 #   hash_pk(kind, plain)           — hash a password/key → lowercase hex string
 #   auth_hash(kind, plain, hashed) — check plain against a stored digest
 #   enc_file(kind, path, key)      — encrypt a file in place
 #   dec_file(kind, path, key)      — decrypt a file in place (symmetric)
 
+import(str = "std/str")
+
 extern fn malloc(n: usize) -> *u8
 extern fn free(p: *u8)
 extern fn memcpy(dst: *u8, src: *u8, n: usize) -> *u8
+extern fn memset(dst: *u8, val: i32, n: usize) -> *u8
 
 # libc file I/O (declared here so the module stays dependency-free)
 extern fn fopen(path: *u8, mode: *u8) -> *u8
@@ -23,6 +26,23 @@ extern fn fwrite(buf: *u8, size: usize, n: usize, f: *u8) -> usize
 extern fn fseek(f: *u8, off: i64, whence: i32) -> i32
 extern fn ftell(f: *u8) -> i64
 extern fn rewind(f: *u8)
+
+# getrandom(2): the CSPRNG source for nonces/salts below. Deliberately NOT
+# std/math's @rng — that one is seeded from clock^pid via libc srand/rand
+# (see book/src/builtins.md), predictable enough to be worthless for any
+# cryptographic use (nonce, salt, IV). getrandom() reads straight from the
+# kernel's CSPRNG, the same source /dev/urandom draws from.
+extern fn getrandom(buf: *u8, buflen: usize, flags: u32) -> i64
+
+# rand_bytes: fill buf with n cryptographically-random bytes via getrandom(2),
+# retrying on the short-read/EINTR case a single call can (rarely) return.
+fn rand_bytes(buf: *u8, n: usize) {
+    got: usize = 0
+    while got < n {
+        r: i64 = getrandom(buf + got, n - got, 0u32)
+        if r > 0 { got += @usize(r) }
+    }
+}
 
 # ── Non-cryptographic hashes ──────────────────────────────────────────────────
 
@@ -278,34 +298,908 @@ fn sha256_hex(data: *u8, len: usize) -> str {
     ret @str_raw(hex, 64)
 }
 
+# ── BLAKE2b (RFC 7693) ────────────────────────────────────────────────────────
+# Needed as Argon2id's underlying hash — Argon2 is defined in terms of it,
+# not SHA-256. Unkeyed, no salt/personalization (Argon2 never needs those;
+# it mixes its own salt into the message instead).
+
+fn rotr64(x: u64, n: u64) -> u64 {
+    ret (x >> n) | (x << (64 - n))
+}
+
+B2_IV0: u64 = 0x6a09e667f3bcc908   B2_IV1: u64 = 0xbb67ae8584caa73b
+B2_IV2: u64 = 0x3c6ef372fe94f82b   B2_IV3: u64 = 0xa54ff53a5f1d36f1
+B2_IV4: u64 = 0x510e527fade682d1   B2_IV5: u64 = 0x9b05688c2b3e6c1f
+B2_IV6: u64 = 0x1f83d9abfb41bd6b   B2_IV7: u64 = 0x5be0cd19137e2179
+
+# Message-word permutation for each of BLAKE2b's 12 rounds (cycles through
+# these 10 rows, repeating row 0 then row 1 for rounds 10 and 11).
+B2_SIGMA: [10][16]u8 = [
+    [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15],
+    [14,10,4,8,9,15,13,6,1,12,0,2,11,7,5,3],
+    [11,8,12,0,5,2,15,13,10,14,3,6,7,1,9,4],
+    [7,9,3,1,13,12,11,14,2,6,5,10,4,0,15,8],
+    [9,0,5,7,2,4,10,15,14,1,11,12,6,8,3,13],
+    [2,12,6,10,0,11,8,3,4,13,7,5,15,14,1,9],
+    [12,5,1,15,14,13,4,10,0,7,6,3,9,2,8,11],
+    [13,11,7,14,12,1,3,9,5,0,15,4,8,6,2,10],
+    [6,15,14,9,11,3,0,8,12,2,13,7,1,4,10,5],
+    [10,2,8,4,7,6,1,5,15,11,9,14,3,12,13,0],
+]
+
+# blake2b_mix: BLAKE2b's own G mixing function (plain addition) — used by
+# the real BLAKE2b compression below. Argon2's internal permutation (further
+# down) needs a *different* mixing function (BlaMka, with a multiply term),
+# so this one is not reused there despite the identical round/rotate layout.
+fn blake2b_mix(v: *u64, a: usize, b: usize, c: usize, d: usize, x: u64, y: u64) {
+    va: *u64 = v + a   vb: *u64 = v + b
+    vc: *u64 = v + c   vd: *u64 = v + d
+    va.* = va.* + vb.* + x
+    vd.* = rotr64(vd.* ^ va.*, 32)
+    vc.* = vc.* + vd.*
+    vb.* = rotr64(vb.* ^ vc.*, 24)
+    va.* = va.* + vb.* + y
+    vd.* = rotr64(vd.* ^ va.*, 16)
+    vc.* = vc.* + vd.*
+    vb.* = rotr64(vb.* ^ vc.*, 63)
+}
+
+fn blake2b_compress(h: *u64, block: *u8, byte_count: u64, is_final: bool) {
+    m: [16]u64 = undef
+    i: usize = 0
+    while i < 16 {
+        p: *u64 = block + i * 8
+        mp: *u64 = &m[i]
+        mp.* = p.*
+        i += 1
+    }
+
+    v: [16]u64 = undef
+    i = 0
+    while i < 8 {
+        vp: *u64 = &v[i]
+        hp: *u64 = h + i
+        vp.* = hp.*
+        i += 1
+    }
+    v[8] = B2_IV0  v[9] = B2_IV1   v[10] = B2_IV2   v[11] = B2_IV3
+    v[12] = B2_IV4 v[13] = B2_IV5  v[14] = B2_IV6   v[15] = B2_IV7
+    v[12] = v[12] ^ byte_count
+    if is_final { v[14] = ~v[14] }
+
+    r: usize = 0
+    while r < 12 {
+        row: usize = r % 10
+        blake2b_mix(&v[0], 0,4,8,12,  m[@usize(B2_SIGMA[row][0])],  m[@usize(B2_SIGMA[row][1])])
+        blake2b_mix(&v[0], 1,5,9,13,  m[@usize(B2_SIGMA[row][2])],  m[@usize(B2_SIGMA[row][3])])
+        blake2b_mix(&v[0], 2,6,10,14, m[@usize(B2_SIGMA[row][4])],  m[@usize(B2_SIGMA[row][5])])
+        blake2b_mix(&v[0], 3,7,11,15, m[@usize(B2_SIGMA[row][6])],  m[@usize(B2_SIGMA[row][7])])
+        blake2b_mix(&v[0], 0,5,10,15, m[@usize(B2_SIGMA[row][8])],  m[@usize(B2_SIGMA[row][9])])
+        blake2b_mix(&v[0], 1,6,11,12, m[@usize(B2_SIGMA[row][10])], m[@usize(B2_SIGMA[row][11])])
+        blake2b_mix(&v[0], 2,7,8,13,  m[@usize(B2_SIGMA[row][12])], m[@usize(B2_SIGMA[row][13])])
+        blake2b_mix(&v[0], 3,4,9,14,  m[@usize(B2_SIGMA[row][14])], m[@usize(B2_SIGMA[row][15])])
+        r += 1
+    }
+
+    i = 0
+    while i < 8 {
+        hp2: *u64 = h + i
+        hp2.* = hp2.* ^ v[i] ^ v[i + 8]
+        i += 1
+    }
+}
+
+# blake2b: one-shot BLAKE2b, unkeyed, writing `outlen` bytes (1..64) to out.
+fn blake2b(data: *u8, len: usize, outlen: usize, out: *u8) {
+    h: [8]u64 = [B2_IV0, B2_IV1, B2_IV2, B2_IV3, B2_IV4, B2_IV5, B2_IV6, B2_IV7]
+    h[0] = h[0] ^ (@u64(outlen) | 0x0000000001010000)
+
+    remaining: usize = len
+    off: usize = 0
+    while remaining > 128 {
+        blake2b_compress(&h[0], data + off, @u64(off + 128), false)
+        off += 128
+        remaining -= 128
+    }
+
+    buf: [128]u8 = undef
+    memset(&buf[0], 0, 128)
+    j: usize = 0
+    while j < remaining {
+        bp: *u8 = &buf[j]
+        bp.* = (data + off + j).*
+        j += 1
+    }
+    blake2b_compress(&h[0], &buf[0], @u64(len), true)
+
+    k: usize = 0
+    while k < outlen {
+        word: usize = k / 8
+        shift: u64 = @u64((k % 8) * 8)
+        op: *u8 = out + k
+        op.* = @u8(h[word] >> shift)
+        k += 1
+    }
+}
+
+# blake2b_long: Argon2's H' variable-length hash (RFC 9106 §3.3) — chains
+# 64-byte BLAKE2b calls to produce an arbitrary-length output, each call
+# feeding forward its own full output as the next call's input.
+fn blake2b_long(out: *u8, outlen: usize, data: *u8, datalen: usize) {
+    prefixed: *u8 = malloc(4 + datalen)
+    lp: *u32 = prefixed
+    lp.* = @u32(outlen)
+    memcpy(prefixed + 4, data, datalen)
+
+    if outlen <= 64 {
+        blake2b(prefixed, 4 + datalen, outlen, out)
+        free(prefixed)
+        ret
+    }
+
+    out_buf: [64]u8 = undef
+    blake2b(prefixed, 4 + datalen, 64, &out_buf[0])
+    free(prefixed)
+    memcpy(out, &out_buf[0], 32)
+
+    written: usize = 32
+    toproduce: usize = outlen - 32
+    while toproduce > 64 {
+        next_buf: [64]u8 = undef
+        blake2b(&out_buf[0], 64, 64, &next_buf[0])
+        memcpy(out + written, &next_buf[0], 32)
+        memcpy(&out_buf[0], &next_buf[0], 64)
+        written += 32
+        toproduce -= 32
+    }
+    blake2b(&out_buf[0], 64, toproduce, out + written)
+}
+
+# ── Argon2id (RFC 9106) ───────────────────────────────────────────────────────
+# The memory-hard password hash OWASP/RFC 9106 currently recommend. Fixed
+# production parameters below (m=19456 KiB / t=2 / p=1, OWASP's "second
+# recommended option" for interactive logins) rather than exposing tunable
+# knobs — consistent with the rest of this module (sha256 etc. don't expose
+# tunable parameters either).
+
+ARGON2_M_COST: usize : 19456   # KiB
+ARGON2_T_COST: usize : 2
+ARGON2_LANES:  usize : 1
+ARGON2_SALT_LEN: usize : 16
+ARGON2_TAG_LEN:  usize : 32
+
+# argon2_g: Argon2's compression function G(X,Y) = P(P_row(X xor Y)) xor (X xor Y),
+# where P is BLAKE2b's round function but with BlaMka mixing (a multiply-add
+# term) in place of BLAKE2b's plain addition — this is NOT the same
+# function as blake2b_mix above despite sharing rotation amounts/layout.
+fn argon2_blamka(x: u64, y: u64) -> u64 {
+    m: u64 = 0xFFFFFFFF
+    lo: u64 = (x & m) * (y & m)
+    ret x + y + 2 * lo
+}
+
+fn argon2_mix(v: *u64, a: usize, b: usize, c: usize, d: usize) {
+    va: *u64 = v + a   vb: *u64 = v + b
+    vc: *u64 = v + c   vd: *u64 = v + d
+    va.* = argon2_blamka(va.*, vb.*)
+    vd.* = rotr64(vd.* ^ va.*, 32)
+    vc.* = argon2_blamka(vc.*, vd.*)
+    vb.* = rotr64(vb.* ^ vc.*, 24)
+    va.* = argon2_blamka(va.*, vb.*)
+    vd.* = rotr64(vd.* ^ va.*, 16)
+    vc.* = argon2_blamka(vc.*, vd.*)
+    vb.* = rotr64(vb.* ^ vc.*, 63)
+}
+
+fn argon2_permute(v: *u64) {
+    argon2_mix(v, 0,4,8,12)   argon2_mix(v, 1,5,9,13)
+    argon2_mix(v, 2,6,10,14)  argon2_mix(v, 3,7,11,15)
+    argon2_mix(v, 0,5,10,15)  argon2_mix(v, 1,6,11,12)
+    argon2_mix(v, 2,7,8,13)   argon2_mix(v, 3,4,9,14)
+}
+
+# argon2_g: x, y, z each point at 128 contiguous u64 words (a 1024-byte
+# block). z receives G(x,y); z must not alias x or y.
+fn argon2_g(x: *u64, y: *u64, z: *u64) {
+    r_copy: *u64 = malloc(1024)
+    i: usize = 0
+    while i < 128 {
+        xp: *u64 = x + i   yp: *u64 = y + i
+        zp: *u64 = z + i   rp: *u64 = r_copy + i
+        val: u64 = xp.* ^ yp.*
+        zp.* = val
+        rp.* = val
+        i += 1
+    }
+
+    # v/v2 are declared once, outside their loops, and reused across
+    # iterations by overwriting every element each pass — not redeclared
+    # per iteration, since &v[0] escapes into argon2_permute (its address
+    # is taken), which keeps this compiler from proving the array's storage
+    # can be reused in place across loop iterations at -O0; a fresh alloca
+    # per iteration inside a loop that runs thousands of times (this
+    # function runs once per Argon2 memory block, i.e. m_cost/4 times or
+    # more) would otherwise grow the stack unboundedly.
+    v: [16]u64 = undef
+    row: usize = 0
+    while row < 8 {
+        k: usize = 0
+        while k < 16 { vp: *u64 = &v[k]  zp2: *u64 = z + row*16 + k  vp.* = zp2.*  k += 1 }
+        argon2_permute(&v[0])
+        k = 0
+        while k < 16 { zp3: *u64 = z + row*16 + k  zp3.* = v[k]  k += 1 }
+        row += 1
+    }
+
+    v2: [16]u64 = undef
+    col: usize = 0
+    while col < 8 {
+        r2: usize = 0
+        while r2 < 8 {
+            p0: *u64 = z + r2*16 + col*2
+            p1: *u64 = z + r2*16 + col*2 + 1
+            vp0: *u64 = &v2[r2*2]
+            vp1: *u64 = &v2[r2*2 + 1]
+            vp0.* = p0.*
+            vp1.* = p1.*
+            r2 += 1
+        }
+        argon2_permute(&v2[0])
+        r2 = 0
+        while r2 < 8 {
+            p2: *u64 = z + r2*16 + col*2
+            p3: *u64 = z + r2*16 + col*2 + 1
+            p2.* = v2[r2*2]
+            p3.* = v2[r2*2 + 1]
+            r2 += 1
+        }
+        col += 1
+    }
+
+    i = 0
+    while i < 128 {
+        zp4: *u64 = z + i
+        rp2: *u64 = r_copy + i
+        zp4.* = zp4.* ^ rp2.*
+        i += 1
+    }
+    free(r_copy)
+}
+
+# argon2_next_addresses: regenerate the data-independent "address block" used
+# by Argon2i/Argon2id's pseudorandom (as opposed to data-dependent) indexing.
+fn argon2_next_addresses(zero: *u64, input_block: *u64, addr_out: *u64) {
+    ctr_p: *u64 = input_block + 6
+    ctr_p.* = ctr_p.* + 1
+    tmp: *u64 = malloc(1024)
+    argon2_g(zero, input_block, tmp)
+    argon2_g(zero, tmp, addr_out)
+    free(tmp)
+}
+
+# argon2_fill_segment: fill one (pass, lane, slice) segment of the memory
+# array in place. `memory` is m_prime contiguous 1024-byte blocks (128 u64
+# words each), laid out lane-major: block (lane*lane_len + index).
+fn argon2_fill_segment(memory: *u64, m_prime: usize, lane_len: usize, seg_len: usize,
+                        lanes: usize, t_cost: usize, pas: usize, lane: usize, sl: usize) {
+    indep: bool = (pas == 0) && (sl < 2)
+
+    input_block: *u64 = malloc(1024)
+    memset(input_block, 0, 1024)
+    input_block[0] = @u64(pas)
+    input_block[1] = @u64(lane)
+    input_block[2] = @u64(sl)
+    input_block[3] = @u64(m_prime)
+    input_block[4] = @u64(t_cost)
+    input_block[5] = 2u64  # 2 = Argon2id
+
+    zero_block: *u64 = malloc(1024)
+    memset(zero_block, 0, 1024)
+
+    addr_block: *u64 = malloc(1024)
+
+    start_j: usize = 0
+    if pas == 0 && sl == 0 { start_j = 2 }
+    if indep && start_j == 2 {
+        argon2_next_addresses(zero_block, input_block, addr_block)
+    }
+
+    # Every local below is declared once, here, before the loop, and
+    # reassigned (never redeclared) inside it. This compiler always
+    # allocates a `let` declaration's stack slot at the point it appears in
+    # the source rather than hoisting it to the function's entry block —
+    # fine for a declaration outside a loop (it executes once regardless),
+    # but a declaration *inside* a loop body allocates a fresh slot on
+    # every single iteration, and none of them are freed until this whole
+    # function returns. seg_len can be in the thousands at real Argon2id
+    # memory costs, so redeclaring even a handful of locals per iteration
+    # (let alone the inner 128-iteration XOR loop below) is enough to
+    # exhaust the stack well before this function ever returns.
+    idx: usize = 0
+    prev_idx: usize = 0
+    word: u64 = 0
+    ap: *u64 = addr_block
+    pp: *u64 = memory
+    j1: u64 = 0
+    j2: u64 = 0
+    ref_lane: usize = lane
+    same_lane: bool = false
+    area: usize = 0
+    j1sq: u64 = 0
+    rel: u64 = 0
+    rel_pos: usize = 0
+    start_pos: usize = 0
+    ref_idx: usize = 0
+    cur_ptr: *u64 = memory
+    prev_ptr: *u64 = memory
+    ref_ptr: *u64 = memory
+    tmp2: *u64 = malloc(1024)
+    k2: usize = 0
+    cp: *u64 = cur_ptr
+    tp: *u64 = tmp2
+
+    j: usize = start_j
+    while j < seg_len {
+        idx = sl * seg_len + j
+        prev_idx = idx - 1
+        if idx == 0 { prev_idx = lane_len - 1 }
+
+        if indep {
+            if j % 128 == 0 {
+                argon2_next_addresses(zero_block, input_block, addr_block)
+            }
+            ap = addr_block + (j % 128)
+            word = ap.*
+        } else {
+            pp = memory + (lane*lane_len + prev_idx)*128
+            word = pp.*
+        }
+
+        j1 = word & 0xFFFFFFFF
+        j2 = word >> 32
+
+        ref_lane = lane
+        if !(pas == 0 && sl == 0) { ref_lane = @usize(j2 % @u64(lanes)) }
+        same_lane = ref_lane == lane
+
+        area = 0
+        if pas == 0 {
+            if sl == 0 {
+                area = idx - 1
+            } else if same_lane {
+                area = sl*seg_len + j - 1
+            } else {
+                area = sl * seg_len
+                if j == 0 { area -= 1 }
+            }
+        } else if same_lane {
+            area = lane_len - seg_len + j - 1
+        } else {
+            area = lane_len - seg_len
+            if j == 0 { area -= 1 }
+        }
+
+        j1sq = (j1 * j1) >> 32
+        rel = (@u64(area) * j1sq) >> 32
+        rel_pos = area - 1 - @usize(rel)
+
+        start_pos = 0
+        if pas != 0 {
+            if sl == 3 { start_pos = 0 } else { start_pos = (sl+1) * seg_len }
+        }
+        ref_idx = (start_pos + rel_pos) % lane_len
+
+        cur_ptr  = memory + (lane*lane_len + idx)*128
+        prev_ptr = memory + (lane*lane_len + prev_idx)*128
+        ref_ptr  = memory + (ref_lane*lane_len + ref_idx)*128
+
+        if pas == 0 {
+            argon2_g(prev_ptr, ref_ptr, cur_ptr)
+        } else {
+            argon2_g(prev_ptr, ref_ptr, tmp2)
+            k2 = 0
+            while k2 < 128 {
+                cp = cur_ptr + k2
+                tp = tmp2 + k2
+                cp.* = cp.* ^ tp.*
+                k2 += 1
+            }
+        }
+
+        j += 1
+    }
+    free(tmp2)
+
+    free(input_block)
+    free(zero_block)
+    free(addr_block)
+}
+
+# argon2id: RFC 9106 Argon2id. Writes `taglen` bytes to `tag_out`.
+fn argon2id(password: *u8, pwlen: usize, salt: *u8, saltlen: usize,
+            t_cost: usize, m_cost: usize, lanes: usize, taglen: usize, tag_out: *u8) {
+    m_prime: usize = (m_cost / (4*lanes)) * 4 * lanes
+    lane_len: usize = m_prime / lanes
+    seg_len: usize = lane_len / 4
+
+    # 24 (params) + 4 len-prefixes (pw, salt, secret, ad) * 4 bytes each = 40,
+    # plus pwlen/saltlen bytes themselves (secret/ad are always empty here)
+    hdr: *u8 = malloc(40 + pwlen + saltlen)
+    hp: *u32 = hdr
+    hp[0] = @u32(lanes)
+    hp[1] = @u32(taglen)
+    hp[2] = @u32(m_cost)
+    hp[3] = @u32(t_cost)
+    hp[4] = 19u32
+    hp[5] = 2u32  # v=0x13, type=Argon2id
+    off: usize = 24
+    lp1: *u32 = hdr + off
+    lp1.* = @u32(pwlen)
+    off += 4
+    memcpy(hdr + off, password, pwlen)
+    off += pwlen
+    lp2: *u32 = hdr + off
+    lp2.* = @u32(saltlen)
+    off += 4
+    memcpy(hdr + off, salt, saltlen)
+    off += saltlen
+    # no secret key (K) and no associated data (X): both zero-length
+    lp3: *u32 = hdr + off
+    lp3.* = 0u32
+    off += 4
+    lp4: *u32 = hdr + off
+    lp4.* = 0u32
+    off += 4
+
+    h0: [64]u8 = undef
+    blake2b(hdr, off, 64, &h0[0])
+    free(hdr)
+
+    memory: *u64 = malloc(@usize(m_prime) * 1024)
+    l: usize = 0
+    while l < lanes {
+        seed: *u8 = malloc(64 + 8)
+        memcpy(seed, &h0[0], 64)
+        sp: *u32 = seed + 64
+        sp.* = 0u32
+        sp2: *u32 = seed + 68
+        sp2.* = @u32(l)
+        b0: *u64 = memory + (l*lane_len + 0)*128
+        blake2b_long(b0, 1024, seed, 72)
+        sp.* = 1u32
+        b1: *u64 = memory + (l*lane_len + 1)*128
+        blake2b_long(b1, 1024, seed, 72)
+        free(seed)
+        l += 1
+    }
+
+    r: usize = 0
+    while r < t_cost {
+        sl: usize = 0
+        while sl < 4 {
+            l = 0
+            while l < lanes {
+                argon2_fill_segment(memory, m_prime, lane_len, seg_len, lanes, t_cost, r, l, sl)
+                l += 1
+            }
+            sl += 1
+        }
+        r += 1
+    }
+
+    c_block: *u64 = malloc(1024)
+    memset(c_block, 0, 1024)
+    l = 0
+    while l < lanes {
+        last: *u64 = memory + (l*lane_len + lane_len - 1)*128
+        i: usize = 0
+        while i < 128 {
+            cp: *u64 = c_block + i
+            lp5: *u64 = last + i
+            cp.* = cp.* ^ lp5.*
+            i += 1
+        }
+        l += 1
+    }
+
+    blake2b_long(tag_out, taglen, c_block, 1024)
+    free(c_block)
+    free(memory)
+}
+
+# ── ChaCha20-Poly1305 AEAD (RFC 8439) ─────────────────────────────────────────
+# The authenticated cipher: unlike XorSha below, a corrupted/tampered
+# ciphertext is detected (via the Poly1305 tag) rather than silently
+# decrypted into garbage, and each encryption gets a fresh random nonce
+# (via rand_bytes/getrandom) so the same key never reuses a keystream.
+
+fn rotl32(x: u32, n: u32) -> u32 {
+    ret (x << n) | (x >> (32 - n))
+}
+
+fn chacha20_qr(s: *u32, a: usize, b: usize, c: usize, d: usize) {
+    sa: *u32 = s + a   sb: *u32 = s + b
+    sc: *u32 = s + c   sd: *u32 = s + d
+    sa.* = sa.* + sb.*
+    sd.* = rotl32(sd.* ^ sa.*, 16)
+    sc.* = sc.* + sd.*
+    sb.* = rotl32(sb.* ^ sc.*, 12)
+    sa.* = sa.* + sb.*
+    sd.* = rotl32(sd.* ^ sa.*, 8)
+    sc.* = sc.* + sd.*
+    sb.* = rotl32(sb.* ^ sc.*, 7)
+}
+
+# chacha20_block: key (32 bytes), 32-bit counter, nonce (12 bytes, IETF
+# variant) -> 64-byte keystream block written to out.
+fn chacha20_block(key: *u8, counter: u32, nonce: *u8, out: *u8) {
+    state: [16]u32 = undef
+    state[0] = 0x61707865u32
+    state[1] = 0x3320646eu32
+    state[2] = 0x79622d32u32
+    state[3] = 0x6b206574u32
+    kp: *u32 = key
+    i: usize = 0
+    while i < 8 { sp: *u32 = &state[4+i]  kpi: *u32 = kp+i  sp.* = kpi.*  i += 1 }
+    state[12] = counter
+    np: *u32 = nonce
+    i = 0
+    while i < 3 { sp2: *u32 = &state[13+i]  npi: *u32 = np+i  sp2.* = npi.*  i += 1 }
+
+    work: [16]u32 = undef
+    i = 0
+    while i < 16 { wp: *u32 = &work[i]  wp.* = state[i]  i += 1 }
+
+    round: usize = 0
+    while round < 10 {
+        chacha20_qr(&work[0], 0,4,8,12)
+        chacha20_qr(&work[0], 1,5,9,13)
+        chacha20_qr(&work[0], 2,6,10,14)
+        chacha20_qr(&work[0], 3,7,11,15)
+        chacha20_qr(&work[0], 0,5,10,15)
+        chacha20_qr(&work[0], 1,6,11,12)
+        chacha20_qr(&work[0], 2,7,8,13)
+        chacha20_qr(&work[0], 3,4,9,14)
+        round += 1
+    }
+
+    op: *u32 = out
+    i = 0
+    while i < 16 {
+        opi: *u32 = op + i
+        opi.* = work[i] + state[i]
+        i += 1
+    }
+}
+
+# chacha20_xor: XOR data[0..len) with the ChaCha20 keystream starting at
+# block counter `counter0`, in place.
+fn chacha20_xor(key: *u8, counter0: u32, nonce: *u8, data: *u8, len: usize) {
+    # locals declared once, before the loop, and reassigned (not
+    # redeclared) inside it -- see argon2_fill_segment's comment on why:
+    # `len` here is a file's byte length, so this loop can run into the
+    # hundreds of thousands of iterations for a real file.
+    ks: [64]u8 = undef
+    counter: u32 = counter0
+    n: usize = 0
+    i: usize = 0
+    dp: *u8 = data
+
+    off: usize = 0
+    while off < len {
+        chacha20_block(key, counter, nonce, &ks[0])
+        n = 64
+        if len - off < 64 { n = len - off }
+        i = 0
+        while i < n {
+            dp = data + off + i
+            dp.* = dp.* ^ ks[i]
+            i += 1
+        }
+        off += 64
+        counter += 1
+    }
+}
+
+# poly1305_mac: one-time-key Poly1305 MAC. `msglen` MUST be a multiple of
+# 16 (every caller in this file builds mac_data via poly1305_pad_and_append,
+# which guarantees that). Radix-2^26 limb arithmetic (poly1305-donna style)
+# so every intermediate product fits in a u64 -- this compiler has no
+# 128-bit integer type, which the textbook mod-2^130-5 arithmetic assumes.
+fn poly1305_mac(key: *u8, msg: *u8, msglen: usize, tag_out: *u8) {
+    kp: *u32 = key
+    t0: u32 = kp[0] & 0x0fffffffu32
+    t1: u32 = kp[1] & 0x0ffffffcu32
+    t2: u32 = kp[2] & 0x0ffffffcu32
+    t3: u32 = kp[3] & 0x0ffffffcu32
+
+    r0: u64 = @u64(t0) & 0x3ffffff
+    r1: u64 = (@u64(t0 >> 26) | (@u64(t1) << 6)) & 0x3ffffff
+    r2: u64 = (@u64(t1 >> 20) | (@u64(t2) << 12)) & 0x3ffffff
+    r3: u64 = (@u64(t2 >> 14) | (@u64(t3) << 18)) & 0x3ffffff
+    r4: u64 = @u64(t3 >> 8) & 0x3ffffff
+    s1: u64 = r1 * 5   s2: u64 = r2 * 5   s3: u64 = r3 * 5   s4: u64 = r4 * 5
+
+    h0: u64 = 0   h1: u64 = 0   h2: u64 = 0   h3: u64 = 0   h4: u64 = 0
+
+    # declared once, before the loop, and reassigned (not redeclared)
+    # inside it -- see argon2_fill_segment's comment on why: `msglen` here
+    # scales with a file's byte length, so this loop can run into the
+    # hundreds of thousands of iterations.
+    bp: *u32 = msg
+    b0: u32 = 0   b1: u32 = 0   b2: u32 = 0   b3: u32 = 0
+    m0: u64 = 0   m1: u64 = 0   m2: u64 = 0   m3: u64 = 0   m4: u64 = 0
+    d0: u64 = 0   d1: u64 = 0   d2: u64 = 0   d3: u64 = 0   d4: u64 = 0
+    c: u64 = 0
+
+    off: usize = 0
+    while off < msglen {
+        bp = msg + off
+        b0 = bp[0]   b1 = bp[1]   b2 = bp[2]   b3 = bp[3]
+
+        m0 = @u64(b0) & 0x3ffffff
+        m1 = (@u64(b0 >> 26) | (@u64(b1) << 6)) & 0x3ffffff
+        m2 = (@u64(b1 >> 20) | (@u64(b2) << 12)) & 0x3ffffff
+        m3 = (@u64(b2 >> 14) | (@u64(b3) << 18)) & 0x3ffffff
+        m4 = (@u64(b3 >> 8) & 0x3ffffff) | (1u64 << 24)  # hibit: bit 128
+
+        h0 += m0   h1 += m1   h2 += m2   h3 += m3   h4 += m4
+
+        d0 = h0*r0 + h1*s4 + h2*s3 + h3*s2 + h4*s1
+        d1 = h0*r1 + h1*r0 + h2*s4 + h3*s3 + h4*s2
+        d2 = h0*r2 + h1*r1 + h2*r0 + h3*s4 + h4*s3
+        d3 = h0*r3 + h1*r2 + h2*r1 + h3*r0 + h4*s4
+        d4 = h0*r4 + h1*r3 + h2*r2 + h3*r1 + h4*r0
+
+        c = d0 >> 26   h0 = d0 & 0x3ffffff   d1 += c
+        c = d1 >> 26   h1 = d1 & 0x3ffffff   d2 += c
+        c = d2 >> 26   h2 = d2 & 0x3ffffff   d3 += c
+        c = d3 >> 26   h3 = d3 & 0x3ffffff   d4 += c
+        c = d4 >> 26   h4 = d4 & 0x3ffffff   h0 += c*5
+        c = h0 >> 26   h0 &= 0x3ffffff   h1 += c
+
+        off += 16
+    }
+
+    c = h1 >> 26   h1 &= 0x3ffffff   h2 += c
+    c = h2 >> 26   h2 &= 0x3ffffff   h3 += c
+    c = h3 >> 26   h3 &= 0x3ffffff   h4 += c
+    c = h4 >> 26   h4 &= 0x3ffffff   h0 += c*5
+    c = h0 >> 26   h0 &= 0x3ffffff   h1 += c
+
+    cc: u64 = h0 + 5
+    g0: u64 = cc & 0x3ffffff   carry: u64 = cc >> 26
+    cc = h1 + carry   g1: u64 = cc & 0x3ffffff   carry = cc >> 26
+    cc = h2 + carry   g2: u64 = cc & 0x3ffffff   carry = cc >> 26
+    cc = h3 + carry   g3: u64 = cc & 0x3ffffff   carry = cc >> 26
+    cc = h4 + carry   g4: u64 = cc & 0x3ffffff   carry = cc >> 26
+
+    if carry != 0 {
+        h0 = g0   h1 = g1   h2 = g2   h3 = g3   h4 = g4
+    }
+
+    lo: u64 = h0 | (h1 << 26) | ((h2 & 0xfff) << 52)
+    hi: u64 = (h2 >> 12) | (h3 << 14) | (h4 << 40)
+
+    s_ptr: *u64 = key + 16
+    s_lo: u64 = s_ptr[0]
+    lo = lo + s_lo
+    carry_out: u64 = 0
+    if lo < s_lo { carry_out = 1 }
+    hi = hi + s_ptr[1] + carry_out
+
+    tp: *u64 = tag_out
+    tp[0] = lo
+    tp[1] = hi
+}
+
+# poly1305_pad_and_append: append `data[0..len)` to *buf (growing it, tracking
+# *pos), then zero-pad up to the next multiple of 16 -- the "pad16" step
+# RFC 8439's AEAD construction applies to the AAD and ciphertext separately
+# before they're MAC'd together.
+fn poly1305_append_padded(buf: *u8, pos: *usize, data: *u8, len: usize) {
+    memcpy(buf + pos.*, data, len)
+    pos.* += len
+    pad: usize = 0
+    if len % 16 != 0 { pad = 16 - (len % 16) }
+    if pad > 0 {
+        memset(buf + pos.*, 0, pad)
+        pos.* += pad
+    }
+}
+
+# chacha20poly1305_encrypt: encrypt `plaintext` in place (becomes ciphertext)
+# and write the 16-byte auth tag to `tag_out`. `key` is 32 bytes, `nonce` is
+# 12 bytes (generate with rand_bytes -- never reuse a nonce with the same key).
+fn chacha20poly1305_encrypt(key: *u8, nonce: *u8, plaintext: *u8, len: usize, tag_out: *u8) {
+    otk: [64]u8 = undef
+    zero_nonce_counter: u32 = 0
+    chacha20_block(key, zero_nonce_counter, nonce, &otk[0])
+
+    chacha20_xor(key, 1u32, nonce, plaintext, len)
+
+    ct_pad: usize = 0
+    if len % 16 != 0 { ct_pad = 16 - (len % 16) }
+    mac_len: usize = len + ct_pad + 16
+    mac_data: *u8 = malloc(mac_len)
+    pos: usize = 0
+    poly1305_append_padded(mac_data, &pos, plaintext, len)
+    lp: *u64 = mac_data + pos
+    lp[0] = 0
+    lp[1] = @u64(len)
+    pos += 16
+
+    poly1305_mac(&otk[0], mac_data, pos, tag_out)
+    free(mac_data)
+}
+
+# chacha20poly1305_decrypt: verify `tag` against `ciphertext`, and if (and
+# only if) it matches, decrypt ciphertext in place (becomes plaintext).
+# Returns false (leaving ciphertext untouched) on a tag mismatch -- a
+# tampered or wrong-key file is rejected rather than silently decrypted
+# into garbage.
+fn chacha20poly1305_decrypt(key: *u8, nonce: *u8, ciphertext: *u8, len: usize, tag: *u8) -> bool {
+    otk: [64]u8 = undef
+    zero_nonce_counter: u32 = 0
+    chacha20_block(key, zero_nonce_counter, nonce, &otk[0])
+
+    ct_pad: usize = 0
+    if len % 16 != 0 { ct_pad = 16 - (len % 16) }
+    mac_len: usize = len + ct_pad + 16
+    mac_data: *u8 = malloc(mac_len)
+    pos: usize = 0
+    poly1305_append_padded(mac_data, &pos, ciphertext, len)
+    lp: *u64 = mac_data + pos
+    lp[0] = 0
+    lp[1] = @u64(len)
+    pos += 16
+
+    expect_tag: [16]u8 = undef
+    poly1305_mac(&otk[0], mac_data, pos, &expect_tag[0])
+    free(mac_data)
+
+    # constant-time-ish comparison: accumulate differences rather than
+    # early-returning on the first mismatched byte
+    diff: u8 = 0
+    i: usize = 0
+    while i < 16 {
+        ep: *u8 = &expect_tag[i]
+        tp2: *u8 = tag + i
+        diff = diff | (ep.* ^ tp2.*)
+        i += 1
+    }
+    if diff != 0u8 { ret false }
+
+    chacha20_xor(key, 1u32, nonce, ciphertext, len)
+    ret true
+}
+
 # ── High-level helpers ────────────────────────────────────────────────────────
 
-# Algorithm selectors. Only one option today; the enums leave room to grow
-# (e.g. HashKind.Blake3, CipherKind.ChaCha20) without changing call sites.
-enum HashKind {
+# Algorithm selectors. hshknd.Argon2id and cphrknd.ChaCha20Poly1305 are the
+# choices to reach for on anything that matters (a real login system, a file
+# worth protecting); Sha256/XorSha are the toy-grade originals — fast, but
+# Sha256 has no salt/work-factor (rainbow-tableable, GPU-crackable) and
+# XorSha has no authentication and reuses its keystream from byte 0 on every
+# call (reusing a key across two files leaks the XOR of their plaintexts).
+enum hshknd {
     Sha256,
+    Argon2id,   # RFC 9106 — memory-hard, salted, OWASP's recommended default
 }
 
-enum CipherKind {
-    XorSha,   # SHA-256 keystream XOR (hash-based CTR-style stream cipher)
+enum cphrknd {
+    XorSha,             # SHA-256 keystream XOR (hash-based CTR-style stream cipher)
+    ChaCha20Poly1305,   # RFC 8439 — authenticated (tamper-evident), random nonce per call
 }
 
-# hash_pk: hash a password or key, returning a lowercase hex digest string.
-fn hash_pk(kind: HashKind, plain: str) -> str {
+# hash_pk: hash a password or key, returning a string safe to store directly
+# (self-describing — auth_hash doesn't need the original parameters back).
+# Sha256's output is a bare 64-char hex digest, unsalted — the same input
+# always hashes to the same output, which is exactly what rainbow tables and
+# multi-target brute force exploit. Argon2id's output additionally encodes a
+# fresh random salt, so hash_pk(Argon2id, "same password") called twice
+# produces two different strings, and cracking one gives an attacker nothing
+# about any other password hashed with a different salt.
+fn hash_pk(kind: hshknd, plain: str) -> str {
     ret when kind {
-        HashKind.Sha256 => sha256_hex(plain.data, plain.len),
+        hshknd.Sha256 => sha256_hex(plain.data, plain.len),
+        hshknd.Argon2id => argon2id_hash_pk(plain),
+    }
+}
+
+# argon2id_hash_pk: "argon2id$<32-hex-char salt>$<64-hex-char tag>" — fixed
+# format, fixed production parameters (see ARGON2_* constants above), so
+# auth_hash can recover everything it needs (the salt) straight from the
+# string without a general key=value parser.
+fn argon2id_hash_pk(plain: str) -> str {
+    salt: [16]u8 = undef
+    rand_bytes(&salt[0], 16)
+    tag: [32]u8 = undef
+    argon2id(plain.data, plain.len, &salt[0], 16,
+             ARGON2_T_COST, ARGON2_M_COST, ARGON2_LANES, ARGON2_TAG_LEN, &tag[0])
+
+    out_len: usize = 9 + 32 + 1 + 64
+    out: *u8 = malloc(out_len + 1)
+    memcpy(out, "argon2id$", 9)
+    hex_encode(&salt[0], 16, out + 9)
+    dollar: *u8 = out + 9 + 32
+    dollar.* = 36u8  # '$'
+    hex_encode(&tag[0], 32, out + 9 + 32 + 1)
+    ret @str_raw(out, out_len)
+}
+
+# hex_encode: write 2*n lowercase hex characters for buf[0..n) into out
+# (out is NOT NUL-terminated by this alone — callers that need a whole str
+# handle that themselves, same convention @str_raw already uses).
+fn hex_encode(buf: *u8, n: usize, out: *u8) {
+    nibbles: [16]u8 = [
+        0x30u8, 0x31u8, 0x32u8, 0x33u8, 0x34u8, 0x35u8, 0x36u8, 0x37u8,
+        0x38u8, 0x39u8, 0x61u8, 0x62u8, 0x63u8, 0x64u8, 0x65u8, 0x66u8
+    ]
+    i: usize = 0
+    while i < n {
+        b: u8 = (buf + i).*
+        hp: *u8 = out + i * 2
+        hp.* = nibbles[@usize(b >> 4)]
+        hp1: *u8 = hp + 1
+        hp1.* = nibbles[@usize(b & 0x0fu8)]
+        i += 1
     }
 }
 
 # auth_hash: true when hashing `plain` with `kind` reproduces `hashed`.
-fn auth_hash(kind: HashKind, plain: str, hashed: str) -> bool {
-    computed: str = hash_pk(kind, plain)
-    ret computed == hashed
+fn auth_hash(kind: hshknd, plain: str, hashed: str) -> bool {
+    ret when kind {
+        hshknd.Sha256 => hash_pk(kind, plain) == hashed,
+        hshknd.Argon2id => argon2id_auth(plain, hashed),
+    }
+}
+
+# argon2id_auth: re-derive the tag using the salt embedded in `hashed`
+# (see argon2id_hash_pk's format) and compare.
+fn argon2id_auth(plain: str, hashed: str) -> bool {
+    if hashed.len != 9 + 32 + 1 + 64 { ret false }
+    if !str.starts_with(hashed, "argon2id$") { ret false }
+
+    salt: [16]u8 = undef
+    salt_hex: str = str.slice(hashed, 9, 9 + 32)
+    hex_decode(salt_hex, &salt[0])
+
+    tag: [32]u8 = undef
+    argon2id(plain.data, plain.len, &salt[0], 16,
+             ARGON2_T_COST, ARGON2_M_COST, ARGON2_LANES, ARGON2_TAG_LEN, &tag[0])
+
+    expect_hex: str = str.slice(hashed, 9 + 32 + 1, 9 + 32 + 1 + 64)
+    got: str = @str_raw(malloc(64), 64usize)
+    hex_encode(&tag[0], 32, got.data)
+    ret got == expect_hex
+}
+
+fn hex_nibble(c: u8) -> u8 {
+    if c >= 97u8 { ret c - 97u8 + 10u8 }  # 'a'..'f'
+    ret c - 48u8                          # '0'..'9'
+}
+
+# hex_decode: parse `hex` (an even-length lowercase hex string) into
+# out[0..hex.len/2).
+fn hex_decode(hex: str, out: *u8) {
+    i: usize = 0
+    while i < hex.len {
+        a: u8 = (hex.data + i).*
+        b: u8 = (hex.data + i + 1).*
+        p: *u8 = out + i / 2
+        p.* = (hex_nibble(a) << 4u8) | hex_nibble(b)
+        i += 2
+    }
 }
 
 # keystream_block: write sha256(key || counter_be64) into dst[0..32).
 # Each 32-byte output block depends on both the key and the block index, so
-# unlike a repeating-key XOR the keystream never repeats within a file.
+# unlike a repeating-key XOR the keystream never repeats *within* a file —
+# but it always starts over from the same counter=0 block on every call, so
+# reusing a key across two different files/messages still leaks the XOR of
+# their plaintexts. See cphrknd.ChaCha20Poly1305 for a random-nonce-per-call
+# cipher that doesn't have this problem.
 fn keystream_block(key: str, counter: u64, dst: *u8) {
     n: usize = key.len + 8
     buf: *u8 = malloc(n)
@@ -341,9 +1235,9 @@ fn crypt_buffer(data: *u8, len: usize, key: str) {
     }
 }
 
-# crypt_file: read path, transform its bytes with `kind`, write them back.
+# xorsha_file: read path, XOR its bytes with crypt_buffer, write them back.
 # Returns false if the file can't be opened for reading or writing.
-fn crypt_file(kind: CipherKind, path: str, key: str) -> bool {
+fn xorsha_file(path: str, key: str) -> bool {
     fr: *u8 = fopen(path.data, "rb")
     if fr == null { ret false }
     fseek(fr, 0, 2)          # SEEK_END
@@ -355,9 +1249,7 @@ fn crypt_file(kind: CipherKind, path: str, key: str) -> bool {
     got: usize = fread(buf, 1, n, fr)
     fclose(fr)
 
-    when kind {
-        CipherKind.XorSha => crypt_buffer(buf, got, key),
-    }
+    crypt_buffer(buf, got, key)
 
     fw: *u8 = fopen(path.data, "wb")
     if fw == null { free(buf) ret false }
@@ -367,13 +1259,94 @@ fn crypt_file(kind: CipherKind, path: str, key: str) -> bool {
     ret true
 }
 
+# aead_key_from: derive a 32-byte ChaCha20 key from an arbitrary-length str
+# key via SHA-256 (ChaCha20's key is always exactly 32 bytes).
+fn aead_key_from(key: str, out32: *u8) {
+    digest: *u8 = sha256(key.data, key.len)
+    memcpy(out32, digest, 32)
+    free(digest)
+}
+
+# aead_enc_file: encrypt path in place with ChaCha20-Poly1305, storing a
+# fresh random 12-byte nonce and the 16-byte auth tag alongside the
+# ciphertext (file becomes nonce || ciphertext || tag) so dec_file has
+# everything it needs from the file alone.
+fn aead_enc_file(path: str, key: str) -> bool {
+    fr: *u8 = fopen(path.data, "rb")
+    if fr == null { ret false }
+    fseek(fr, 0, 2)
+    sz: i64 = ftell(fr)
+    rewind(fr)
+    if sz < 0 { fclose(fr) ret false }
+    n: usize = @usize(sz)
+    buf: *u8 = malloc(n)
+    got: usize = fread(buf, 1, n, fr)
+    fclose(fr)
+
+    k32: [32]u8 = undef
+    aead_key_from(key, &k32[0])
+    nonce: [12]u8 = undef
+    rand_bytes(&nonce[0], 12)
+    tag: [16]u8 = undef
+    chacha20poly1305_encrypt(&k32[0], &nonce[0], buf, got, &tag[0])
+
+    fw: *u8 = fopen(path.data, "wb")
+    if fw == null { free(buf) ret false }
+    fwrite(&nonce[0], 1, 12, fw)
+    fwrite(buf, 1, got, fw)
+    fwrite(&tag[0], 1, 16, fw)
+    fclose(fw)
+    free(buf)
+    ret true
+}
+
+# aead_dec_file: verify + decrypt a file aead_enc_file produced. Returns
+# false (leaving the file untouched) if it's too short to contain a
+# nonce+tag, or if the tag doesn't verify (wrong key or a tampered file) —
+# unlike xorsha_file, a bad key or corrupted ciphertext is *detected*
+# rather than silently turned into garbage plaintext.
+fn aead_dec_file(path: str, key: str) -> bool {
+    fr: *u8 = fopen(path.data, "rb")
+    if fr == null { ret false }
+    fseek(fr, 0, 2)
+    sz: i64 = ftell(fr)
+    rewind(fr)
+    if sz < 28 { fclose(fr) ret false }
+    n: usize = @usize(sz)
+    buf: *u8 = malloc(n)
+    got: usize = fread(buf, 1, n, fr)
+    fclose(fr)
+
+    ct_len: usize = got - 12 - 16
+    nonce: *u8 = buf
+    ct: *u8 = buf + 12
+    tag: *u8 = buf + 12 + ct_len
+
+    k32: [32]u8 = undef
+    aead_key_from(key, &k32[0])
+    ok: bool = chacha20poly1305_decrypt(&k32[0], nonce, ct, ct_len, tag)
+    if !ok { free(buf) ret false }
+
+    fw: *u8 = fopen(path.data, "wb")
+    if fw == null { free(buf) ret false }
+    fwrite(ct, 1, ct_len, fw)
+    fclose(fw)
+    free(buf)
+    ret true
+}
+
 # enc_file: encrypt the file at `path` in place using `key`.
-fn enc_file(kind: CipherKind, path: str, key: str) -> bool {
-    ret crypt_file(kind, path, key)
+fn enc_file(kind: cphrknd, path: str, key: str) -> bool {
+    ret when kind {
+        cphrknd.XorSha => xorsha_file(path, key),
+        cphrknd.ChaCha20Poly1305 => aead_enc_file(path, key),
+    }
 }
 
 # dec_file: decrypt the file at `path` in place using `key`.
-# The XorSha cipher is symmetric, so this is the same transform as enc_file.
-fn dec_file(kind: CipherKind, path: str, key: str) -> bool {
-    ret crypt_file(kind, path, key)
+fn dec_file(kind: cphrknd, path: str, key: str) -> bool {
+    ret when kind {
+        cphrknd.XorSha => xorsha_file(path, key),   # symmetric: same transform as enc_file
+        cphrknd.ChaCha20Poly1305 => aead_dec_file(path, key),
+    }
 }

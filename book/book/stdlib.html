@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-a1838e84.js";
+            window.path_to_searchindex_js = "searchindex-9c64659c.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-4e58bc13.js"></script>
@@ -515,32 +515,58 @@ defer sync.unlock(&amp;mu)
 </table>
 </div>
 <h3 id="high-level-helpers"><a class="header" href="#high-level-helpers">High-Level Helpers</a></h3>
-<p>Pick an algorithm with the <code>HashKind</code> / <code>CipherKind</code> enums — today each has one member (<code>Sha256</code>, <code>XorSha</code>), leaving room to add more without changing call sites.</p>
+<p>Pick an algorithm with the <code>hshknd</code> / <code>cphrknd</code> enums:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th><code>hshknd</code></th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>Sha256</code></td><td>fast, unsalted — fine for checksums, <strong>not</strong> for password storage (rainbow-tableable, GPU-crackable)</td></tr>
+<tr><td><code>Argon2id</code></td><td><a href="https://www.rfc-editor.org/rfc/rfc9106">RFC 9106</a> — memory-hard, salted; use this for real passwords</td></tr>
+</tbody>
+</table>
+</div>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th><code>cphrknd</code></th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>XorSha</code></td><td>fast, but unauthenticated and reuses its keystream from byte 0 on every call — not suitable for real confidentiality</td></tr>
+<tr><td><code>ChaCha20Poly1305</code></td><td><a href="https://www.rfc-editor.org/rfc/rfc8439">RFC 8439</a> — authenticated (AEAD), random nonce per call; use this for real encryption</td></tr>
+</tbody>
+</table>
+</div>
 <div class="table-wrapper">
 <table>
 <thead>
 <tr><th>Function</th><th>Description</th></tr>
 </thead>
 <tbody>
-<tr><td><code>hash_pk(kind, plain)</code></td><td>hash a password/key → lowercase hex digest string</td></tr>
+<tr><td><code>hash_pk(kind, plain)</code></td><td>hash a password/key → a string safe to store directly</td></tr>
 <tr><td><code>auth_hash(kind, plain, hashed)</code></td><td><code>true</code> if hashing <code>plain</code> reproduces <code>hashed</code></td></tr>
 <tr><td><code>enc_file(kind, path, key)</code></td><td>encrypt the file at <code>path</code> in place</td></tr>
-<tr><td><code>dec_file(kind, path, key)</code></td><td>decrypt the file at <code>path</code> in place (symmetric with <code>enc_file</code>)</td></tr>
+<tr><td><code>dec_file(kind, path, key)</code></td><td>decrypt the file at <code>path</code> in place</td></tr>
 </tbody>
 </table>
 </div>
 <pre><code>import(crypto = "std/crypto")
 
-# password hashing
-h: str = crypto.hash_pk(crypto.HashKind.Sha256, "hunter2")
-ok: bool = crypto.auth_hash(crypto.HashKind.Sha256, "hunter2", h)   # true
+# password hashing — Argon2id embeds a fresh random salt in its output,
+# so two calls with the same password produce two different strings
+h1: str = crypto.hash_pk(crypto.hshknd.Argon2id, "hunter2")
+h2: str = crypto.hash_pk(crypto.hshknd.Argon2id, "hunter2")
+different: bool = h1 != h2                                   # true
+ok: bool = crypto.auth_hash(crypto.hshknd.Argon2id, "hunter2", h1)   # true
 
-# file encryption — enc_file/dec_file use the same transform, so
-# calling either one twice with the same key restores the original bytes
-crypto.enc_file(crypto.CipherKind.XorSha, "secret.txt", "correct horse battery staple")
-crypto.dec_file(crypto.CipherKind.XorSha, "secret.txt", "correct horse battery staple")
+# authenticated file encryption — dec_file returns false (and leaves the
+# file untouched) on a wrong key or a tampered/corrupted ciphertext
+crypto.enc_file(crypto.cphrknd.ChaCha20Poly1305, "secret.txt", "correct horse battery staple")
+verified: bool = crypto.dec_file(crypto.cphrknd.ChaCha20Poly1305, "secret.txt", "correct horse battery staple")
 </code></pre>
-<p><code>CipherKind.XorSha</code> derives a keystream from <code>sha256(key || block_counter)</code> and XORs it against the file’s bytes 32 bytes at a time — unlike a repeating-key XOR, the keystream never repeats within a file. It is not authenticated (no tamper detection) and has not been audited; treat it as a starting point for the standard library rather than a production cipher.</p>
+<p><code>Sha256</code>/<code>XorSha</code> are the original, toy-grade helpers: <code>Sha256</code> hashes the input directly with no salt or work factor, and <code>XorSha</code> derives a keystream from <code>sha256(key || block_counter)</code> that’s never authenticated and always restarts from the same counter on every call (reusing a key across two files leaks the XOR of their plaintexts). Neither has been audited; treat them as a starting point rather than something to build real security on.</p>
+<p><code>Argon2id</code>/<code>ChaCha20Poly1305</code> are real, standard algorithms, implemented from their RFCs and verified byte-for-byte against the reference C implementation of Argon2 and against RFC 8439’s own test vectors — but this implementation itself still hasn’t been independently audited, so treat it the way you’d treat any unaudited crypto code: appropriate for learning, prototypes, and low-stakes use, not yet something to bet a production security boundary on without your own review. <code>Argon2id</code> runs at fixed production parameters (19 MiB, 2 iterations, 1 lane — OWASP’s recommended minimum for interactive logins); <code>ChaCha20Poly1305</code>’s nonce is generated via the kernel’s CSPRNG (<code>getrandom(2)</code>), never <code>std/math</code>’s <code>@rng</code> (that one is seeded from clock^pid and is not appropriate for anything security-sensitive).</p>
 
                     </main>
 

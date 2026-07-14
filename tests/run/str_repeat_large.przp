@@ -1,0 +1,16 @@
+# regression: str.repeat's loop declared its per-iteration pointer (`off`)
+# inside the loop body. This compiler allocates a `let` declaration's stack
+# slot at the point it appears in the source rather than hoisting it to the
+# function's entry block, so a declaration inside a loop body allocates a
+# fresh (never-freed-until-return) stack slot on every iteration -- large
+# enough `n` here used to exhaust the stack and segfault before `off` was
+# hoisted above the loop.
+
+import(str = "std/str")
+
+fn main() -> i32 {
+    n: usize = 500000
+    r: str = str.repeat("ab", n)
+    @pf("len={r.len}\n")
+    ret 0
+}

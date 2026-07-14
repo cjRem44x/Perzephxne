@@ -2304,6 +2304,23 @@ static Item *parse_item(Parser *p) {
         return item;
     }
 
+    /* global variable, inferred: name := expr  or  name :: expr */
+    if (check(p, TOK_IDENT) && (check2(p, TOK_COLONEQ) || check2(p, TOK_COLONCOLON))) {
+        const char *name = cur(p).sval;
+        advance(p);
+        int mut = eat(p, TOK_COLONEQ) ? 1 : (advance(p), 0);
+        Expr *init = parse_expr(p);
+        Item *item = ARENA_NEW(p->arena, Item);
+        item->kind           = ITEM_GLOBAL;
+        item->name           = name;
+        item->span           = span_merge(span, init->span);
+        item->global.ty      = NULL;
+        item->global.mutable = mut;
+        item->global.init    = init;
+        item->global.infer   = 1;
+        return item;
+    }
+
     /* global variable: name: type = expr  or  name: type : expr */
     if (check(p, TOK_IDENT) && check2(p, TOK_COLON)) {
         const char *name = cur(p).sval;
