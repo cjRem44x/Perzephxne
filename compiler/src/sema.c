@@ -1611,7 +1611,13 @@ static void check_stmt(Sema *s, Stmt *st) {
                         else
                             sema_error(s, st->span, "cannot iterate over '%s'", ty_str(iter_ty));
                     }
-                    if (fc->elem) define(s, st->span, fc->elem, elem_ty, 0, 0);
+                    /* mutable, same as the range form's (for i => 0..10) loop
+                       variable — a per-iteration copy of the element, so
+                       reassigning it never writes back into the array/slice
+                       (that still needs indexed assignment, `dice[i] = ...`),
+                       but there's no reason to forbid using it as a scratch
+                       value for the rest of that same iteration. */
+                    if (fc->elem) define(s, st->span, fc->elem, elem_ty, 1, 0);
                     if (fc->idx)  define(s, st->span, fc->idx,  s->ty_usize, 0, 0);
                     break;
                 }

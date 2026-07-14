@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-13647fc1.js";
+            window.path_to_searchindex_js = "searchindex-9c64659c.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-4e58bc13.js"></script>
@@ -964,6 +964,11 @@ for v =&gt; nums {
 <p>With index:</p>
 <pre><code>for v, i =&gt; nums {
     @pf("[{i}] = {v}\n")
+}
+</code></pre>
+<p><code>v</code> is a mutable per-iteration copy of the element (same as <code>i</code> in the range form above), not a reference into <code>nums</code> — reassigning it is useful as a scratch value for the rest of that iteration, but it never writes back into the array/slice itself. Mutating the source needs the index form and an indexed assignment instead:</p>
+<pre><code>for v, i =&gt; nums {
+    if v &lt; 0 { nums[i] = 0 }   # nums[i] = ... actually changes nums
 }
 </code></pre>
 <h3 id="break-and-continue"><a class="header" href="#break-and-continue"><code>break</code> and <code>continue</code></a></h3>
