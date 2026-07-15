@@ -86,9 +86,9 @@ A `mod` block can also live inside an imported file, and chains with the importe
 
 - **A generic struct or impl inside the mod** (`lib.Y.Box<i32>.new(...)`, `lib.Y=>Box<i32>=>new(...)`) resolves at any depth — this path is handled entirely at parse time, by directly building the fully-qualified mangled name (`lib__Y__Box__i32`) from the qualified-generic syntax itself, rather than relying on any post-hoc rewriting.
 - **A plain free function, a non-generic struct's static method, or an enum variant** (`lib.Y.someFreeFn()`, `lib.Y.Circle.new(...)`, `lib.Y.Direction.North`) resolves through the full two-level `import`+`mod` path, in an expression: a value position, a call, or a `when` pattern. The alias-rewrite pass tracks, per import alias, the set of mod-block names the imported file itself declared, so it can recognize `lib.Y.foo` as a three-node chain collapsing to the single mangled item `lib__Y__foo` (what `mangle_items` + the mod-flattening pass actually named it) rather than only ever handling one field-access level.
-- **A type annotation naming a struct/enum two levels deep** (`x: lib.Y.Circle = ...`) doesn't parse yet — `parse_type` only resolves one level of import-alias-qualified type name today. Use `:=`/`::` to infer the type from an expression instead (`x := lib.Y.Circle.new(...)`), which goes through the (now-working) expression path above.
+- **A type annotation naming a struct/enum two levels deep** (`x: lib.Y.Circle = ...`) resolves too — `parse_type` keeps consuming `.Ident`/`=>Ident` segments for as long as they're present (a type name is never followed by anything else that a `.`/`=>` could mean, so there's no ambiguity in going arbitrarily deep, unlike the expression case above, which has to stop at the right depth to leave a trailing method/field access alone).
 
-In short: reach for `mod` freely within one file, and freely combine `import` with a mod's members — generic or not — across files in expression position; a two-level type *annotation* still needs the type inferred from an expression instead of spelled out directly.
+In short: `mod` freely within one file, and freely combine `import` with a mod's members — generic or not, expression or type annotation — across files.
 
 ### `=>` in `when` patterns
 

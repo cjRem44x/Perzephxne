@@ -310,16 +310,25 @@ static Type *parse_type(Parser *p) {
             return mktype(p, (TypeKind)pk, span);
         }
         Type *ty = mktype(p, TY_NAMED, span);
-        /* support module-qualified types: alias.TypeName / alias=>TypeName → alias__TypeName */
-        if ((cur(p).kind == TOK_DOT || cur(p).kind == TOK_FATARROW) && peek(p).kind == TOK_IDENT) {
+        /* support module-qualified types: alias.TypeName / alias=>TypeName →
+           alias__TypeName, and chained further for a mod block inside an
+           imported file (alias.ModName.TypeName → alias__ModName__TypeName)
+           — a type name never has anything meaningful following it beyond
+           the '.'/'=>' segments and an optional generic arg list (checked
+           after this loop), so consuming every consecutive segment here is
+           unambiguous, unlike the analogous case in expression position
+           (main.c's rw_expr), which has to stop at the right depth to leave
+           a trailing method/field access alone. */
+        char name_buf[512];
+        snprintf(name_buf, sizeof(name_buf), "%s", t.sval);
+        while ((cur(p).kind == TOK_DOT || cur(p).kind == TOK_FATARROW)
+                && peek(p).kind == TOK_IDENT) {
             advance(p); /* consume '.' or '=>' */
             Token member = cur(p); advance(p);
-            char *buf = arena_alloc(p->arena, strlen(t.sval) + 2 + strlen(member.sval) + 1);
-            sprintf(buf, "%s__%s", t.sval, member.sval);
-            ty->named.name = buf;
-        } else {
-            ty->named.name = t.sval;
+            size_t curlen = strlen(name_buf);
+            snprintf(name_buf + curlen, sizeof(name_buf) - curlen, "__%s", member.sval);
         }
+        ty->named.name = arena_strdup(p->arena, name_buf);
         /* generic type args: Name<T, U> → Name__T__U */
         if (cur(p).kind == TOK_LT) {
             advance(p);

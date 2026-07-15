@@ -26,7 +26,6 @@ The core language surface is represented in the book and regression suite. The r
 | Package dependencies | `[deps]` is reserved. There is no external resolver yet; Core/Stdlib ships with the language. `[build].link` (see [Build System](./build-system.md)) covers linking against system libraries the OS already ships (e.g. `link = ["X11", "GL"]`) — this is not a package resolver, just linker flags. |
 | Release UX | A future version command should be `przp version`, but versioning is intentionally deferred while beta work is moving quickly. |
 | `any` type | Reserved keyword. Runtime-tagged values (boxing, type IDs, `when` dispatch on types) are designed but not implemented; removed from the reference until they exist. |
-| Two-level `mod` + `import` access in a type annotation | `x: lib.Y.Circle = ...` (a struct/enum inside a `mod` block that itself lives inside an *imported* file, named directly in a type annotation) doesn't parse — `parse_type` only resolves one level of import-alias-qualified type name. The equivalent *expression* access (`lib.Y.Circle.new(...)`, `lib.Y.someFreeFn()`, `lib.Y.Direction.North`, and matching that in a `when` pattern) all resolve correctly; work around the annotation gap with `:=`/`::` to infer the type from an expression instead (`x := lib.Y.Circle.new(...)`); see [Modules](./modules.md). |
 
 ## Documentation Rule
 
