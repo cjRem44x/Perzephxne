@@ -82,12 +82,13 @@ mod Boxes {
 b := Boxes=>Box<i32>.new(7)
 ```
 
-A `mod` block can also live inside an imported file, and chains with the importer's own alias — but how far that chain resolves depends on *what* is being reached, not just how deep it is. Given `mod Y { ... }` inside `lib.przp`, imported as `import(lib = "lib")`:
+A `mod` block can also live inside an imported file, and chains with the importer's own alias. Given `mod Y { ... }` inside `lib.przp`, imported as `import(lib = "lib")`:
 
 - **A generic struct or impl inside the mod** (`lib.Y.Box<i32>.new(...)`, `lib.Y=>Box<i32>=>new(...)`) resolves at any depth — this path is handled entirely at parse time, by directly building the fully-qualified mangled name (`lib__Y__Box__i32`) from the qualified-generic syntax itself, rather than relying on any post-hoc rewriting.
-- **A plain free function, a non-generic struct's static method, or an enum variant** (`lib.Y.someFreeFn()`, `lib.Y.Circle.new(...)`, `lib.Y.Direction.North`) does **not** resolve through the two-level `import`+`mod` path today — only mod access local to the current file (`Y.someFreeFn()` within `lib.przp` itself), or plain import access to a top-level non-mod item (`lib.someFreeFn()`), resolves correctly. The two-level case for these needs a fix to the post-hoc alias-collapsing pass that currently only handles one level safely (extending it naively broke plain enum-variant matching, since it can't yet tell "this is still a namespace prefix" apart from "this is now a type name" without deliberately enumerating mod-qualified namespace prefixes as their own alias entries) — see [Status & Next Work](./status-next.md).
+- **A plain free function, a non-generic struct's static method, or an enum variant** (`lib.Y.someFreeFn()`, `lib.Y.Circle.new(...)`, `lib.Y.Direction.North`) resolves through the full two-level `import`+`mod` path, in an expression: a value position, a call, or a `when` pattern. The alias-rewrite pass tracks, per import alias, the set of mod-block names the imported file itself declared, so it can recognize `lib.Y.foo` as a three-node chain collapsing to the single mangled item `lib__Y__foo` (what `mangle_items` + the mod-flattening pass actually named it) rather than only ever handling one field-access level.
+- **A type annotation naming a struct/enum two levels deep** (`x: lib.Y.Circle = ...`) doesn't parse yet — `parse_type` only resolves one level of import-alias-qualified type name today. Use `:=`/`::` to infer the type from an expression instead (`x := lib.Y.Circle.new(...)`), which goes through the (now-working) expression path above.
 
-In short: reach for `mod` freely within one file, and freely combine `import` with a mod's *generic* members across files; for everything else inside a mod, either keep the access to one level, or restructure the generic-only case into its own file if you need the deeper reach today.
+In short: reach for `mod` freely within one file, and freely combine `import` with a mod's members — generic or not — across files in expression position; a two-level type *annotation* still needs the type inferred from an expression instead of spelled out directly.
 
 ### `=>` in `when` patterns
 

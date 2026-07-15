@@ -365,4 +365,12 @@ typedef struct {
     ItemList    items;
     GenInstList gen_insts; /* generic instantiations recorded during parsing */
     Arena      *arena;
+    /* top-level `mod Name { ... }` block names this module had before
+       expand_mod_items() flattened them — set by expand_mod_items, read by
+       load_imports so an importer's `alias.ModName.item` (a mod block
+       inside an *imported* file) can be recognized as a two-level access
+       and collapsed to "alias__ModName__item", matching how mangle_items
+       + expand_mod_items actually named the flattened item. */
+    const char **mod_names;
+    size_t       n_mod_names;
 } Module;
