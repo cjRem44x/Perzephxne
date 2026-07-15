@@ -70,6 +70,16 @@ typedef struct GenericImplTemplate {
     Item *item;
 } GenericImplTemplate;
 
+/* immutable (`::`) globals whose initializer folds to a compile-time integer
+   constant — lets a named constant be used where a literal integer is
+   otherwise required, e.g. an array type's size (`[CAP]T`). Populated during
+   pass 1.7 (global pre-registration), consulted by check_type. */
+typedef struct GlobalConstEntry {
+    struct GlobalConstEntry *next;
+    const char               *name;
+    int64_t                   value;
+} GlobalConstEntry;
+
 /* ── Sema context ─────────────────────────────────────────────────────────── */
 
 typedef struct {
@@ -82,6 +92,8 @@ typedef struct {
     UnionInfo        *unions;    /* name → tagged union variant table */
     GenericTemplate  *generics;  /* uninstantiated generic templates */
     GenericImplTemplate *impl_generics; /* uninstantiated generic impl blocks */
+    GlobalConstEntry *const_globals; /* name → value, for constant-folding array sizes */
+    GlobalConstEntry *local_consts;  /* same, but function-local; reset per check_fn */
     const char       *cur_impl_struct; /* name of the struct whose impl method
                                            body is currently being checked, or
                                            NULL — impl always has access to its
@@ -121,6 +133,61 @@ static void sema_error(Sema *s, Span span, const char *fmt, ...) {
     va_end(ap);
     error_at(span, "%s", buf);
     s->errors++;
+}
+
+/* ── Compile-time integer constant folding (array sizes) ─────────────────── */
+
+static GlobalConstEntry *lookup_const(GlobalConstEntry *list, const char *name) {
+    for (GlobalConstEntry *g = list; g; g = g->next)
+        if (!strcmp(g->name, name)) return g;
+    return NULL;
+}
+
+static void register_const(Sema *s, GlobalConstEntry **list, const char *name, int64_t value) {
+    GlobalConstEntry *g = ARENA_NEW(s->arena, GlobalConstEntry);
+    g->name  = name;
+    g->value = value;
+    g->next  = *list;
+    *list    = g;
+}
+
+/* Fold `e` to a compile-time integer constant if possible: an integer
+   literal, a reference to an immutable (`:`/`::`) local or global whose own
+   initializer already folded (see register_const — locals are registered as
+   check_fn walks each STMT_LET in order, globals in pass 1.7 before any
+   struct/fn body is checked), or +,-,*,/,% of two such constants. Anything
+   else (a mutable binding, a function call, a float, ...) isn't a constant
+   as far as this compiler is concerned. A local shadows a global of the
+   same name, matching normal lookup() scoping. */
+static int eval_const_int(Sema *s, Expr *e, int64_t *out) {
+    if (!e) return 0;
+    switch (e->kind) {
+        case EXPR_INT:
+            *out = (int64_t)e->ival;
+            return 1;
+        case EXPR_IDENT: {
+            GlobalConstEntry *g = lookup_const(s->local_consts, e->ident.name);
+            if (!g) g = lookup_const(s->const_globals, e->ident.name);
+            if (!g) return 0;
+            *out = g->value;
+            return 1;
+        }
+        case EXPR_BINOP: {
+            int64_t l, r;
+            if (!eval_const_int(s, e->binop.l, &l)) return 0;
+            if (!eval_const_int(s, e->binop.r, &r)) return 0;
+            switch (e->binop.op) {
+                case BINOP_ADD: *out = l + r; return 1;
+                case BINOP_SUB: *out = l - r; return 1;
+                case BINOP_MUL: *out = l * r; return 1;
+                case BINOP_DIV: if (r == 0) return 0; *out = l / r; return 1;
+                case BINOP_MOD: if (r == 0) return 0; *out = l % r; return 1;
+                default: return 0;
+            }
+        }
+        default:
+            return 0;
+    }
 }
 
 /* ── Scope management ─────────────────────────────────────────────────────── */
@@ -437,6 +504,27 @@ static Type *check_type(Sema *s, Type *ty) {
             break;
         case TY_ARRAY:
             ty->array.inner = check_type(s, ty->array.inner);
+            /* An array type's size is only meaningful as a compile-time
+               constant; fold anything other than a bare literal (a named
+               `::` constant, or simple arithmetic on constants) into one
+               now so every downstream consumer — which already only
+               checks for a literal EXPR_INT — sees the real value instead
+               of silently treating an unrecognized expression as size 0. */
+            if (ty->array.size && ty->array.size->kind != EXPR_INT) {
+                int64_t n;
+                if (eval_const_int(s, ty->array.size, &n) && n >= 0) {
+                    Expr *lit = ARENA_NEW(s->arena, Expr);
+                    lit->kind = EXPR_INT;
+                    lit->span = ty->array.size->span;
+                    lit->ty   = s->ty_usize;
+                    lit->ival = (uint64_t)n;
+                    ty->array.size = lit;
+                } else {
+                    sema_error(s, ty->array.size->span,
+                        "array size must be a compile-time constant integer "
+                        "(a literal, or an immutable `::` global)");
+                }
+            }
             break;
         case TY_FN:
             for (size_t i = 0; i < ty->fn.params.len; i++)
@@ -1395,6 +1483,20 @@ static void check_stmt(Sema *s, Stmt *st) {
             Type *init_ty = st->let.init ? check_expr(s, st->let.init) : NULL;
             Type *decl_ty = st->let.ty ? check_type(s, st->let.ty) : NULL;
 
+            /* immutable local whose initializer is itself a compile-time
+               integer constant — record it so a later `[NAME]T` array size
+               *within this same function* can fold it (see eval_const_int).
+               Only a plain `name: T : val` / `name :: val` binding qualifies,
+               not a tuple/failable-destructure element (those never come
+               from a constant-foldable expression anyway, since their init
+               is always a call). */
+            if (!st->let.mutable && !st->let.is_tuple_elem && !st->let.is_fail_err
+                    && st->let.init) {
+                int64_t cval;
+                if (eval_const_int(s, st->let.init, &cval))
+                    register_const(s, &s->local_consts, st->let.name, cval);
+            }
+
             /* tuple destructure: q, r: T = fn() returning (T, T) */
             if (st->let.is_tuple_elem && init_ty && init_ty->kind == TY_TUPLE) {
                 int idx = st->let.tuple_idx;
@@ -1761,10 +1863,12 @@ static void check_fn(Sema *s, Item *item) {
     Type *prev_inf    = s->inferred_ret;
     size_t prev_lblc  = s->fn_label_count;
     size_t prev_gotoc = s->fn_goto_count;
+    GlobalConstEntry *prev_local_consts = s->local_consts;
     s->cur_ret        = ret;       /* NULL → inferring */
     s->inferred_ret   = NULL;
     s->fn_label_count = 0;
     s->fn_goto_count  = 0;
+    s->local_consts   = NULL;
 
     for (size_t i = 0; i < item->fn.body.len; i++)
         check_stmt(s, item->fn.body.data[i]);
@@ -1794,6 +1898,7 @@ static void check_fn(Sema *s, Item *item) {
     s->inferred_ret   = prev_inf;
     s->fn_label_count = prev_lblc;
     s->fn_goto_count  = prev_gotoc;
+    s->local_consts   = prev_local_consts;
     pop_scope(s);
 }
 
@@ -2728,6 +2833,19 @@ int sema_check(Module *mod) {
         Type *ty = check_type(&s, item->global.ty);
         item->global.ty = ty;
         define(&s, item->span, item->name, ty, item->global.mutable, 0);
+        /* immutable global whose initializer is itself a compile-time
+           integer constant — record it so check_type can fold a later
+           `[NAME]T` array size (see eval_const_int). Only earlier-declared
+           globals are visible to a later one's array size this way, since
+           this loop is a single pass in file order; a forward reference
+           (`[LATER]T` used before LATER's own declaration) still isn't
+           resolved, and reports the same "must be a compile-time constant"
+           error as any other unrecognized expression. */
+        if (!item->global.mutable && item->global.init) {
+            int64_t cval;
+            if (eval_const_int(&s, item->global.init, &cval))
+                register_const(&s, &s.const_globals, item->name, cval);
+        }
     }
 
     /* pass 2: full check — skip uninstantiated generic templates */

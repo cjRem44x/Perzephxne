@@ -1,0 +1,21 @@
+# regression: an array size folds a *local* immutable constant too, not
+# just a global one — this is the book's own "Fixed Arrays" example
+# (variables-types.md), which never actually worked until local lets got
+# the same constant-folding treatment as globals. Also checks that a local
+# constant shadows a global of the same name, matching normal lookup()
+# scoping.
+
+N: usize : 100
+
+fn main() -> i32 {
+    M: usize : 5
+    arr: [M]i32 = [1, 2, 3, 4, 5]
+    arr[0] = 10
+    count: usize = @len(arr)
+    @pf("arr[0]={arr[0]} count={count}\n")
+
+    N: usize : 3
+    shadowed: [N]i32 = [7, 8, 9]
+    @pf("shadowed len={@len(shadowed)}\n")
+    ret 0
+}
