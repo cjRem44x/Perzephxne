@@ -273,6 +273,20 @@ static int ty_is_numeric(Type *t) {
     return ty_is_int(t) || ty_is_float(t);
 }
 
+/* True for the subset of types LLVM's `bitcast` instruction actually
+   accepts as source/destination: scalars (rendered as i1/i8/.../double)
+   and plain/smart pointers (both render as opaque `ptr`, so ptr-to-ptr is
+   a trivial no-op cast regardless of pointee type). False for anything
+   aggregate — str, slice, array, struct, tuple, failable, any — since
+   those render as multi-field LLVM structs and `bitcast` on an aggregate
+   is rejected by the verifier (would need a memory round-trip instead,
+   which @bitcast doesn't do). */
+static int ty_is_bitcast_safe(Type *t) {
+    if (!t) return 0;
+    return ty_is_numeric(t) || t->kind == TY_BOOL
+        || t->kind == TY_PTR || t->kind == TY_SMART_PTR;
+}
+
 /* Widen an inferred type to the largest natural hardware type.
    Integer literals become i64, smaller floats become f64, etc. */
 static Type *widen_inferred(Sema *s, Type *ty) {
@@ -674,6 +688,30 @@ static Type *check_expr(Sema *s, Expr *e) {
             /* @offsetof(T, field) — both args are names, not expressions */
             if (!strcmp(e->builtin.name, "offsetof")) {
                 e->ty = s->ty_usize;
+                break;
+            }
+            /* @bitcast(T, val) — T was parsed as a real type expression
+               (parser.c), not folded into args as a fake value expr;
+               resolve it the same way any other type annotation is
+               resolved (NAMED lookups, etc.) and use it directly as this
+               expression's own type. */
+            if (!strcmp(e->builtin.name, "bitcast")) {
+                e->builtin.type_arg = check_type(s, e->builtin.type_arg);
+                Type *src_ty = e->builtin.args.len > 0
+                             ? check_expr(s, e->builtin.args.data[0]) : NULL;
+                if (!ty_is_bitcast_safe(e->builtin.type_arg)) {
+                    sema_error(s, e->span,
+                        "@bitcast destination type '%s' isn't supported — only "
+                        "scalar (integer/float/bool/char) and pointer types can "
+                        "be bitcast",
+                        ty_str(e->builtin.type_arg));
+                } else if (!ty_is_bitcast_safe(src_ty)) {
+                    sema_error(s, e->span,
+                        "@bitcast source has type '%s', which isn't supported — "
+                        "only scalar (integer/float/bool/char) and pointer types "
+                        "can be bitcast", ty_str(src_ty));
+                }
+                e->ty = e->builtin.type_arg;
                 break;
             }
             /* check all args */

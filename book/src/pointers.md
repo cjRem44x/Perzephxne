@@ -128,7 +128,7 @@ p: *i32 = &x
 pb: *u8 = p   # reinterpret pointer type, plain assignment
 ```
 
-`@bitcast(T, val)` (see [Builtins](./builtins.md)) is for reinterpreting the bits of a *value* type (e.g. `f32` ↔ `u32`) — its type argument only accepts a bare type name, not a pointer type expression like `*u8`.
+`@bitcast(T, val)` (see [Builtins](./builtins.md)) is for reinterpreting the bits of a value — a scalar (`f32` ↔ `u32`) or a pointer (`*T` ↔ `*U`, `^T` ↔ `^U`). Its type argument accepts any scalar or pointer type expression, including a compound one like `*u8` or `^Foo` — but not an aggregate type (a slice, struct, `str`, tuple, ...), since LLVM's underlying bitcast instruction doesn't support those; use the plain-assignment pointer coercion above for raw pointers (no cast needed) or a per-field copy for structs.
 
 ## `@size` and `@align`
 

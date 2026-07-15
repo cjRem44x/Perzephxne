@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-dd1473f3.js";
+            window.path_to_searchindex_js = "searchindex-ee0d222f.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-4e58bc13.js"></script>
@@ -1481,7 +1481,7 @@ p: *u8 = &amp;buf[0]
 <pre><code>p: *i32 = &amp;x
 pb: *u8 = p   # reinterpret pointer type, plain assignment
 </code></pre>
-<p><code>@bitcast(T, val)</code> (see <a href="#builtins">Builtins</a>) is for reinterpreting the bits of a <em>value</em> type (e.g. <code>f32</code> ↔ <code>u32</code>) — its type argument only accepts a bare type name, not a pointer type expression like <code>*u8</code>.</p>
+<p><code>@bitcast(T, val)</code> (see <a href="#builtins">Builtins</a>) is for reinterpreting the bits of a value — a scalar (<code>f32</code> ↔ <code>u32</code>) or a pointer (<code>*T</code> ↔ <code>*U</code>, <code>^T</code> ↔ <code>^U</code>). Its type argument accepts any scalar or pointer type expression, including a compound one like <code>*u8</code> or <code>^Foo</code> — but not an aggregate type (a slice, struct, <code>str</code>, tuple, …), since LLVM’s underlying bitcast instruction doesn’t support those; use the plain-assignment pointer coercion above for raw pointers (no cast needed) or a per-field copy for structs.</p>
 <h2 id="size-and-align"><a class="header" href="#size-and-align"><code>@size</code> and <code>@align</code></a></h2>
 <pre><code>sz: usize  = @size(i32)    # 4
 al: usize  = @align(f64)   # 8
@@ -2165,7 +2165,11 @@ b3: bool = @bool("yes")    # false
 </div>
 <pre><code>f: f32    = 1.0
 bits: u32 = @bitcast(u32, f)   # raw bit pattern — 0x3F800000
+
+p:  *u32 = &amp;bits
+bp: *u8  = @bitcast(*u8, p)    # pointer type argument also works
 </code></pre>
+<p><code>T</code> accepts any scalar or pointer type expression — including a compound one like <code>*u8</code> or <code>^Foo</code>, not just a bare name — but not an aggregate (a slice, struct, <code>str</code>, tuple, …), since LLVM’s underlying bitcast instruction doesn’t support those (see <a href="#pointers--memory">Pointers &amp; Memory</a>).</p>
 <h2 id="collections"><a class="header" href="#collections">Collections</a></h2>
 <div class="table-wrapper">
 <table>
@@ -2905,9 +2909,8 @@ r: f64 = m.sqrt(2.0)
 <tr><td>Release UX</td><td>A future version command should be <code>przp version</code>, but versioning is intentionally deferred while beta work is moving quickly.</td></tr>
 <tr><td><code>any</code> type</td><td>Reserved keyword. Runtime-tagged values (boxing, type IDs, <code>when</code> dispatch on types) are designed but not implemented; removed from the reference until they exist.</td></tr>
 <tr><td>Struct-by-value FFI, non-imported <code>extern fn</code></td><td><code>extern fn foo(v: Vector2) -&gt; Vector2</code> declared directly in a file (not reached via <code>import()</code>) fails to compile if it needs struct-by-value ABI handling — the wrapper mechanism needs an import alias to redirect call sites to (see <a href="#standard-library">Standard Library</a>). Move the declaration into its own module and <code>import()</code> it, which is fully supported.</td></tr>
-<tr><td><code>@bitcast</code> pointer type arguments</td><td><code>@bitcast(T, val)</code>’s type argument only accepts a bare type name (<code>u32</code>, <code>vec2</code>) — a compound type expression like <code>*u8</code> doesn’t parse. Not a practical limitation for pointer reinterpretation specifically, since a raw pointer already coerces to any other raw pointer type via plain assignment (see <a href="#pointers--memory">Pointers &amp; Memory</a>), but the parser gap is real for anyone trying to <code>@bitcast</code> to e.g. a slice or smart-pointer type.</td></tr>
 <tr><td>Two-level non-generic access through <code>mod</code> + <code>import</code></td><td>A plain free function, a non-generic struct’s static method, or an enum variant declared inside a <code>mod</code> block that itself lives inside an <em>imported</em> file isn’t reachable through the full two-level path (<code>lib.Y.someFreeFn()</code>, <code>lib.Y.Circle.new(...)</code>, <code>lib.Y.Direction.North</code>) — only one level of alias resolves for these today (mod access local to the current file, or plain import access to a non-mod item). <strong>Generic</strong> struct/impl access at that same depth (<code>lib.Y.Box&lt;i32&gt;.new(...)</code>) is unaffected, since it resolves entirely at parse time rather than through the post-hoc alias-collapsing pass the other cases rely on; see <a href="#modules">Modules</a>.</td></tr>
-<tr><td><code>std/os.mkdir_dir</code> doesn’t treat “already exists” as success</td><td>Its own doc comment promises <code>mkdir_dir</code> “returns true on success or if it already exists,” but the implementation only checks <code>mkdir()</code>’s return value — a directory that already exists makes <code>mkdir()</code> fail (<code>EEXIST</code>), so <code>mkdir_dir</code> returns <code>false</code> for it too, contradicting the comment. Found while adding <code>std/file.mkdir_all</code>/<code>make</code>, which need exactly that “already exists is fine” behavior — worked around there by checking <code>is_dir</code> before ever calling <code>mkdir_dir</code>, rather than fixing <code>mkdir_dir</code> itself: <code>std/file</code> already imports <code>std/os</code>, and <code>std/os</code> fixing this the same way (checking <code>is_dir</code> first) would need importing <code>std/file</code> back, which is a cycle (cycles are rejected — see <a href="#modules">Modules</a>). A real fix needs either a small stat-based directory check duplicated directly in <code>std/os</code> (avoiding the cross-import), or reading <code>errno</code> for <code>EEXIST</code> specifically, and there’s no established <code>errno</code>-reading idiom at the <code>.przp</code> level yet (<code>@perr</code> reads it internally in the compiler, not exposed as a value).</td></tr>
+<tr><td>A smart-pointer field access (<code>p.^field</code>) interpolated directly in <code>@pf</code>/<code>@epf</code>/<code>@fmt</code> fails to compile when the field is itself a struct</td><td><code>@pf("{p.^field}\n")</code> for a struct-typed <code>field</code> tries to pass the struct by value to <code>printf</code>’s varargs, but produces a mismatched-type LLVM IR error (<code>defined with type 'ptr' but expected '%Struct = type {...}'</code>) instead of compiling — found while testing the <code>@bitcast</code> pointer-type fix above, on code with no <code>@bitcast</code> involved at all. Assigning <code>p.^field</code> to a local first, then interpolating the local, works around it.</td></tr>
 </tbody>
 </table>
 </div>

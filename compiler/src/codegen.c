@@ -2461,13 +2461,17 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                 fatal_at(e->span, "unknown @err.%s", errname);
             }
 
-            /* @bitcast(DstType, val) — reinterpret bits of val as DstType (same size) */
+            /* @bitcast(DstType, val) — reinterpret bits of val as DstType (same
+               size). DstType is parsed as a real type expression (parser.c)
+               and validated by sema (ty_is_bitcast_safe) to be a scalar or
+               pointer type — never an aggregate, which LLVM's `bitcast`
+               instruction doesn't accept. */
             if (!strcmp(name, "bitcast")) {
-                if (e->builtin.args.len < 2)
+                if (e->builtin.args.len < 1)
                     fatal_at(e->span, "@bitcast requires two arguments: @bitcast(Type, val)");
-                Type *dst_ty = e->builtin.args.data[0]->ty;
+                Type *dst_ty = e->builtin.type_arg;
                 Type *src_ty2 = NULL;
-                Val src2 = cg_expr(cg, e->builtin.args.data[1], &src_ty2);
+                Val src2 = cg_expr(cg, e->builtin.args.data[0], &src_ty2);
                 const char *src_llt2 = src_ty2 ? llvm_type(src_ty2) : "i32";
                 const char *dst_llt2 = dst_ty  ? llvm_type(dst_ty)  : "i32";
                 int tb = new_tmp(cg);

@@ -127,7 +127,12 @@ struct Expr {
         int            bval;
 
         struct { const char *name; }                ident;
-        struct { const char *name; ExprList args; } builtin;
+        struct { const char *name; ExprList args;
+                 Type *type_arg; /* @bitcast(T, val) only: T parsed as a real
+                                     type expression (so *u8, []u8, etc. work,
+                                     not just a bare type name) rather than
+                                     folded into `args` as a fake value expr */
+               } builtin;
         struct { const char *ty_name; Expr *val; }  cast;
         struct { Expr *l; BinOp op; Expr *r; }      binop;
         struct { UnOp op; Expr *operand; }           unop;

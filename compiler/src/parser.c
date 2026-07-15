@@ -715,6 +715,25 @@ static Expr *parse_primary(Parser *p) {
                 e->cast.val     = val;
                 return e;
             }
+            /* @bitcast(T, val) — T is a real type expression (*u8, []u8,
+               ^Foo, ...), not a value, so it needs parse_type() rather than
+               parse_args()'s generic expression parsing, which only ever
+               accepted a bare type name (the identifier `u32` parses as an
+               expression; the type expression `*u8` doesn't). */
+            if (!strcmp(name, "bitcast")) {
+                expect(p, TOK_LPAREN);
+                Type *bt = parse_type(p);
+                expect(p, TOK_COMMA);
+                Expr *val = parse_expr(p);
+                expect(p, TOK_RPAREN);
+                ExprList args = {0};
+                LIST_PUSH(p->arena, &args, Expr, val);
+                Expr *e = mkexpr(p, EXPR_BUILTIN, span_merge(span, cur(p).span));
+                e->builtin.name     = name;
+                e->builtin.args     = args;
+                e->builtin.type_arg = bt;
+                return e;
+            }
             /* regular builtin */
             ExprList args = {0};
             if (check(p, TOK_LPAREN)) {

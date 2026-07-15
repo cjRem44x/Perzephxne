@@ -10,6 +10,10 @@ extern fn getcwd(buf: *u8, size: usize) -> *u8
 extern fn mkdir(path: *u8, mode: u32) -> i32
 extern fn chdir(path: *u8) -> i32
 extern fn rmdir(path: *u8) -> i32
+extern fn stat(path: *u8, buf: *u8) -> i32
+
+S_IFMT:  u32 = 0xF000
+S_IFDIR: u32 = 0x4000
 
 # exit with a status code
 fn quit(code: i32) {
@@ -38,8 +42,24 @@ fn cwd() -> str {
     ret @str_raw(buf, n)
 }
 
-# mkdir_p: create a directory with rwxr-xr-x permissions; returns true on success or if it already exists
+# is_dir: true if path exists and is a directory. Duplicated here (rather
+# than importing std/file, which already imports std/os) to avoid an
+# import cycle — same "checked against a real offsetof compile, not
+# guessed" st_mode-at-byte-24 read std/file.stat_mode uses.
+fn is_dir(path: str) -> bool {
+    buf: [144]u8 = undef
+    ok: i32 = stat(path.data, &buf[0])
+    if ok != 0 { ret false }
+    p: *u32 = &buf[0] + 24
+    ret (p.* & S_IFMT) == S_IFDIR
+}
+
+# mkdir_p: create a directory with rwxr-xr-x permissions; returns true on
+# success, or if it already exists as a directory (mkdir() itself fails
+# with EEXIST in that case — checking is_dir first, rather than reading
+# errno, since there's no errno-reading idiom at this level yet).
 fn mkdir_dir(path: str) -> bool {
+    if is_dir(path) { ret true }
     ret mkdir(path.data, 493u32) == 0
 }
 
