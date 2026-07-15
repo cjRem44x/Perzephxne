@@ -486,7 +486,7 @@ static int is_type_name_arg(Sema *s, Expr *a) {
 static Type *builtin_ret_ty(Sema *s, const char *name) {
     if (!strcmp(name, "pf") || !strcmp(name, "epf")) return s->ty_i32;
     if (!strcmp(name, "fmt"))                         return s->ty_str;
-    if (!strcmp(name, "cin"))                         return s->ty_str;
+    if (!strcmp(name, "cin") || !strcmp(name, "secin")) return s->ty_str;
     if (!strcmp(name, "exit"))                        return s->ty_void;
     if (!strcmp(name, "panic"))                       return s->ty_void;
     if (!strcmp(name, "perr"))                        return s->ty_void;

@@ -10,6 +10,7 @@ Builtins are compiler-provided functions and constants. They are always in scope
 | `@epf(fmt, ...)` | `fn(str, ...) -> void` | print formatted to stderr |
 | `@fmt(fmt, ...)` | `fn(str, ...) -> str` | format to a heap-allocated string |
 | `@cin(prompt?)` | `fn(str?) -> str` | read a line from stdin |
+| `@secin(prompt?)` | `fn(str?) -> str` | like `@cin`, but disables terminal echo for the read (password-style input) |
 | `@perr(msg)` | `fn(str) -> void` | print `"msg: <reason>\n"` to stderr, like C's `perror()` |
 
 `@pf`, `@epf`, and `@fmt` all support `{expr}` interpolation inside the format string:
@@ -20,6 +21,13 @@ name: str = "World"
 @pf("sum = {1 + 2}\n")
 
 greeting: str = @fmt("Hello, {name}!")
+```
+
+`@secin` disables the terminal's local echo (via `tcgetattr`/`tcsetattr`) before reading and restores it afterward, so typed characters — a password, a key — never appear on screen. It only affects a real terminal; on redirected/piped stdin there's no echo to suppress and it behaves exactly like `@cin`. Since the terminal doesn't echo the Enter keypress either, `@secin` prints a newline itself once echo is restored, so output lines up the way it would if the input had been visible:
+
+```
+pw := @secin("password: ")
+hashed := crypto.hash_pk(crypto.hshknd.Argon2id, pw)
 ```
 
 Interpolated `bool` values are printed as C-style integers (`1` or `0`). Use

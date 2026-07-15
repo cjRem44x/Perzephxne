@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-9c64659c.js";
+            window.path_to_searchindex_js = "searchindex-da411ed4.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-4e58bc13.js"></script>
@@ -2080,6 +2080,7 @@ first: *u8 = environ.*
 <tr><td><code>@epf(fmt, ...)</code></td><td><code>fn(str, ...) -&gt; void</code></td><td>print formatted to stderr</td></tr>
 <tr><td><code>@fmt(fmt, ...)</code></td><td><code>fn(str, ...) -&gt; str</code></td><td>format to a heap-allocated string</td></tr>
 <tr><td><code>@cin(prompt?)</code></td><td><code>fn(str?) -&gt; str</code></td><td>read a line from stdin</td></tr>
+<tr><td><code>@secin(prompt?)</code></td><td><code>fn(str?) -&gt; str</code></td><td>like <code>@cin</code>, but disables terminal echo for the read (password-style input)</td></tr>
 <tr><td><code>@perr(msg)</code></td><td><code>fn(str) -&gt; void</code></td><td>print <code>"msg: &lt;reason&gt;\n"</code> to stderr, like C’s <code>perror()</code></td></tr>
 </tbody>
 </table>
@@ -2090,6 +2091,10 @@ first: *u8 = environ.*
 @pf("sum = {1 + 2}\n")
 
 greeting: str = @fmt("Hello, {name}!")
+</code></pre>
+<p><code>@secin</code> disables the terminal’s local echo (via <code>tcgetattr</code>/<code>tcsetattr</code>) before reading and restores it afterward, so typed characters — a password, a key — never appear on screen. It only affects a real terminal; on redirected/piped stdin there’s no echo to suppress and it behaves exactly like <code>@cin</code>. Since the terminal doesn’t echo the Enter keypress either, <code>@secin</code> prints a newline itself once echo is restored, so output lines up the way it would if the input had been visible:</p>
+<pre><code>pw := @secin("password: ")
+hashed := crypto.hash_pk(crypto.hshknd.Argon2id, pw)
 </code></pre>
 <p>Interpolated <code>bool</code> values are printed as C-style integers (<code>1</code> or <code>0</code>). Use
 <code>@str(value)</code> when you need <code>"true"</code> or <code>"false"</code> text.</p>

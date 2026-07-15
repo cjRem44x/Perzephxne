@@ -1,0 +1,11 @@
+# @secin behaves like @cin (prompt + read a line, strip trailing newline)
+# for any caller that isn't watching the terminal — it just also disables
+# local echo around the read (verified manually against a real pty; not
+# observable through a piped, non-tty stdin like this test uses).
+
+fn main() -> i32 {
+    user := @cin("username: ")
+    pw := @secin("password: ")
+    @pf("{user} {pw} {pw.len}\n")
+    ret 0
+}
