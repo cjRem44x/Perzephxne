@@ -605,16 +605,12 @@ fn argon2_fill_segment(memory: *u64, m_prime: usize, lane_len: usize, seg_len: u
     }
 
     # Every local below is declared once, here, before the loop, and
-    # reassigned (never redeclared) inside it. This compiler always
-    # allocates a `let` declaration's stack slot at the point it appears in
-    # the source rather than hoisting it to the function's entry block —
-    # fine for a declaration outside a loop (it executes once regardless),
-    # but a declaration *inside* a loop body allocates a fresh slot on
-    # every single iteration, and none of them are freed until this whole
-    # function returns. seg_len can be in the thousands at real Argon2id
-    # memory costs, so redeclaring even a handful of locals per iteration
-    # (let alone the inner 128-iteration XOR loop below) is enough to
-    # exhaust the stack well before this function ever returns.
+    # reassigned (never redeclared) inside it — a holdover from when this
+    # compiler allocated every `let`'s stack slot at its source position
+    # instead of hoisting it to the function's entry block (fixed; codegen
+    # now hoists all allocas, so a plain redeclaration inside the loop would
+    # work too). Left as-is since it's still perfectly correct and there's
+    # no benefit to churning it back.
     idx: usize = 0
     prev_idx: usize = 0
     word: u64 = 0

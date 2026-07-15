@@ -1,0 +1,27 @@
+# regression: same underlying bug as loop_alloca_hoist.przp, but exercising
+# the other alloca sites that needed hoisting besides plain `let` — a
+# for-each loop's element binding, a struct literal, and an if-used-as-an-
+# expression's result slot, all nested inside an outer loop that runs many
+# times.
+
+struct Point { x: i32, y: i32 }
+
+fn main() -> i32 {
+    arr: [4]i32 = [1, 2, 3, 4]
+    grand_total: i64 = 0
+
+    outer: i32 = 0
+    while outer < 100000 {
+        inner_sum: i32 = 0
+        for v => arr {
+            p: Point = Point{.x=v, .y=v * 2}
+            chosen: i32 = if v > 2 { p.y } else { p.x }
+            inner_sum += chosen
+        }
+        grand_total += @i64(inner_sum)
+        outer += 1
+    }
+
+    @pf("grand_total = {grand_total}\n")
+    ret 0
+}
