@@ -310,16 +310,25 @@ static Type *parse_type(Parser *p) {
             return mktype(p, (TypeKind)pk, span);
         }
         Type *ty = mktype(p, TY_NAMED, span);
-        /* support module-qualified types: alias.TypeName / alias=>TypeName → alias__TypeName */
-        if ((cur(p).kind == TOK_DOT || cur(p).kind == TOK_FATARROW) && peek(p).kind == TOK_IDENT) {
+        /* support module-qualified types: alias.TypeName / alias=>TypeName →
+           alias__TypeName, and chained further for a mod block inside an
+           imported file (alias.ModName.TypeName → alias__ModName__TypeName)
+           — a type name never has anything meaningful following it beyond
+           the '.'/'=>' segments and an optional generic arg list (checked
+           after this loop), so consuming every consecutive segment here is
+           unambiguous, unlike the analogous case in expression position
+           (main.c's rw_expr), which has to stop at the right depth to leave
+           a trailing method/field access alone. */
+        char name_buf[512];
+        snprintf(name_buf, sizeof(name_buf), "%s", t.sval);
+        while ((cur(p).kind == TOK_DOT || cur(p).kind == TOK_FATARROW)
+                && peek(p).kind == TOK_IDENT) {
             advance(p); /* consume '.' or '=>' */
             Token member = cur(p); advance(p);
-            char *buf = arena_alloc(p->arena, strlen(t.sval) + 2 + strlen(member.sval) + 1);
-            sprintf(buf, "%s__%s", t.sval, member.sval);
-            ty->named.name = buf;
-        } else {
-            ty->named.name = t.sval;
+            size_t curlen = strlen(name_buf);
+            snprintf(name_buf + curlen, sizeof(name_buf) - curlen, "__%s", member.sval);
         }
+        ty->named.name = arena_strdup(p->arena, name_buf);
         /* generic type args: Name<T, U> → Name__T__U */
         if (cur(p).kind == TOK_LT) {
             advance(p);
@@ -598,6 +607,20 @@ static ExprList desugar_pf_interp(Parser *p, ExprList orig) {
             sub.peek2 = lexer_next(&sub.lexer);
             sub.peek3 = lexer_next(&sub.lexer);
             Expr *inner = parse_expr(&sub);
+            /* parse_expr only ever parses a prefix of its input and simply
+               stops at the first token it doesn't recognize as a
+               continuation — fine at the top level (the caller expects a
+               single expression followed by more source), but here the
+               "rest of the source" is only the sub-parser's synthetic EOF,
+               so any leftover text is a genuine syntax error in the
+               interpolated expression, not something to silently drop.
+               Without this check, e.g. `{f.^v}` (a typo for `{f.^.v}`)
+               parsed only "f.^" and discarded the trailing "v" with no
+               error at all, producing a confusing type-mismatch deep in
+               the generated LLVM IR instead of a clear parse error here. */
+            if (!check(&sub, TOK_EOF))
+                fatal_at(inner->span, "unexpected %s after expression in "
+                    "@pf format string interpolation", tok_kind_str(sub.cur.kind));
             LIST_PUSH(p->arena, &interp, Expr, inner);
         } else {
             if (nf < sizeof(new_fmt) - 1) new_fmt[nf++] = *s++;

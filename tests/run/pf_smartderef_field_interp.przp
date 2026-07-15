@@ -1,0 +1,16 @@
+# regression: {expr} interpolation in @pf/@epf/@fmt parses the extracted
+# substring with a fresh sub-parser but never checked it consumed the whole
+# thing — a typo missing the second dot in smart-pointer field access
+# (`{f.^v}`, missing dot before `v`; correct is `{f.^.v}`) silently parsed
+# only "f.^" and dropped the trailing "v", producing a confusing type-
+# mismatch deep in the generated LLVM IR instead of a parse error. Fixed by
+# checking the sub-parser reached EOF; this test is the correct syntax,
+# which must keep working — see the matching fail/ test for the typo case.
+
+struct Foo { v: i32 }
+
+fn main() -> i32 {
+    f: ^Foo = @new(Foo{.v=99})
+    @pf("v = {f.^.v}\n")
+    ret 0
+}

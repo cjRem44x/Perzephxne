@@ -7,6 +7,13 @@
 # identifier "lib__Y" and left the outer ".double" untouched, instead of
 # recognizing the whole 3-node chain as "lib__Y__double" — the name
 # mangle_items + expand_mod_items actually gave it.
+#
+# Also covers the matching type-annotation gap, fixed separately:
+# `parse_type`'s alias-qualified type name handling only ever consumed one
+# ".Ident" segment, so `c: lib.Y.Circle = ...` (as opposed to `c :=
+# lib.Y.Circle.new(...)`, inferring the type from the expression instead
+# of naming it directly) didn't parse at all. Now a loop, consuming
+# however many segments are actually present.
 
 import(lib = "helpers/mod_in_import")
 
@@ -14,10 +21,10 @@ fn main() -> i32 {
     r: i32 = lib.Y.double(21)
     @pf("double: {r}\n")
 
-    c := lib.Y.Circle.new(2.0)
+    c: lib.Y.Circle = lib.Y.Circle.new(2.0)
     @pf("area: {c.area()}\n")
 
-    d := lib.Y.Direction.North
+    d: lib.Y.Direction = lib.Y.Direction.North
     when d {
         lib.Y.Direction.North => @pf("north\n"),
         _                     => @pf("other\n"),
