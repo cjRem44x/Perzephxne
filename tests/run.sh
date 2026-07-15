@@ -35,7 +35,10 @@ run_success_case() {
         return
     fi
 
-    if ! "$bin" >"$actual" 2>"$run_err"; then
+    local stdin_file="${src%.przp}.stdin"
+    if [ ! -f "$stdin_file" ]; then stdin_file=/dev/null; fi
+
+    if ! "$bin" <"$stdin_file" >"$actual" 2>"$run_err"; then
         printf 'FAIL  %s: run failed\n' "$name" >&2
         sed -n '1,120p' "$run_err" >&2
         failures=$((failures + 1))

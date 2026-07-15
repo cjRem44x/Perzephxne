@@ -95,6 +95,7 @@ typedef struct {
     int          had_error;
     int          release;      /* 1 = --release build (@debug=false, @release=true) */
     int          cur_label;    /* -1 = entry block, else the current l%d label id */
+    char         cur_block[64]; /* LLVM name (no %) of the block currently being emitted into */
     /* dedup tracker for extern fn declarations/wrappers */
     const char  *declared_fns[512];
     size_t       n_declared_fns;
@@ -140,6 +141,7 @@ static void emit_label(CG *cg, int id) {
     emit(cg, "l%d:\n", id);
     cg->terminated = 0;
     cg->cur_label  = id;
+    snprintf(cg->cur_block, sizeof(cg->cur_block), "l%d", id);
 }
 
 static void push_scope(CG *cg) {
@@ -869,6 +871,73 @@ static void emit_rc_inc(CG *cg, const char *smart_ptr_buf) {
 static Val cg_expr(CG *cg, Expr *e, Type **out_ty);
 static void cg_stmt(CG *cg, Stmt *s);
 
+/* Shared by @cin/@secin: print the optional prompt argument (a str, whose
+   raw ptr is extracted from the fat pointer) with no trailing newline. */
+static void cg_print_prompt(CG *cg, Expr *e) {
+    if (e->builtin.args.len == 0) return;
+    Type *pty = NULL;
+    Val pv = cg_expr(cg, e->builtin.args.data[0], &pty);
+    Val prompt_ptr = pv;
+    if (pty && pty->kind == TY_STR) {
+        int sp0 = new_tmp(cg);
+        emit(cg, "  %%t%d = extractvalue { ptr, i64 } %s, 0\n", sp0, pv.buf);
+        prompt_ptr = val_tmp(sp0);
+    }
+    int pt = new_tmp(cg);
+    emit(cg, "  %%t%d = call i32 (ptr, ...) @printf(ptr %s)\n", pt, prompt_ptr.buf);
+}
+
+/* Shared by @cin/@secin: read one line from stdin into a fresh 4096-byte
+   malloc'd buffer, strip a trailing '\n' if present, and return the str
+   fat-pointer. */
+static Val cg_read_line_str(CG *cg, Type **out_ty) {
+    int cbuf = new_tmp(cg);
+    emit(cg, "  %%t%d = call ptr @malloc(i64 4096)\n", cbuf);
+    int sin_ptr = new_tmp(cg);
+    emit(cg, "  %%t%d = load ptr, ptr @stdin\n", sin_ptr);
+    int fg = new_tmp(cg);
+    emit(cg, "  %%t%d = call ptr @fgets(ptr %%t%d, i32 4096, ptr %%t%d)\n",
+         fg, cbuf, sin_ptr);
+    /* strip trailing newline */
+    int clen = new_tmp(cg);
+    emit(cg, "  %%t%d = call i64 @strlen(ptr %%t%d)\n", clen, cbuf);
+    int clast = new_tmp(cg);
+    emit(cg, "  %%t%d = sub i64 %%t%d, 1\n", clast, clen);
+    int clp = new_tmp(cg);
+    emit(cg, "  %%t%d = getelementptr i8, ptr %%t%d, i64 %%t%d\n", clp, cbuf, clast);
+    int clc = new_tmp(cg);
+    emit(cg, "  %%t%d = load i8, ptr %%t%d\n", clc, clp);
+    int clnl = new_tmp(cg);
+    emit(cg, "  %%t%d = icmp eq i8 %%t%d, 10\n", clnl, clc);
+    int cl_strip = new_label(cg), cl_done = new_label(cg);
+    /* capture predecessor label before the branch for the phi */
+    char pred_lbl[72];
+    snprintf(pred_lbl, sizeof(pred_lbl), "%%%s", cg->cur_block);
+    emit_br(cg, "  br i1 %%t%d, label %%l%d, label %%l%d\n", clnl, cl_strip, cl_done);
+    emit_label(cg, cl_strip);
+    emit(cg, "  store i8 0, ptr %%t%d\n", clp);
+    int clen2 = new_tmp(cg);
+    emit(cg, "  %%t%d = sub i64 %%t%d, 1\n", clen2, clen);
+    emit_br(cg, "  br label %%l%d\n", cl_done);
+    emit_label(cg, cl_done);
+    /* phi to pick length */
+    int clen_f = new_tmp(cg);
+    emit(cg, "  %%t%d = phi i64 [ %%t%d, %%l%d ], [ %%t%d, %s ]\n",
+         clen_f, clen2, cl_strip, clen, pred_lbl);
+    int csa = new_tmp(cg);
+    emit(cg, "  %%t%d = alloca { ptr, i64 }\n", csa);
+    int cp0 = new_tmp(cg);
+    emit(cg, "  %%t%d = getelementptr { ptr, i64 }, ptr %%t%d, i32 0, i32 0\n", cp0, csa);
+    emit(cg, "  store ptr %%t%d, ptr %%t%d\n", cbuf, cp0);
+    int cp1 = new_tmp(cg);
+    emit(cg, "  %%t%d = getelementptr { ptr, i64 }, ptr %%t%d, i32 0, i32 1\n", cp1, csa);
+    emit(cg, "  store i64 %%t%d, ptr %%t%d\n", clen_f, cp1);
+    int cres = new_tmp(cg);
+    emit(cg, "  %%t%d = load { ptr, i64 }, ptr %%t%d\n", cres, csa);
+    if (out_ty) { Type *st = ARENA_NEW(cg->arena, Type); st->kind = TY_STR; *out_ty = st; }
+    return val_tmp(cres);
+}
+
 /* When-arm result extraction: if the arm body is a bare expression, return it.
    If it is a block ending in an expression (e.g. from the payload-binder
    desugar), emit the leading statements and return the trailing expression.
@@ -1312,9 +1381,8 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                 int fat_arr = new_tmp(cg);
                 emit(cg, "  %%t%d = call ptr @malloc(i64 %%t%d)\n", fat_arr, byte_count);
                 /* loop to fill fat pointers: for i in 0..argc */
-                char entry_lbl[32];
-                if (cg->cur_label < 0) snprintf(entry_lbl, sizeof(entry_lbl), "%%entry");
-                else snprintf(entry_lbl, sizeof(entry_lbl), "%%l%d", cg->cur_label);
+                char entry_lbl[72];
+                snprintf(entry_lbl, sizeof(entry_lbl), "%%%s", cg->cur_block);
                 int loop_hdr = new_label(cg);
                 int loop_body = new_label(cg);
                 int loop_end = new_label(cg);
@@ -1546,65 +1614,47 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
 
             /* @cin — print optional prompt, read line from stdin, return str */
             if (!strcmp(name, "cin")) {
-                if (e->builtin.args.len > 0) {
-                    /* print prompt — extract raw ptr from str fat-pointer if needed */
-                    Type *pty = NULL;
-                    Val pv = cg_expr(cg, e->builtin.args.data[0], &pty);
-                    Val prompt_ptr = pv;
-                    if (pty && pty->kind == TY_STR) {
-                        int sp0 = new_tmp(cg);
-                        emit(cg, "  %%t%d = extractvalue { ptr, i64 } %s, 0\n", sp0, pv.buf);
-                        prompt_ptr = val_tmp(sp0);
-                    }
-                    int pt = new_tmp(cg);
-                    emit(cg, "  %%t%d = call i32 (ptr, ...) @printf(ptr %s)\n", pt, prompt_ptr.buf);
-                }
-                int cbuf = new_tmp(cg);
-                emit(cg, "  %%t%d = call ptr @malloc(i64 4096)\n", cbuf);
-                int sin_ptr = new_tmp(cg);
-                emit(cg, "  %%t%d = load ptr, ptr @stdin\n", sin_ptr);
-                int fg = new_tmp(cg);
-                emit(cg, "  %%t%d = call ptr @fgets(ptr %%t%d, i32 4096, ptr %%t%d)\n",
-                     fg, cbuf, sin_ptr);
-                /* strip trailing newline */
-                int clen = new_tmp(cg);
-                emit(cg, "  %%t%d = call i64 @strlen(ptr %%t%d)\n", clen, cbuf);
-                int clast = new_tmp(cg);
-                emit(cg, "  %%t%d = sub i64 %%t%d, 1\n", clast, clen);
-                int clp = new_tmp(cg);
-                emit(cg, "  %%t%d = getelementptr i8, ptr %%t%d, i64 %%t%d\n", clp, cbuf, clast);
-                int clc = new_tmp(cg);
-                emit(cg, "  %%t%d = load i8, ptr %%t%d\n", clc, clp);
-                int clnl = new_tmp(cg);
-                emit(cg, "  %%t%d = icmp eq i8 %%t%d, 10\n", clnl, clc);
-                int cl_strip = new_label(cg), cl_done = new_label(cg);
-                /* capture predecessor label before the branch for the phi */
-                char pred_lbl[32];
-                if (cg->cur_label < 0) snprintf(pred_lbl, sizeof(pred_lbl), "%%entry");
-                else snprintf(pred_lbl, sizeof(pred_lbl), "%%l%d", cg->cur_label);
-                emit_br(cg, "  br i1 %%t%d, label %%l%d, label %%l%d\n", clnl, cl_strip, cl_done);
-                emit_label(cg, cl_strip);
-                emit(cg, "  store i8 0, ptr %%t%d\n", clp);
-                int clen2 = new_tmp(cg);
-                emit(cg, "  %%t%d = sub i64 %%t%d, 1\n", clen2, clen);
-                emit_br(cg, "  br label %%l%d\n", cl_done);
-                emit_label(cg, cl_done);
-                /* phi to pick length */
-                int clen_f = new_tmp(cg);
-                emit(cg, "  %%t%d = phi i64 [ %%t%d, %%l%d ], [ %%t%d, %s ]\n",
-                     clen_f, clen2, cl_strip, clen, pred_lbl);
-                int csa = new_tmp(cg);
-                emit(cg, "  %%t%d = alloca { ptr, i64 }\n", csa);
-                int cp0 = new_tmp(cg);
-                emit(cg, "  %%t%d = getelementptr { ptr, i64 }, ptr %%t%d, i32 0, i32 0\n", cp0, csa);
-                emit(cg, "  store ptr %%t%d, ptr %%t%d\n", cbuf, cp0);
-                int cp1 = new_tmp(cg);
-                emit(cg, "  %%t%d = getelementptr { ptr, i64 }, ptr %%t%d, i32 0, i32 1\n", cp1, csa);
-                emit(cg, "  store i64 %%t%d, ptr %%t%d\n", clen_f, cp1);
-                int cres = new_tmp(cg);
-                emit(cg, "  %%t%d = load { ptr, i64 }, ptr %%t%d\n", cres, csa);
-                if (out_ty) { Type *st = ARENA_NEW(cg->arena, Type); st->kind = TY_STR; *out_ty = st; }
-                return val_tmp(cres);
+                cg_print_prompt(cg, e);
+                return cg_read_line_str(cg, out_ty);
+            }
+
+            /* @secin — like @cin, but disables terminal echo for the read
+               (password-style input) and restores it afterward. Since the
+               terminal doesn't echo the user's Enter keypress either, we
+               print a newline ourselves once echo is restored. */
+            if (!strcmp(name, "secin")) {
+                cg_print_prompt(cg, e);
+
+                /* struct termios is 60 bytes on Linux x86_64 glibc; 64 gives
+                   slack without needing the exact figure to be load-bearing */
+                int term_orig = new_tmp(cg);
+                emit(cg, "  %%t%d = call ptr @malloc(i64 64)\n", term_orig);
+                int rc1 = new_tmp(cg);
+                emit(cg, "  %%t%d = call i32 @tcgetattr(i32 0, ptr %%t%d)\n", rc1, term_orig);
+                int term_new = new_tmp(cg);
+                emit(cg, "  %%t%d = call ptr @malloc(i64 64)\n", term_new);
+                emit(cg, "  call void @llvm.memcpy.p0.p0.i64(ptr %%t%d, ptr %%t%d, i64 64, i1 false)\n",
+                     term_new, term_orig);
+                /* c_lflag lives at byte offset 12; clear ECHO (octal 0000010 = 8) */
+                int lflag_p = new_tmp(cg);
+                emit(cg, "  %%t%d = getelementptr i8, ptr %%t%d, i64 12\n", lflag_p, term_new);
+                int lflag = new_tmp(cg);
+                emit(cg, "  %%t%d = load i32, ptr %%t%d\n", lflag, lflag_p);
+                int lflag_noecho = new_tmp(cg);
+                emit(cg, "  %%t%d = and i32 %%t%d, -9\n", lflag_noecho, lflag);
+                emit(cg, "  store i32 %%t%d, ptr %%t%d\n", lflag_noecho, lflag_p);
+                int rc2 = new_tmp(cg);
+                emit(cg, "  %%t%d = call i32 @tcsetattr(i32 0, i32 0, ptr %%t%d)\n", rc2, term_new);
+
+                Val result = cg_read_line_str(cg, out_ty);
+
+                int rc3 = new_tmp(cg);
+                emit(cg, "  %%t%d = call i32 @tcsetattr(i32 0, i32 0, ptr %%t%d)\n", rc3, term_orig);
+                int nlc = new_tmp(cg);
+                emit(cg, "  %%t%d = call i32 @putchar(i32 10)\n", nlc);
+                emit(cg, "  call void @free(ptr %%t%d)\n", term_orig);
+                emit(cg, "  call void @free(ptr %%t%d)\n", term_new);
+                return result;
             }
 
             /* @addr(x) — address-of, same as &x */
@@ -4013,6 +4063,7 @@ static void cg_stmt(CG *cg, Stmt *s) {
             emit(cg, "  br label %%ulbl_%s\n", s->label_.name);
         emit(cg, "ulbl_%s:\n", s->label_.name);
         cg->terminated = 0;
+        snprintf(cg->cur_block, sizeof(cg->cur_block), "ulbl_%s", s->label_.name);
         return;
     }
     if (cg->terminated) return;  /* dead code after a terminator */
@@ -5292,6 +5343,7 @@ static void cg_fn(CG *cg, Item *item) {
     cg->cur_fn_ret    = ret_llt;
     cg->cur_fn_ret_ty = item->fn.ret;
     cg->cur_label     = -1; /* -1 = entry block */
+    snprintf(cg->cur_block, sizeof(cg->cur_block), "entry");
     cg->va_list_tmp   = -1;
     push_scope(cg);
 
@@ -5905,6 +5957,9 @@ int codegen(Module *mod, FILE *out, int release, int test_mode, const char *out_
     emit(&cg, "declare void @free(ptr)\n");
     emit(&cg, "declare void @exit(i32)\n");
     emit(&cg, "declare ptr @fgets(ptr, i32, ptr)\n");
+    emit(&cg, "declare i32 @putchar(i32)\n");
+    emit(&cg, "declare i32 @tcgetattr(i32, ptr)\n");
+    emit(&cg, "declare i32 @tcsetattr(i32, i32, ptr)\n");
     emit(&cg, "declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1)\n");
     emit(&cg, "declare void @llvm.memmove.p0.p0.i64(ptr, ptr, i64, i1)\n");
     emit(&cg, "declare void @llvm.memset.p0.i64(ptr, i8, i64, i1)\n");
