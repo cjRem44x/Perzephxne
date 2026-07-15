@@ -1,0 +1,30 @@
+# regression: codegen tracked the "current predecessor block" for phi nodes
+# (used by @cin's trailing-newline-strip and a couple other builtins) via an
+# int that only advanced on auto-generated l%d labels — a user-defined
+# `name:` label (STMT_LABEL, reached by `goto`) never updated it. So a
+# construct like @cin sitting right after a label, and reached again via
+# `goto` back to that label, emitted a phi node claiming its predecessor was
+# %entry (or whatever l%d block happened to be current before the label) —
+# a block that doesn't actually branch there. LLVM rejected the IR
+# ("PHI node entries do not match predecessors!") or, worse, crashed the
+# backend outright once the verifier was bypassed.
+
+import(
+    file = "std/file",
+)
+
+fn main() -> i32 {
+    tries: i32 = 0
+
+ path_inp:
+    path := @cin("enter path to file: ")
+    tries += 1
+
+    if !file.is_file(path) {
+        @pf("This is not a file! ({tries})\n")
+        goto path_inp
+    }
+
+    @pf("found it after {tries} tries\n")
+    ret 0
+}

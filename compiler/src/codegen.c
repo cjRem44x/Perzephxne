@@ -95,6 +95,7 @@ typedef struct {
     int          had_error;
     int          release;      /* 1 = --release build (@debug=false, @release=true) */
     int          cur_label;    /* -1 = entry block, else the current l%d label id */
+    char         cur_block[64]; /* LLVM name (no %) of the block currently being emitted into */
     /* dedup tracker for extern fn declarations/wrappers */
     const char  *declared_fns[512];
     size_t       n_declared_fns;
@@ -140,6 +141,7 @@ static void emit_label(CG *cg, int id) {
     emit(cg, "l%d:\n", id);
     cg->terminated = 0;
     cg->cur_label  = id;
+    snprintf(cg->cur_block, sizeof(cg->cur_block), "l%d", id);
 }
 
 static void push_scope(CG *cg) {
@@ -1312,9 +1314,8 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                 int fat_arr = new_tmp(cg);
                 emit(cg, "  %%t%d = call ptr @malloc(i64 %%t%d)\n", fat_arr, byte_count);
                 /* loop to fill fat pointers: for i in 0..argc */
-                char entry_lbl[32];
-                if (cg->cur_label < 0) snprintf(entry_lbl, sizeof(entry_lbl), "%%entry");
-                else snprintf(entry_lbl, sizeof(entry_lbl), "%%l%d", cg->cur_label);
+                char entry_lbl[72];
+                snprintf(entry_lbl, sizeof(entry_lbl), "%%%s", cg->cur_block);
                 int loop_hdr = new_label(cg);
                 int loop_body = new_label(cg);
                 int loop_end = new_label(cg);
@@ -1579,9 +1580,8 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                 emit(cg, "  %%t%d = icmp eq i8 %%t%d, 10\n", clnl, clc);
                 int cl_strip = new_label(cg), cl_done = new_label(cg);
                 /* capture predecessor label before the branch for the phi */
-                char pred_lbl[32];
-                if (cg->cur_label < 0) snprintf(pred_lbl, sizeof(pred_lbl), "%%entry");
-                else snprintf(pred_lbl, sizeof(pred_lbl), "%%l%d", cg->cur_label);
+                char pred_lbl[72];
+                snprintf(pred_lbl, sizeof(pred_lbl), "%%%s", cg->cur_block);
                 emit_br(cg, "  br i1 %%t%d, label %%l%d, label %%l%d\n", clnl, cl_strip, cl_done);
                 emit_label(cg, cl_strip);
                 emit(cg, "  store i8 0, ptr %%t%d\n", clp);
@@ -4013,6 +4013,7 @@ static void cg_stmt(CG *cg, Stmt *s) {
             emit(cg, "  br label %%ulbl_%s\n", s->label_.name);
         emit(cg, "ulbl_%s:\n", s->label_.name);
         cg->terminated = 0;
+        snprintf(cg->cur_block, sizeof(cg->cur_block), "ulbl_%s", s->label_.name);
         return;
     }
     if (cg->terminated) return;  /* dead code after a terminator */
@@ -5292,6 +5293,7 @@ static void cg_fn(CG *cg, Item *item) {
     cg->cur_fn_ret    = ret_llt;
     cg->cur_fn_ret_ty = item->fn.ret;
     cg->cur_label     = -1; /* -1 = entry block */
+    snprintf(cg->cur_block, sizeof(cg->cur_block), "entry");
     cg->va_list_tmp   = -1;
     push_scope(cg);
 
