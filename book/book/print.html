@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-d420cb82.js";
+            window.path_to_searchindex_js = "searchindex-50f5c83d.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-4e58bc13.js"></script>
@@ -864,8 +864,7 @@ extern fn fopen(path: *u8, mode: *u8) -&gt; *FILE_opaque
 <pre><code>struct Vector2 { x: f32, y: f32 }
 extern fn Vector2Add(a: Vector2, b: Vector2) -&gt; Vector2
 </code></pre>
-<p>This is the calling convention raylib, many math libraries, and plenty of system APIs use pervasively (<code>Vector2</code>, <code>Color</code>, <code>Rectangle</code>-shaped structs). Perzephxne classifies the struct’s fields per the platform ABI (small all-float structs pass in SSE registers, small all-integer/mixed structs pass in general registers, anything over 16 bytes passes through memory) and generates the matching call shape automatically — nothing beyond declaring the signature is required.</p>
-<p>This only works for an <code>extern fn</code> reached through <code>import()</code>. A <code>struct</code>-by-value <code>extern fn</code> declared directly in a file with no import will fail to compile with a clear error, since the compiler needs the import alias to route Perzephxne call sites to the internal wrapper it generates. Put the declaration in its own module and import it — a one-function module works fine if that’s all you need.</p>
+<p>This is the calling convention raylib, many math libraries, and plenty of system APIs use pervasively (<code>Vector2</code>, <code>Color</code>, <code>Rectangle</code>-shaped structs). Perzephxne classifies the struct’s fields per the platform ABI (small all-float structs pass in SSE registers, small all-integer/mixed structs pass in general registers, anything over 16 bytes passes through memory) and generates the matching call shape automatically — nothing beyond declaring the signature is required. This works whether the <code>extern fn</code> is declared directly in a file or reached through <code>import()</code> — either way, Perzephxne call sites transparently target the generated wrapper, never the raw ABI-coerced C symbol.</p>
 <h2 id="inline"><a class="header" href="#inline">Inline</a></h2>
 <p>Use <code>inline fn</code> to hint that a function should be inlined at call sites:</p>
 <pre><code>inline fn fast_path(x: i32) -&gt; i32 { ret x * 2 }
@@ -2909,7 +2908,6 @@ r: f64 = m.sqrt(2.0)
 <tr><td>Package dependencies</td><td><code>[deps]</code> is reserved. There is no external resolver yet; Core/Stdlib ships with the language. <code>[build].link</code> (see <a href="#build-system-przp">Build System</a>) covers linking against system libraries the OS already ships (e.g. <code>link = ["X11", "GL"]</code>) — this is not a package resolver, just linker flags.</td></tr>
 <tr><td>Release UX</td><td>A future version command should be <code>przp version</code>, but versioning is intentionally deferred while beta work is moving quickly.</td></tr>
 <tr><td><code>any</code> type</td><td>Reserved keyword. Runtime-tagged values (boxing, type IDs, <code>when</code> dispatch on types) are designed but not implemented; removed from the reference until they exist.</td></tr>
-<tr><td>Struct-by-value FFI, non-imported <code>extern fn</code></td><td><code>extern fn foo(v: Vector2) -&gt; Vector2</code> declared directly in a file (not reached via <code>import()</code>) fails to compile if it needs struct-by-value ABI handling — the wrapper mechanism needs an import alias to redirect call sites to (see <a href="#standard-library">Standard Library</a>). Move the declaration into its own module and <code>import()</code> it, which is fully supported.</td></tr>
 <tr><td>Two-level <code>mod</code> + <code>import</code> access in a type annotation</td><td><code>x: lib.Y.Circle = ...</code> (a struct/enum inside a <code>mod</code> block that itself lives inside an <em>imported</em> file, named directly in a type annotation) doesn’t parse — <code>parse_type</code> only resolves one level of import-alias-qualified type name. The equivalent <em>expression</em> access (<code>lib.Y.Circle.new(...)</code>, <code>lib.Y.someFreeFn()</code>, <code>lib.Y.Direction.North</code>, and matching that in a <code>when</code> pattern) all resolve correctly; work around the annotation gap with <code>:=</code>/<code>::</code> to infer the type from an expression instead (<code>x := lib.Y.Circle.new(...)</code>); see <a href="#modules">Modules</a>.</td></tr>
 <tr><td>A smart-pointer field access (<code>p.^field</code>) interpolated directly in <code>@pf</code>/<code>@epf</code>/<code>@fmt</code> fails to compile when the field is itself a struct</td><td><code>@pf("{p.^field}\n")</code> for a struct-typed <code>field</code> tries to pass the struct by value to <code>printf</code>’s varargs, but produces a mismatched-type LLVM IR error (<code>defined with type 'ptr' but expected '%Struct = type {...}'</code>) instead of compiling — found while testing the <code>@bitcast</code> pointer-type fix above, on code with no <code>@bitcast</code> involved at all. Assigning <code>p.^field</code> to a local first, then interpolating the local, works around it.</td></tr>
 </tbody>

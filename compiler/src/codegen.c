@@ -253,12 +253,16 @@ static void define_sym(CG *cg, const char *name, const char *llvm, int global, T
     cg->scope->syms = s;
 }
 
-static void define_fn_sym_ex(CG *cg, const char *name, Type *ty, int is_extern) {
-    char buf[256];
-    snprintf(buf, sizeof(buf), "@%s", name);
+/* Like define_fn_sym_ex, but with an explicit llvm_name (including the
+   leading '@') instead of deriving one from `name` — needed when the
+   LLVM-visible symbol a call site should target differs from the name the
+   function is looked up under in Perzephxne source, e.g. a non-imported
+   extern fn's ABI wrapper (see extern_fn_wrapper_llvm_name). */
+static void define_fn_sym_named(CG *cg, const char *name, const char *llvm_name,
+                                 Type *ty, int is_extern) {
     Symbol *s = ARENA_NEW(cg->arena, Symbol);
     s->name      = name;
-    s->llvm_name = arena_strdup(cg->arena, buf);
+    s->llvm_name = llvm_name;
     s->is_global = 1;
     s->is_fn_ref = 1;
     s->is_extern = is_extern;
@@ -267,8 +271,26 @@ static void define_fn_sym_ex(CG *cg, const char *name, Type *ty, int is_extern) 
     cg->scope->syms = s;
 }
 
+static void define_fn_sym_ex(CG *cg, const char *name, Type *ty, int is_extern) {
+    char buf[256];
+    snprintf(buf, sizeof(buf), "@%s", name);
+    define_fn_sym_named(cg, name, arena_strdup(cg->arena, buf), ty, is_extern);
+}
+
 static void define_fn_sym(CG *cg, const char *name, Type *ty) {
     define_fn_sym_ex(cg, name, ty, 0);
+}
+
+/* Bare (no '@') synthetic name for a non-imported extern fn's ABI wrapper —
+   distinct from the real C symbol (`name`, unchanged) so `declare` (the
+   real C signature, ABI-coerced) and `define` (the friendly wrapper every
+   Perzephxne call site actually targets) don't collide on the same LLVM
+   symbol. Deterministic from `name` alone, so the registration site and
+   the wrapper-emission site can each compute it independently and agree. */
+static const char *extern_fn_wrapper_llvm_name(CG *cg, const char *name) {
+    char buf[300];
+    snprintf(buf, sizeof(buf), "__przp_extfn_%s", name);
+    return arena_strdup(cg->arena, buf);
 }
 
 static Symbol *lookup(CG *cg, const char *name) {
@@ -3247,6 +3269,16 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                     fn_name   = fn_name_buf;
                     callee_ty = csym->ty;
                     is_indirect = 1;
+                } else if (csym && csym->llvm_name) {
+                    /* use the symbol's own tracked llvm_name rather than
+                       assuming it's always "@" + the source identifier —
+                       true for an ordinary fn, but not for e.g. a non-
+                       imported extern fn's ABI wrapper, whose callable
+                       symbol is a synthetic name distinct from the real C
+                       symbol declared under this same source identifier
+                       (see extern_fn_wrapper_llvm_name) */
+                    fn_name = csym->llvm_name;
+                    callee_ty = e->call.callee->ty;
                 } else {
                     snprintf(fn_name_buf, sizeof(fn_name_buf), "@%s",
                              e->call.callee->ident.name);
@@ -5743,8 +5775,18 @@ static void emit_extern_fn_abi_wrapper(CG *cg, Item *item,
 
 static void cg_extern_fn(CG *cg, Item *item) {
     const char *c_name = item->extern_fn.c_name ? item->extern_fn.c_name : item->name;
-    /* skip if this exact declaration (by mangled name) was already emitted */
-    if (!mark_declared(cg, item->name)) return;
+    /* skip if this exact declaration (by mangled name) was already emitted.
+       Namespaced ("item:" prefix) rather than the bare item->name: a non-
+       imported extern fn needing ABI wrapping has item->name == the real C
+       symbol name (no alias to distinguish them), and emit_extern_fn_abi_
+       wrapper below does its own separate mark_declared(real_c_name) guard
+       around the actual `declare` — sharing one bare key between "this
+       item was processed" and "this real C symbol was declared" meant the
+       first check silently consumed the second's key, so the real C
+       function's `declare` was never emitted at all. */
+    char item_guard[300];
+    snprintf(item_guard, sizeof(item_guard), "item:%s", item->name);
+    if (!mark_declared(cg, arena_strdup(cg->arena, item_guard))) return;
     if (is_preamble_decl(c_name)) {
         /* preamble already declares the real C function; just emit a wrapper alias */
         if (item->extern_fn.c_name) {
@@ -5828,19 +5870,17 @@ static void cg_extern_fn(CG *cg, Item *item) {
     }
 
     /* Normal (non-imported) extern fn declaration. A struct/array-by-value
-       parameter or return here can't be routed through the ABI wrapper: with
-       no import alias there's no rewrite pass redirecting call sites to a
-       differently-named wrapper, and the wrapper can't share the real C
-       symbol's name (the linker would see two definitions). Fail loudly
-       rather than silently emit ABI-mismatched code — put the declaration in
-       its own module and `import()` it instead, which is supported. */
+       parameter or return still needs the ABI wrapper — the real C symbol
+       (declared under item->name, exactly as written, so the linker finds
+       it) can't also be the wrapper's own name (LLVM would see a `declare`
+       and a `define` for the same symbol), so the wrapper is defined under
+       a synthetic name instead (extern_fn_wrapper_llvm_name) — the same
+       one the symbol-table registration above already pointed every call
+       site at. */
     if (extern_fn_needs_abi(cg, item)) {
-        fatal_at(item->span,
-            "extern fn '%s': struct/array-by-value parameters or return types "
-            "are only supported when declared in a module reached via import() "
-            "(the ABI wrapper needs an import alias to redirect call sites to); "
-            "move this declaration into its own module and import it",
-            item->name);
+        emit_extern_fn_abi_wrapper(cg, item, item->name,
+                                    extern_fn_wrapper_llvm_name(cg, item->name));
+        return;
     }
 
     /* Normal extern fn declaration */
@@ -6181,7 +6221,22 @@ int codegen(Module *mod, FILE *out, int release, int test_mode, const char *out_
                     ty->fn.params.data[j] = item->extern_fn.params.data[j].ty;
             }
             ty->fn.variadic = item->extern_fn.variadic;
-            define_fn_sym_ex(&cg, item->name, ty, 1);
+            /* A non-imported extern fn needing struct/array-by-value ABI
+               handling gets a synthetic wrapper name — see
+               extern_fn_wrapper_llvm_name and cg_extern_fn's non-imported
+               branch, which actually emits that wrapper under this same
+               name. An imported one already has a distinct visible name
+               (the alias-mangled item->name vs the real extern_fn.c_name),
+               so it keeps using the plain "@name" registration. */
+            if (!item->extern_fn.c_name && extern_fn_needs_abi(&cg, item)) {
+                char llvm_buf[320];
+                snprintf(llvm_buf, sizeof(llvm_buf), "@%s",
+                         extern_fn_wrapper_llvm_name(&cg, item->name));
+                define_fn_sym_named(&cg, item->name,
+                                    arena_strdup(cg.arena, llvm_buf), ty, 1);
+            } else {
+                define_fn_sym_ex(&cg, item->name, ty, 1);
+            }
         }
     }
     /* also register impl methods */
