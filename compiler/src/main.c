@@ -87,22 +87,35 @@ static void record_dep_file(const char *path) {
    one of its symbols ends up defined twice ("redefinition of ..."). Reset
    at the start of each top-level compile, same as g_dep_files. */
 #define MAX_MERGED_IMPORTS 512
-typedef struct { char path[1024]; char alias[256]; } MergedImport;
+typedef struct {
+    char path[1024];
+    char alias[256];
+    /* the imported file's own top-level `mod Name {}` block names (see
+       Module.mod_names) — needed again if a *different* top-level file
+       re-imports the same (path, alias) pair and hits the dedup skip
+       below, so its own alias.ModName.item accesses still resolve. */
+    const char **mod_names;
+    size_t       n_mod_names;
+} MergedImport;
 static MergedImport g_merged_imports[MAX_MERGED_IMPORTS];
 static int          g_n_merged_imports = 0;
 
-static int already_merged_import(const char *path, const char *alias) {
+static MergedImport *find_merged_import(const char *path, const char *alias) {
     for (int i = 0; i < g_n_merged_imports; i++)
         if (!strcmp(g_merged_imports[i].path, path)
                 && !strcmp(g_merged_imports[i].alias, alias))
-            return 1;
-    return 0;
+            return &g_merged_imports[i];
+    return NULL;
 }
 
-static void record_merged_import(const char *path, const char *alias) {
+static void record_merged_import(const char *path, const char *alias,
+                                  const char **mod_names, size_t n_mod_names) {
     if (g_n_merged_imports >= MAX_MERGED_IMPORTS) return;
-    snprintf(g_merged_imports[g_n_merged_imports].path, sizeof(g_merged_imports[0].path), "%s", path);
-    snprintf(g_merged_imports[g_n_merged_imports].alias, sizeof(g_merged_imports[0].alias), "%s", alias);
+    MergedImport *mi = &g_merged_imports[g_n_merged_imports];
+    snprintf(mi->path, sizeof(mi->path), "%s", path);
+    snprintf(mi->alias, sizeof(mi->alias), "%s", alias);
+    mi->mod_names   = mod_names;
+    mi->n_mod_names = n_mod_names;
     g_n_merged_imports++;
 }
 
@@ -539,7 +552,19 @@ static void mangle_items(Module *mod, const char *alias, Arena *arena) {
     }
 }
 
-static void rw_item(Item *item, const char **al, size_t n, Arena *a);
+/* An import alias (or, for expand_mod_items's same-file use, a mod block's
+   own name standing in as its own "alias") plus the set of top-level `mod`
+   block names the thing it points to had, if any — lets rw_expr recognize
+   a two-level `alias.ModName.item` access (a mod block inside an *imported*
+   file) and collapse the whole chain to "alias__ModName__item" in one
+   step, matching how mangle_items + expand_mod_items actually named it. */
+typedef struct {
+    const char  *alias;
+    const char **mod_names;
+    size_t       n_mod_names;
+} AliasInfo;
+
+static void rw_item(Item *item, const AliasInfo *al, size_t n, Arena *a);
 
 /* Flatten every top-level `mod Name { ...items... }` block in mod->items:
    mangle the block's own items (and any of its own internal generic uses,
@@ -589,42 +614,84 @@ static void expand_mod_items(Module *mod, Arena *arena) {
     }
     mod->items.data = out;
     mod->items.len  = n;
+    mod->mod_names   = mod_names;
+    mod->n_mod_names = n_mod_names;
 
-    if (n_mod_names > 0)
+    if (n_mod_names > 0) {
+        /* each mod name acts as its own "alias" here — a mod block's
+           contents were just flattened as if it were a same-file import,
+           and none of them have nested mod-in-mod, so n_mod_names=0 */
+        AliasInfo *al = arena_alloc(arena, n_mod_names * sizeof(AliasInfo));
+        for (size_t i = 0; i < n_mod_names; i++) {
+            al[i].alias       = mod_names[i];
+            al[i].mod_names   = NULL;
+            al[i].n_mod_names = 0;
+        }
         for (size_t i = 0; i < mod->items.len; i++)
-            rw_item(mod->items.data[i], mod_names, n_mod_names, arena);
+            rw_item(mod->items.data[i], al, n_mod_names, arena);
+    }
 }
 
 /* ── AST rewrite: EXPR_FIELD(EXPR_IDENT("alias"), "x") → EXPR_IDENT("alias__x") ── */
 
-static int is_alias(const char **aliases, size_t n, const char *name) {
+static const AliasInfo *find_alias(const AliasInfo *aliases, size_t n, const char *name) {
     for (size_t i = 0; i < n; i++)
-        if (!strcmp(aliases[i], name)) return 1;
+        if (!strcmp(aliases[i].alias, name)) return &aliases[i];
+    return NULL;
+}
+
+static int has_mod_name(const AliasInfo *ai, const char *name) {
+    for (size_t i = 0; i < ai->n_mod_names; i++)
+        if (!strcmp(ai->mod_names[i], name)) return 1;
     return 0;
 }
 
-static void rw_stmt(Stmt *s, const char **al, size_t n, Arena *a);
+static void rw_stmt(Stmt *s, const AliasInfo *al, size_t n, Arena *a);
 
-static void rw_stmts(StmtList sl, const char **al, size_t n, Arena *a) {
+static void rw_stmts(StmtList sl, const AliasInfo *al, size_t n, Arena *a) {
     for (size_t i = 0; i < sl.len; i++) rw_stmt(sl.data[i], al, n, a);
 }
 
-static void rw_expr(Expr *e, const char **al, size_t n, Arena *a) {
+static void rw_expr(Expr *e, const AliasInfo *al, size_t n, Arena *a) {
     if (!e) return;
     switch (e->kind) {
-        case EXPR_FIELD:
-            if (e->field.obj && e->field.obj->kind == EXPR_IDENT
-                    && is_alias(al, n, e->field.obj->ident.name)) {
+        case EXPR_FIELD: {
+            /* Two-level first: alias.ModName.item, where ModName is a mod
+               block inside the file `alias` points to — e.g.
+               `lib.Y.double(21)` where lib.przp has `mod Y { fn double... }`.
+               Both mangle_items (import) and expand_mod_items (the mod
+               block, inside lib.przp's own compile) already flattened this
+               to the single item "lib__Y__double"; recognizing the whole
+               3-node chain here, at the outer ".item" node, is what lets it
+               collapse to that name in one step instead of just the inner
+               "alias.ModName" pair (which isn't itself a valid symbol —
+               ModName is a namespace, not a value). */
+            Expr *obj = e->field.obj;
+            if (obj && obj->kind == EXPR_FIELD
+                    && obj->field.obj && obj->field.obj->kind == EXPR_IDENT) {
+                const AliasInfo *ai = find_alias(al, n, obj->field.obj->ident.name);
+                if (ai && has_mod_name(ai, obj->field.field)) {
+                    char buf[512];
+                    snprintf(buf, sizeof(buf), "%s__%s__%s",
+                             obj->field.obj->ident.name, obj->field.field, e->field.field);
+                    e->kind       = EXPR_IDENT;
+                    e->ident.name = arena_strdup(a, buf);
+                    break;
+                }
+            }
+            if (obj && obj->kind == EXPR_IDENT
+                    && find_alias(al, n, obj->ident.name)) {
                 /* rewrite in-place: EXPR_FIELD → EXPR_IDENT("alias__name") */
                 char buf[512];
                 snprintf(buf, sizeof(buf), "%s__%s",
-                         e->field.obj->ident.name, e->field.field);
+                         obj->ident.name, e->field.field);
                 e->kind       = EXPR_IDENT;
                 e->ident.name = arena_strdup(a, buf);
             } else {
                 rw_expr(e->field.obj, al, n, a);
             }
             break;
+        }
         case EXPR_CALL:
             rw_expr(e->call.callee, al, n, a);
             for (size_t i = 0; i < e->call.args.len; i++)
@@ -679,7 +746,7 @@ static void rw_expr(Expr *e, const char **al, size_t n, Arena *a) {
     }
 }
 
-static void rw_stmt(Stmt *s, const char **al, size_t n, Arena *a) {
+static void rw_stmt(Stmt *s, const AliasInfo *al, size_t n, Arena *a) {
     if (!s) return;
     switch (s->kind) {
         case STMT_EXPR:
@@ -729,7 +796,7 @@ static void rw_stmt(Stmt *s, const char **al, size_t n, Arena *a) {
     }
 }
 
-static void rw_item(Item *item, const char **al, size_t n, Arena *a) {
+static void rw_item(Item *item, const AliasInfo *al, size_t n, Arena *a) {
     if (!item) return;
     switch (item->kind) {
         case ITEM_FN:
@@ -802,8 +869,8 @@ static int load_imports(Module *mod, const char *src_path, const char *src,
     for (size_t i = 0; i < mod->items.len; i++)
         if (mod->items.data[i]->kind == ITEM_IMPORT)
             max_aliases += mod->items.data[i]->imports.len;
-    const char **aliases = arena_alloc(arena, max_aliases * sizeof(char *));
-    size_t      n_aliases = 0;
+    AliasInfo *aliases = arena_alloc(arena, max_aliases * sizeof(AliasInfo));
+    size_t     n_aliases = 0;
     char        src_dir[1024];
     src_dir_of(src_path, src_dir, sizeof(src_dir));
     /* remember how many items this module originally has so rw_item only
@@ -853,10 +920,16 @@ static int load_imports(Module *mod, const char *src_path, const char *src,
                (path, alias) would skip a merge whose mangled names never
                actually end up in the final module, leaving a dangling
                reference to a name that was never defined. */
-            if (n_loading == 1 && already_merged_import(full, alias)) {
-                record_dep_file(full);
-                aliases[n_aliases++] = alias;
-                continue;
+            if (n_loading == 1) {
+                MergedImport *mi = find_merged_import(full, alias);
+                if (mi) {
+                    record_dep_file(full);
+                    aliases[n_aliases].alias       = alias;
+                    aliases[n_aliases].mod_names   = mi->mod_names;
+                    aliases[n_aliases].n_mod_names = mi->n_mod_names;
+                    n_aliases++;
+                    continue;
+                }
             }
 
             /* cycle detection */
@@ -893,9 +966,13 @@ static int load_imports(Module *mod, const char *src_path, const char *src,
             /* mangle imported items, merge into main module */
             mangle_items(imp, alias, arena);
             merge_items(mod, imp);
-            if (n_loading == 1) record_merged_import(full, alias);
+            if (n_loading == 1)
+                record_merged_import(full, alias, imp->mod_names, imp->n_mod_names);
 
-            aliases[n_aliases++] = alias;
+            aliases[n_aliases].alias       = alias;
+            aliases[n_aliases].mod_names   = imp->mod_names;
+            aliases[n_aliases].n_mod_names = imp->n_mod_names;
+            n_aliases++;
         }
     }
 

@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-da411ed4.js";
+            window.path_to_searchindex_js = "searchindex-50f5c83d.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-4e58bc13.js"></script>
@@ -270,7 +270,7 @@ p: *u8 = &amp;buf[0]
 <pre><code>p: *i32 = &amp;x
 pb: *u8 = p   # reinterpret pointer type, plain assignment
 </code></pre>
-<p><code>@bitcast(T, val)</code> (see <a href="./builtins.html">Builtins</a>) is for reinterpreting the bits of a <em>value</em> type (e.g. <code>f32</code> ↔ <code>u32</code>) — its type argument only accepts a bare type name, not a pointer type expression like <code>*u8</code>.</p>
+<p><code>@bitcast(T, val)</code> (see <a href="./builtins.html">Builtins</a>) is for reinterpreting the bits of a value — a scalar (<code>f32</code> ↔ <code>u32</code>) or a pointer (<code>*T</code> ↔ <code>*U</code>, <code>^T</code> ↔ <code>^U</code>). Its type argument accepts any scalar or pointer type expression, including a compound one like <code>*u8</code> or <code>^Foo</code> — but not an aggregate type (a slice, struct, <code>str</code>, tuple, …), since LLVM’s underlying bitcast instruction doesn’t support those; use the plain-assignment pointer coercion above for raw pointers (no cast needed) or a per-field copy for structs.</p>
 <h2 id="size-and-align"><a class="header" href="#size-and-align"><code>@size</code> and <code>@align</code></a></h2>
 <pre><code>sz: usize  = @size(i32)    # 4
 al: usize  = @align(f64)   # 8

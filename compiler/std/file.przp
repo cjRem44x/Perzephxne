@@ -185,11 +185,9 @@ fn parent_dir(path: str) -> str {
 # mkdir_all: create dir_path and any missing parent directories
 # (mkdir -p). Returns true if the directory exists afterward, whether
 # it already existed or was just created. Checks is_dir first at every
-# level rather than relying on os.mkdir_dir alone to tolerate an
-# already-existing directory, since that only checks mkdir()'s return
-# value and doesn't treat EEXIST as success despite what its own doc
-# comment claims (see book/status-next.md's "std/os.mkdir_dir doesn't
-# treat 'already exists' as success" entry).
+# level as the recursion's base case, so an already-existing ancestor
+# stops the walk instead of every level re-attempting (and, thanks to
+# os.mkdir_dir's own is_dir check, harmlessly no-oping on) a mkdir() call.
 fn mkdir_all(dir_path: str) -> bool {
     if dir_path.len == 0 { ret true }
     if is_dir(dir_path) { ret true }

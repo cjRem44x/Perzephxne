@@ -1,0 +1,49 @@
+# regression: extern fn foo(v: Vector2) -> Vector2 declared directly in a
+# file (not reached via import()) used to fail to compile if it needed
+# struct-by-value ABI handling — the non-imported path only ever hard-
+# errored, since the wrapper mechanism assumed an import alias would give
+# the wrapper a name distinct from the real C symbol. It now synthesizes
+# that distinct name itself (extern_fn_wrapper_llvm_name in codegen.c).
+# Same shapes/values as tests/ffi/struct_abi (which covers the already-
+# working imported case) so the two are directly comparable.
+
+struct Vector2 { x: f32, y: f32 }
+struct Vector3 { x: f32, y: f32, z: f32 }
+struct Rectangle { x: f32, y: f32, w: f32, h: f32 }
+struct Color { r: u8, g: u8, b: u8, a: u8 }
+struct Mixed8 { a: i32, b: f32 }
+struct Big20 { a: i32, b: i32, c: i32, d: i32, e: i32 }
+struct Two64 { a: f64, b: f64 }
+
+extern fn vec2_add(a: Vector2, b: Vector2) -> Vector2
+extern fn vec3_sum(a: Vector3, b: Vector3) -> Vector3
+extern fn rect_id(r: Rectangle) -> Rectangle
+extern fn color_id(c: Color) -> Color
+extern fn mixed8_id(m: Mixed8) -> Mixed8
+extern fn big20_id(b: Big20) -> Big20
+extern fn two64_id(t: Two64) -> Two64
+
+fn main() -> i32 {
+    v2: Vector2 = vec2_add(Vector2{.x=1.0, .y=2.0}, Vector2{.x=3.0, .y=4.0})
+    @pf("{v2.x} {v2.y}\n")
+
+    v3: Vector3 = vec3_sum(Vector3{.x=1.0,.y=2.0,.z=3.0}, Vector3{.x=10.0,.y=20.0,.z=30.0})
+    @pf("{v3.x} {v3.y} {v3.z}\n")
+
+    r: Rectangle = rect_id(Rectangle{.x=10.0, .y=20.0, .w=30.0, .h=40.0})
+    @pf("{r.x} {r.y} {r.w} {r.h}\n")
+
+    c: Color = color_id(Color{.r=255u8, .g=128u8, .b=64u8, .a=1u8})
+    @pf("{c.r} {c.g} {c.b} {c.a}\n")
+
+    m: Mixed8 = mixed8_id(Mixed8{.a=42, .b=3.5})
+    @pf("{m.a} {m.b}\n")
+
+    b: Big20 = big20_id(Big20{.a=1, .b=2, .c=3, .d=4, .e=5})
+    @pf("{b.a} {b.b} {b.c} {b.d} {b.e}\n")
+
+    t: Two64 = two64_id(Two64{.a=1.25, .b=2.5})
+    @pf("{t.a} {t.b}\n")
+
+    ret 0
+}

@@ -1,0 +1,14 @@
+mod Y {
+    fn double(x: i32) -> i32 { ret x * 2 }
+
+    struct Circle {
+        r: f64,
+    }
+
+    impl Circle {
+        fn new(r: f64) -> Circle { ret Circle{.r=r} }
+        fn area(self) -> f64 { ret 3.14159 * self.r * self.r }
+    }
+
+    enum Direction { North, South, East, West }
+}

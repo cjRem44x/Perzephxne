@@ -5,5 +5,17 @@ fn main() -> i32 {
     missing: str = os.getenv_str("PRZP_TEST_MISSING_ENV")
     ok: bool = cwd.len > 0 && missing.len == 0
     @pf("{ok}\n")
+
+    # regression: mkdir_dir's own doc comment promises "true on success or
+    # if it already exists," but it used to only check mkdir()'s return
+    # value, which fails (EEXIST) on an already-existing directory — the
+    # second call here used to return false.
+    os.rmdir_dir("tests/tmp/std_os_mkdir")
+    first: bool = os.mkdir_dir("tests/tmp/std_os_mkdir")
+    second: bool = os.mkdir_dir("tests/tmp/std_os_mkdir")
+    is_dir_r: bool = os.is_dir("tests/tmp/std_os_mkdir")
+    is_dir_missing: bool = os.is_dir("tests/tmp/std_os_mkdir_does_not_exist")
+    os.rmdir_dir("tests/tmp/std_os_mkdir")
+    @pf("{first} {second} {is_dir_r} {is_dir_missing}\n")
     ret 0
 }

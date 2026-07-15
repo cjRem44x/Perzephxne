@@ -1,0 +1,5 @@
+data[0] = 0
+count = 999
+sizeof f.data = 256
+sizeof bar.a = 32
+sizeof bar.b = 20

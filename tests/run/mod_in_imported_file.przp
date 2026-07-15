@@ -1,0 +1,26 @@
+# regression: a mod block declared inside an *imported* file wasn't
+# reachable through the full two-level path (lib.Y.someFreeFn(), etc.) —
+# only one level of alias resolved: lib.foo() (plain import access) or
+# X.foo() (same-file mod access), but not both stacked. main.c's
+# alias-rewrite pass only ever collapsed a single EXPR_FIELD level, so
+# `lib.Y.double` rewrote its *inner* `lib.Y` to the (nonexistent) flat
+# identifier "lib__Y" and left the outer ".double" untouched, instead of
+# recognizing the whole 3-node chain as "lib__Y__double" — the name
+# mangle_items + expand_mod_items actually gave it.
+
+import(lib = "helpers/mod_in_import")
+
+fn main() -> i32 {
+    r: i32 = lib.Y.double(21)
+    @pf("double: {r}\n")
+
+    c := lib.Y.Circle.new(2.0)
+    @pf("area: {c.area()}\n")
+
+    d := lib.Y.Direction.North
+    when d {
+        lib.Y.Direction.North => @pf("north\n"),
+        _                     => @pf("other\n"),
+    }
+    ret 0
+}

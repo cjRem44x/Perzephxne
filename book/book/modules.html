@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-da411ed4.js";
+            window.path_to_searchindex_js = "searchindex-50f5c83d.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-4e58bc13.js"></script>
@@ -237,12 +237,13 @@ fn main() -&gt; i32 {
 
 b := Boxes=&gt;Box&lt;i32&gt;.new(7)
 </code></pre>
-<p>A <code>mod</code> block can also live inside an imported file, and chains with the importer’s own alias — but how far that chain resolves depends on <em>what</em> is being reached, not just how deep it is. Given <code>mod Y { ... }</code> inside <code>lib.przp</code>, imported as <code>import(lib = "lib")</code>:</p>
+<p>A <code>mod</code> block can also live inside an imported file, and chains with the importer’s own alias. Given <code>mod Y { ... }</code> inside <code>lib.przp</code>, imported as <code>import(lib = "lib")</code>:</p>
 <ul>
 <li><strong>A generic struct or impl inside the mod</strong> (<code>lib.Y.Box&lt;i32&gt;.new(...)</code>, <code>lib.Y=&gt;Box&lt;i32&gt;=&gt;new(...)</code>) resolves at any depth — this path is handled entirely at parse time, by directly building the fully-qualified mangled name (<code>lib__Y__Box__i32</code>) from the qualified-generic syntax itself, rather than relying on any post-hoc rewriting.</li>
-<li><strong>A plain free function, a non-generic struct’s static method, or an enum variant</strong> (<code>lib.Y.someFreeFn()</code>, <code>lib.Y.Circle.new(...)</code>, <code>lib.Y.Direction.North</code>) does <strong>not</strong> resolve through the two-level <code>import</code>+<code>mod</code> path today — only mod access local to the current file (<code>Y.someFreeFn()</code> within <code>lib.przp</code> itself), or plain import access to a top-level non-mod item (<code>lib.someFreeFn()</code>), resolves correctly. The two-level case for these needs a fix to the post-hoc alias-collapsing pass that currently only handles one level safely (extending it naively broke plain enum-variant matching, since it can’t yet tell “this is still a namespace prefix” apart from “this is now a type name” without deliberately enumerating mod-qualified namespace prefixes as their own alias entries) — see <a href="./status-next.html">Status &amp; Next Work</a>.</li>
+<li><strong>A plain free function, a non-generic struct’s static method, or an enum variant</strong> (<code>lib.Y.someFreeFn()</code>, <code>lib.Y.Circle.new(...)</code>, <code>lib.Y.Direction.North</code>) resolves through the full two-level <code>import</code>+<code>mod</code> path, in an expression: a value position, a call, or a <code>when</code> pattern. The alias-rewrite pass tracks, per import alias, the set of mod-block names the imported file itself declared, so it can recognize <code>lib.Y.foo</code> as a three-node chain collapsing to the single mangled item <code>lib__Y__foo</code> (what <code>mangle_items</code> + the mod-flattening pass actually named it) rather than only ever handling one field-access level.</li>
+<li><strong>A type annotation naming a struct/enum two levels deep</strong> (<code>x: lib.Y.Circle = ...</code>) doesn’t parse yet — <code>parse_type</code> only resolves one level of import-alias-qualified type name today. Use <code>:=</code>/<code>::</code> to infer the type from an expression instead (<code>x := lib.Y.Circle.new(...)</code>), which goes through the (now-working) expression path above.</li>
 </ul>
-<p>In short: reach for <code>mod</code> freely within one file, and freely combine <code>import</code> with a mod’s <em>generic</em> members across files; for everything else inside a mod, either keep the access to one level, or restructure the generic-only case into its own file if you need the deeper reach today.</p>
+<p>In short: reach for <code>mod</code> freely within one file, and freely combine <code>import</code> with a mod’s members — generic or not — across files in expression position; a two-level type <em>annotation</em> still needs the type inferred from an expression instead of spelled out directly.</p>
 <h3 id="-in-when-patterns"><a class="header" href="#-in-when-patterns"><code>=&gt;</code> in <code>when</code> patterns</a></h3>
 <p>Inside a <code>when</code> arm’s pattern, <code>=&gt;</code> is reserved for the arm’s own separator (<code>pattern =&gt; body</code>) and cannot also be used as a qualifier there — use <code>.</code> for qualified access within a pattern instead. This only affects the pattern; <code>=&gt;</code> works normally as a qualifier in the arm’s body and everywhere else.</p>
 <pre><code>mod Dir {

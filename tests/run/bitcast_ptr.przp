@@ -1,0 +1,29 @@
+# regression: @bitcast(T, val)'s type argument used to only parse a bare
+# type name (u32, vec2, ...) since it was folded into the generic
+# expression-argument parser like any other builtin arg — a compound type
+# expression like *u8 or ^T isn't a valid expression on its own, so it
+# never parsed. The parser now parses @bitcast's first argument as a real
+# type expression (parse_type), same as any other type annotation.
+
+struct Foo { v: i32 }
+struct Bar { v: i32 }
+
+fn main() -> i32 {
+    # pointer-to-pointer (the specific documented gap)
+    x: u32 = 0x12345678
+    p: *u32 = &x
+    bp: *u8 = @bitcast(*u8, p)
+    @pf("first byte = {bp.*}\n")
+
+    # smart-pointer-to-smart-pointer
+    f: ^Foo = @new(Foo{.v=99})
+    b: ^Bar = @bitcast(^Bar, f)
+    v: i32 = b.^v
+    @pf("v = {v}\n")
+
+    # bare scalar type name still works (pre-existing behavior, unchanged)
+    flt: f32 = 1.0
+    bits: u32 = @bitcast(u32, flt)
+    @pf("bits = {bits}\n")
+    ret 0
+}

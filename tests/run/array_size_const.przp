@@ -1,0 +1,33 @@
+# regression: an array type's size (`[N]T`) was only evaluated as a
+# compile-time constant when N was a literal integer (`[64]T`) — a named
+# `::` global constant used in that position silently computed a size of 0
+# instead, corrupting the struct's layout (later fields overlapped the
+# array rather than following it). Now sema folds a named constant (and
+# simple `+ - * / %` arithmetic on constants) into the real literal before
+# any array-size consumer ever sees it.
+
+CAP: usize : 64
+BASE: usize : 8
+
+struct Foo {
+    data: [CAP]i32,
+    count: usize,
+}
+
+struct Bar {
+    a: [BASE * 4]u8,
+    b: [BASE + 2]i16,
+}
+
+fn main() -> i32 {
+    f: Foo = @zeroed(Foo)
+    f.count = 999
+    @pf("data[0] = {f.data[0]}\n")
+    @pf("count = {f.count}\n")
+    @pf("sizeof f.data = {@size(f.data)}\n")
+
+    bar: Bar = @zeroed(Bar)
+    @pf("sizeof bar.a = {@size(bar.a)}\n")
+    @pf("sizeof bar.b = {@size(bar.b)}\n")
+    ret 0
+}

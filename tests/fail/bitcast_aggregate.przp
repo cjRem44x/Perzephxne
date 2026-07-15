@@ -1,0 +1,10 @@
+# regression: @bitcast to an aggregate type (slice, struct, str, ...) used
+# to be unreachable (the parser couldn't even parse the type argument), but
+# now that arbitrary type expressions parse, this needs an explicit
+# rejection — LLVM's `bitcast` instruction doesn't accept aggregate types,
+# so silently allowing this would emit invalid IR instead of erroring.
+fn main() -> i32 {
+    x: u32 = 42
+    s: []u8 = @bitcast([]u8, x)
+    ret 0
+}

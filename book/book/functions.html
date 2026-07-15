@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-da411ed4.js";
+            window.path_to_searchindex_js = "searchindex-50f5c83d.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-4e58bc13.js"></script>
@@ -281,8 +281,7 @@ extern fn fopen(path: *u8, mode: *u8) -&gt; *FILE_opaque
 <pre><code>struct Vector2 { x: f32, y: f32 }
 extern fn Vector2Add(a: Vector2, b: Vector2) -&gt; Vector2
 </code></pre>
-<p>This is the calling convention raylib, many math libraries, and plenty of system APIs use pervasively (<code>Vector2</code>, <code>Color</code>, <code>Rectangle</code>-shaped structs). Perzephxne classifies the struct’s fields per the platform ABI (small all-float structs pass in SSE registers, small all-integer/mixed structs pass in general registers, anything over 16 bytes passes through memory) and generates the matching call shape automatically — nothing beyond declaring the signature is required.</p>
-<p>This only works for an <code>extern fn</code> reached through <code>import()</code>. A <code>struct</code>-by-value <code>extern fn</code> declared directly in a file with no import will fail to compile with a clear error, since the compiler needs the import alias to route Perzephxne call sites to the internal wrapper it generates. Put the declaration in its own module and import it — a one-function module works fine if that’s all you need.</p>
+<p>This is the calling convention raylib, many math libraries, and plenty of system APIs use pervasively (<code>Vector2</code>, <code>Color</code>, <code>Rectangle</code>-shaped structs). Perzephxne classifies the struct’s fields per the platform ABI (small all-float structs pass in SSE registers, small all-integer/mixed structs pass in general registers, anything over 16 bytes passes through memory) and generates the matching call shape automatically — nothing beyond declaring the signature is required. This works whether the <code>extern fn</code> is declared directly in a file or reached through <code>import()</code> — either way, Perzephxne call sites transparently target the generated wrapper, never the raw ABI-coerced C symbol.</p>
 <h2 id="inline"><a class="header" href="#inline">Inline</a></h2>
 <p>Use <code>inline fn</code> to hint that a function should be inlined at call sites:</p>
 <pre><code>inline fn fast_path(x: i32) -&gt; i32 { ret x * 2 }

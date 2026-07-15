@@ -117,7 +117,12 @@ b3: bool = @bool("yes")    # false
 ```
 f: f32    = 1.0
 bits: u32 = @bitcast(u32, f)   # raw bit pattern — 0x3F800000
+
+p:  *u32 = &bits
+bp: *u8  = @bitcast(*u8, p)    # pointer type argument also works
 ```
+
+`T` accepts any scalar or pointer type expression — including a compound one like `*u8` or `^Foo`, not just a bare name — but not an aggregate (a slice, struct, `str`, tuple, ...), since LLVM's underlying bitcast instruction doesn't support those (see [Pointers & Memory](./pointers.md)).
 
 ## Collections
 

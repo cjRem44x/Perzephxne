@@ -1,0 +1,10 @@
+# regression: an array size that isn't foldable to a compile-time constant
+# (here, a mutable global) used to silently compute a size of 0 instead of
+# erroring.
+BAD: usize = 64
+
+struct Foo {
+    data: [BAD]i32,
+}
+
+fn main() -> i32 { ret 0 }

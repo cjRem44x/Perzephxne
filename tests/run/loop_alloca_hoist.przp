@@ -1,0 +1,23 @@
+# regression: codegen used to emit every `let`'s alloca at its exact source
+# position instead of hoisting it to the function's entry block. LLVM only
+# treats an entry-block alloca as a one-time stack reservation — anywhere
+# else, the alloca instruction re-executes (and reserves fresh stack space)
+# every time control reaches it. A `let` inside a loop body run enough times
+# exhausted the stack and segfaulted; this exact shape (declare two locals
+# per iteration, loop several million times) used to crash well before
+# reaching the iteration count below. Now every local gets a single
+# entry-block slot that's just re-stored into each iteration, so this runs
+# in well under a second with no growth in stack usage.
+
+fn main() -> i32 {
+    i: usize = 0
+    total: u64 = 0
+    while i < 2000000 {
+        x: u64 = @u64(i)
+        y: u64 = x * 2
+        total += y
+        i += 1
+    }
+    @pf("total = {total}\n")
+    ret 0
+}

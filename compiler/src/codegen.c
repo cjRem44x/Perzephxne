@@ -1,3 +1,8 @@
+/* must precede any header (incl. codegen.h's own <stdio.h>) — needed for
+   open_memstream(), used to buffer/splice alloca instructions into each
+   function's entry block */
+#define _POSIX_C_SOURCE 200809L
+
 #include "codegen.h"
 #include "sema.h"
 #include "error.h"
@@ -96,6 +101,13 @@ typedef struct {
     int          release;      /* 1 = --release build (@debug=false, @release=true) */
     int          cur_label;    /* -1 = entry block, else the current l%d label id */
     char         cur_block[64]; /* LLVM name (no %) of the block currently being emitted into */
+    FILE        *alloca_out;   /* non-NULL while generating a function body: every
+                                   `alloca` goes here instead of cg->out, so it lands
+                                   in the entry block regardless of how deep in loops/
+                                   ifs its owning statement lexically sits — an alloca
+                                   outside the entry block re-executes (and re-reserves
+                                   stack space) every time control reaches it, which is
+                                   fatal for one inside a loop body run many times */
     /* dedup tracker for extern fn declarations/wrappers */
     const char  *declared_fns[512];
     size_t       n_declared_fns;
@@ -121,6 +133,21 @@ static void emit(CG *cg, const char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
     vfprintf(cg->out, fmt, ap);
+    va_end(ap);
+}
+
+/* Like emit(), but for `alloca` instructions specifically: redirected to
+   cg->alloca_out (spliced into the entry block after the whole function
+   body is generated) whenever one is active, so every local/temporary gets
+   a single entry-block stack slot no matter where its declaration site sits
+   in the control flow. Falls back to cg->out — identical to emit() — when
+   no function body is currently being buffered (the preamble, enum tables,
+   extern fn wrappers, and other non-cg_fn emission paths never set it). */
+static void emit_alloca(CG *cg, const char *fmt, ...) {
+    FILE *target = cg->alloca_out ? cg->alloca_out : cg->out;
+    va_list ap;
+    va_start(ap, fmt);
+    vfprintf(target, fmt, ap);
     va_end(ap);
 }
 
@@ -226,12 +253,16 @@ static void define_sym(CG *cg, const char *name, const char *llvm, int global, T
     cg->scope->syms = s;
 }
 
-static void define_fn_sym_ex(CG *cg, const char *name, Type *ty, int is_extern) {
-    char buf[256];
-    snprintf(buf, sizeof(buf), "@%s", name);
+/* Like define_fn_sym_ex, but with an explicit llvm_name (including the
+   leading '@') instead of deriving one from `name` — needed when the
+   LLVM-visible symbol a call site should target differs from the name the
+   function is looked up under in Perzephxne source, e.g. a non-imported
+   extern fn's ABI wrapper (see extern_fn_wrapper_llvm_name). */
+static void define_fn_sym_named(CG *cg, const char *name, const char *llvm_name,
+                                 Type *ty, int is_extern) {
     Symbol *s = ARENA_NEW(cg->arena, Symbol);
     s->name      = name;
-    s->llvm_name = arena_strdup(cg->arena, buf);
+    s->llvm_name = llvm_name;
     s->is_global = 1;
     s->is_fn_ref = 1;
     s->is_extern = is_extern;
@@ -240,8 +271,26 @@ static void define_fn_sym_ex(CG *cg, const char *name, Type *ty, int is_extern) 
     cg->scope->syms = s;
 }
 
+static void define_fn_sym_ex(CG *cg, const char *name, Type *ty, int is_extern) {
+    char buf[256];
+    snprintf(buf, sizeof(buf), "@%s", name);
+    define_fn_sym_named(cg, name, arena_strdup(cg->arena, buf), ty, is_extern);
+}
+
 static void define_fn_sym(CG *cg, const char *name, Type *ty) {
     define_fn_sym_ex(cg, name, ty, 0);
+}
+
+/* Bare (no '@') synthetic name for a non-imported extern fn's ABI wrapper —
+   distinct from the real C symbol (`name`, unchanged) so `declare` (the
+   real C signature, ABI-coerced) and `define` (the friendly wrapper every
+   Perzephxne call site actually targets) don't collide on the same LLVM
+   symbol. Deterministic from `name` alone, so the registration site and
+   the wrapper-emission site can each compute it independently and agree. */
+static const char *extern_fn_wrapper_llvm_name(CG *cg, const char *name) {
+    char buf[300];
+    snprintf(buf, sizeof(buf), "__przp_extfn_%s", name);
+    return arena_strdup(cg->arena, buf);
 }
 
 static Symbol *lookup(CG *cg, const char *name) {
@@ -925,7 +974,7 @@ static Val cg_read_line_str(CG *cg, Type **out_ty) {
     emit(cg, "  %%t%d = phi i64 [ %%t%d, %%l%d ], [ %%t%d, %s ]\n",
          clen_f, clen2, cl_strip, clen, pred_lbl);
     int csa = new_tmp(cg);
-    emit(cg, "  %%t%d = alloca { ptr, i64 }\n", csa);
+    emit_alloca(cg, "  %%t%d = alloca { ptr, i64 }\n", csa);
     int cp0 = new_tmp(cg);
     emit(cg, "  %%t%d = getelementptr { ptr, i64 }, ptr %%t%d, i32 0, i32 0\n", cp0, csa);
     emit(cg, "  store ptr %%t%d, ptr %%t%d\n", cbuf, cp0);
@@ -1422,7 +1471,7 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                 emit_label(cg, loop_end);
                 /* return { ptr fat_arr, i64 argc64 } as []str slice */
                 int sl = new_tmp(cg);
-                emit(cg, "  %%t%d = alloca { ptr, i64 }\n", sl);
+                emit_alloca(cg, "  %%t%d = alloca { ptr, i64 }\n", sl);
                 int p0 = new_tmp(cg);
                 emit(cg, "  %%t%d = getelementptr { ptr, i64 }, ptr %%t%d, i32 0, i32 0\n", p0, sl);
                 emit(cg, "  store ptr %%t%d, ptr %%t%d\n", fat_arr, p0);
@@ -1598,7 +1647,7 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                 int slen = new_tmp(cg);
                 emit(cg, "  %%t%d = call i64 @strlen(ptr %%t%d)\n", slen, buf2);
                 int sa = new_tmp(cg);
-                emit(cg, "  %%t%d = alloca { ptr, i64 }\n", sa);
+                emit_alloca(cg, "  %%t%d = alloca { ptr, i64 }\n", sa);
                 int p0 = new_tmp(cg);
                 emit(cg, "  %%t%d = getelementptr { ptr, i64 }, ptr %%t%d, i32 0, i32 0\n", p0, sa);
                 emit(cg, "  store ptr %%t%d, ptr %%t%d\n", buf2, p0);
@@ -1896,7 +1945,7 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                 const char *llt = "i64";
                 Type *zt = (e->builtin.args.len > 0) ? e->builtin.args.data[0]->ty : e->ty;
                 if (zt) llt = llvm_type(zt);
-                emit(cg, "  %%t%d = alloca %s\n", t, llt);
+                emit_alloca(cg, "  %%t%d = alloca %s\n", t, llt);
                 emit(cg, "  call void @llvm.memset.p0.i64(ptr %%t%d, i8 0,"
                          " i64 ptrtoint (ptr getelementptr (%s, ptr null, i32 1) to i64),"
                          " i1 false)\n", t, llt);
@@ -2256,7 +2305,7 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                 emit(cg, "  %%t%d = getelementptr inbounds [%zu x i8], ptr @.str.%d, i32 0, i32 0\n",
                      ft, slen + 1, sid);
                 int sa = new_tmp(cg);
-                emit(cg, "  %%t%d = alloca { ptr, i64 }\n", sa);
+                emit_alloca(cg, "  %%t%d = alloca { ptr, i64 }\n", sa);
                 int p0 = new_tmp(cg);
                 emit(cg, "  %%t%d = getelementptr { ptr, i64 }, ptr %%t%d, i32 0, i32 0\n", p0, sa);
                 emit(cg, "  store ptr %%t%d, ptr %%t%d\n", ft, p0);
@@ -2434,13 +2483,17 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                 fatal_at(e->span, "unknown @err.%s", errname);
             }
 
-            /* @bitcast(DstType, val) — reinterpret bits of val as DstType (same size) */
+            /* @bitcast(DstType, val) — reinterpret bits of val as DstType (same
+               size). DstType is parsed as a real type expression (parser.c)
+               and validated by sema (ty_is_bitcast_safe) to be a scalar or
+               pointer type — never an aggregate, which LLVM's `bitcast`
+               instruction doesn't accept. */
             if (!strcmp(name, "bitcast")) {
-                if (e->builtin.args.len < 2)
+                if (e->builtin.args.len < 1)
                     fatal_at(e->span, "@bitcast requires two arguments: @bitcast(Type, val)");
-                Type *dst_ty = e->builtin.args.data[0]->ty;
+                Type *dst_ty = e->builtin.type_arg;
                 Type *src_ty2 = NULL;
-                Val src2 = cg_expr(cg, e->builtin.args.data[1], &src_ty2);
+                Val src2 = cg_expr(cg, e->builtin.args.data[0], &src_ty2);
                 const char *src_llt2 = src_ty2 ? llvm_type(src_ty2) : "i32";
                 const char *dst_llt2 = dst_ty  ? llvm_type(dst_ty)  : "i32";
                 int tb = new_tmp(cg);
@@ -2597,7 +2650,7 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                 } else {
                     /* int/float → sprintf into a 32-byte stack buffer */
                     int buf = new_tmp(cg);
-                    emit(cg, "  %%t%d = alloca [32 x i8]\n", buf);
+                    emit_alloca(cg, "  %%t%d = alloca [32 x i8]\n", buf);
                     int cptr = new_tmp(cg);
                     emit(cg, "  %%t%d = getelementptr [32 x i8], ptr %%t%d, i32 0, i32 0\n", cptr, buf);
                     int is_src_float = src_ty && (src_ty->kind == TY_F32 || src_ty->kind == TY_F64);
@@ -2683,7 +2736,7 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                 int ec  = new_tmp(cg);
 
                 emit(cg, "  %%t%d = extractvalue { ptr, i64 } %s, 0\n", dp, src.buf);
-                emit(cg, "  %%t%d = alloca ptr\n", ep);
+                emit_alloca(cg, "  %%t%d = alloca ptr\n", ep);
                 if (is_float)
                     emit(cg, "  %%t%d = call double @strtod(ptr %%t%d, ptr %%t%d)\n", raw, dp, ep);
                 else
@@ -3118,7 +3171,7 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                             }
                             const char *struct_llt = effective_llvm_type(cg, self_param_ty);
                             int copy_alloca = new_tmp(cg);
-                            emit(cg, "  %%t%d = alloca %s\n", copy_alloca, struct_llt);
+                            emit_alloca(cg, "  %%t%d = alloca %s\n", copy_alloca, struct_llt);
                             int loaded = new_tmp(cg);
                             emit(cg, "  %%t%d = load %s, ptr %s\n", loaded, struct_llt, src_ptr.buf);
                             emit(cg, "  store %s %%t%d, ptr %%t%d\n", struct_llt, loaded, copy_alloca);
@@ -3216,6 +3269,16 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                     fn_name   = fn_name_buf;
                     callee_ty = csym->ty;
                     is_indirect = 1;
+                } else if (csym && csym->llvm_name) {
+                    /* use the symbol's own tracked llvm_name rather than
+                       assuming it's always "@" + the source identifier —
+                       true for an ordinary fn, but not for e.g. a non-
+                       imported extern fn's ABI wrapper, whose callable
+                       symbol is a synthetic name distinct from the real C
+                       symbol declared under this same source identifier
+                       (see extern_fn_wrapper_llvm_name) */
+                    fn_name = csym->llvm_name;
+                    callee_ty = e->call.callee->ty;
                 } else {
                     snprintf(fn_name_buf, sizeof(fn_name_buf), "@%s",
                              e->call.callee->ident.name);
@@ -3534,7 +3597,7 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
 
                 /* build { ptr, i64 } slice via alloca */
                 int sa = new_tmp(cg);
-                emit(cg, "  %%t%d = alloca { ptr, i64 }\n", sa);
+                emit_alloca(cg, "  %%t%d = alloca { ptr, i64 }\n", sa);
                 int p0 = new_tmp(cg);
                 emit(cg, "  %%t%d = getelementptr { ptr, i64 }, ptr %%t%d, i32 0, i32 0\n", p0, sa);
                 emit(cg, "  store ptr %%t%d, ptr %%t%d\n", data_ptr, p0);
@@ -3620,7 +3683,7 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
 
             /* Alloca must come before the branch terminator */
             int res_slot = new_tmp(cg);
-            emit(cg, "  %%t%d = alloca %s\n", res_slot, res_llt);
+            emit_alloca(cg, "  %%t%d = alloca %s\n", res_slot, res_llt);
 
             Val cond_v = cg_expr(cg, e->if_expr.cond, NULL);
             int then_l = new_label(cg), else_l = new_label(cg), end_l = new_label(cg);
@@ -3669,7 +3732,7 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
             Type *res_ty = e->ty; /* set by sema from first STMT_EXPR arm */
             const char *res_llt = res_ty ? effective_llvm_type(cg, res_ty) : "i64";
             int res_slot = new_tmp(cg);
-            emit(cg, "  %%t%d = alloca %s\n", res_slot, res_llt);
+            emit_alloca(cg, "  %%t%d = alloca %s\n", res_slot, res_llt);
 
             int end_l = new_label(cg);
             Type *val_ty = NULL;
@@ -3737,7 +3800,7 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                         } else {
                             const char *pay_llt = llvm_type(matched_payload_ty);
                             int ba = new_tmp(cg);
-                            emit(cg, "  %%t%d = alloca %s\n", ba, pay_llt);
+                            emit_alloca(cg, "  %%t%d = alloca %s\n", ba, pay_llt);
                             int pv = new_tmp(cg);
                             emit(cg, "  %%t%d = load %s, ptr %%t%d\n", pv, pay_llt, pay_ptr);
                             emit(cg, "  store %s %%t%d, ptr %%t%d\n", pay_llt, pv, ba);
@@ -3844,7 +3907,7 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
             UnionInfoCG *ui = find_union(cg, e->struct_lit.ty_name);
             if (ui) {
                 int t = new_tmp(cg);
-                emit(cg, "  %%t%d = alloca %%%s\n", t, e->struct_lit.ty_name);
+                emit_alloca(cg, "  %%t%d = alloca %%%s\n", t, e->struct_lit.ty_name);
                 if (e->struct_lit.fields.len == 1) {
                     FieldInit *fi = &e->struct_lit.fields.data[0];
                     /* find variant index */
@@ -3886,7 +3949,7 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
             /* regular struct literal */
             StructInfo *si = find_struct(cg, e->struct_lit.ty_name);
             int t = new_tmp(cg);
-            emit(cg, "  %%t%d = alloca %%%s\n", t, e->struct_lit.ty_name);
+            emit_alloca(cg, "  %%t%d = alloca %%%s\n", t, e->struct_lit.ty_name);
             for (size_t i = 0; i < e->struct_lit.fields.len; i++) {
                 FieldInit *fi = &e->struct_lit.fields.data[i];
                 Type *val_ty = NULL;
@@ -3950,7 +4013,7 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
 
             /* allocate backing storage and fill elements */
             int arr = new_tmp(cg);
-            emit(cg, "  %%t%d = alloca [%zu x %s]\n", arr, n, elem_llt);
+            emit_alloca(cg, "  %%t%d = alloca [%zu x %s]\n", arr, n, elem_llt);
             /* nested arrays and structs are returned as alloca ptrs — need a load */
             int elem_needs_load = elem_ty
                 && (elem_ty->kind == TY_ARRAY
@@ -4079,7 +4142,7 @@ static void cg_stmt(CG *cg, Stmt *s) {
             int alloca = new_tmp(cg);
             const char *llt = s->let.ty ? effective_llvm_type(cg, s->let.ty) : "i32";
             if (is_fail_err) llt = "i32"; /* error code slot */
-            emit(cg, "  %%t%d = alloca %s\n", alloca, llt);
+            emit_alloca(cg, "  %%t%d = alloca %s\n", alloca, llt);
 
             if (s->let.init && s->let.init->kind == EXPR_UNDEF) {
                 /* undef: zero-initialize based on declared type */
@@ -4854,7 +4917,7 @@ static void cg_stmt(CG *cg, Stmt *s) {
                     end = val_tmp(ext);
                 }
                 int i_alloca = new_tmp(cg);
-                emit(cg, "  %%t%d = alloca i64\n", i_alloca);
+                emit_alloca(cg, "  %%t%d = alloca i64\n", i_alloca);
                 emit(cg, "  store i64 %s, ptr %%t%d\n", start.buf, i_alloca);
 
                 int cond_l = new_label(cg);
@@ -4937,7 +5000,7 @@ static void cg_stmt(CG *cg, Stmt *s) {
 
                 /* loop index alloca */
                 int idx_alloca = new_tmp(cg);
-                emit(cg, "  %%t%d = alloca i64\n", idx_alloca);
+                emit_alloca(cg, "  %%t%d = alloca i64\n", idx_alloca);
                 emit(cg, "  store i64 0, ptr %%t%d\n", idx_alloca);
 
                 int cond_l = new_label(cg);
@@ -4963,7 +5026,7 @@ static void cg_stmt(CG *cg, Stmt *s) {
                 emit(cg, "  %%t%d = getelementptr %s, ptr %%t%d, i64 %%t%d\n",
                      ep_t, elem_llt, data_t, idx_t);
                 int ev_alloca = new_tmp(cg);
-                emit(cg, "  %%t%d = alloca %s\n", ev_alloca, elem_llt);
+                emit_alloca(cg, "  %%t%d = alloca %s\n", ev_alloca, elem_llt);
                 int ev_t = new_tmp(cg);
                 emit(cg, "  %%t%d = load %s, ptr %%t%d\n", ev_t, elem_llt, ep_t);
                 emit(cg, "  store %s %%t%d, ptr %%t%d\n", elem_llt, ev_t, ev_alloca);
@@ -5122,7 +5185,7 @@ static void cg_stmt(CG *cg, Stmt *s) {
                             /* scalar payload: alloca + load + store */
                             const char *pay_llt = llvm_type(matched_payload_ty);
                             int bind_alloca = new_tmp(cg);
-                            emit(cg, "  %%t%d = alloca %s\n", bind_alloca, pay_llt);
+                            emit_alloca(cg, "  %%t%d = alloca %s\n", bind_alloca, pay_llt);
                             int pay_val = new_tmp(cg);
                             emit(cg, "  %%t%d = load %s, ptr %%t%d\n",
                                  pay_val, pay_llt, pay_ptr);
@@ -5351,7 +5414,7 @@ static void cg_fn(CG *cg, Item *item) {
     if (item->fn.variadic) {
         int ap = new_tmp(cg);
         cg->va_list_tmp = ap;
-        emit(cg, "  %%t%d = alloca [24 x i8], align 16\n", ap);
+        emit_alloca(cg, "  %%t%d = alloca [24 x i8], align 16\n", ap);
         emit(cg, "  call void @llvm.va_start(ptr %%t%d)\n", ap);
     }
 
@@ -5371,7 +5434,7 @@ static void cg_fn(CG *cg, Item *item) {
         }
         const char *llt = effective_llvm_type(cg, par->ty);
         int alloca = new_tmp(cg);
-        emit(cg, "  %%t%d = alloca %s\n", alloca, llt);
+        emit_alloca(cg, "  %%t%d = alloca %s\n", alloca, llt);
         emit(cg, "  store %s %%%s, ptr %%t%d\n", llt, par->name, alloca);
         char llvm_name[32];
         snprintf(llvm_name, sizeof(llvm_name), "%%t%d", alloca);
@@ -5388,6 +5451,21 @@ static void cg_fn(CG *cg, Item *item) {
 
     cg->terminated = 0;
     int fn_scope_popped = 0;
+
+    /* Buffer the body separately from its allocas so every alloca can be
+       spliced into the entry block once the whole body is generated —
+       LLVM only treats alloca as a one-time stack reservation when it's in
+       the entry block; anywhere else it re-executes (reserving fresh stack
+       space) every time control reaches it, which is what made a local
+       inside a loop body exhaust the stack. */
+    char *alloca_buf = NULL, *body_buf = NULL;
+    size_t alloca_buf_len = 0, body_buf_len = 0;
+    FILE *alloca_stream = open_memstream(&alloca_buf, &alloca_buf_len);
+    FILE *body_stream    = open_memstream(&body_buf, &body_buf_len);
+    FILE *real_out = cg->out;
+    cg->out        = body_stream;
+    cg->alloca_out = alloca_stream;
+
     size_t body_len = item->fn.body.len;
     for (size_t i = 0; i < body_len; i++) {
         Stmt *st = item->fn.body.data[i];
@@ -5419,7 +5497,7 @@ static void cg_fn(CG *cg, Item *item) {
             /* Trailing when-statement: allocate result slot, let arm bodies store
                into it, then load and ret after the when's end label. */
             int res_slot = new_tmp(cg);
-            emit(cg, "  %%t%d = alloca %s\n", res_slot, ret_llt);
+            emit_alloca(cg, "  %%t%d = alloca %s\n", res_slot, ret_llt);
             cg->trailing_result_slot = res_slot;
             cg_stmt(cg, st);
             cg->trailing_result_slot = -1;
@@ -5434,7 +5512,7 @@ static void cg_fn(CG *cg, Item *item) {
             /* Trailing if-else: allocate result slot, let branch/else bodies store
                into it, then load and ret after the end label. */
             int res_slot = new_tmp(cg);
-            emit(cg, "  %%t%d = alloca %s\n", res_slot, ret_llt);
+            emit_alloca(cg, "  %%t%d = alloca %s\n", res_slot, ret_llt);
             cg->trailing_result_slot = res_slot;
             cg_stmt(cg, st);
             cg->trailing_result_slot = -1;
@@ -5456,6 +5534,15 @@ static void cg_fn(CG *cg, Item *item) {
         if (is_void) emit(cg, "  ret void\n");
         else         emit(cg, "  ret %s 0\n", ret_llt);
     }
+
+    fclose(alloca_stream);
+    fclose(body_stream);
+    cg->out        = real_out;
+    cg->alloca_out = NULL;
+    if (alloca_buf_len) fwrite(alloca_buf, 1, alloca_buf_len, cg->out);
+    if (body_buf_len)   fwrite(body_buf, 1, body_buf_len, cg->out);
+    free(alloca_buf);
+    free(body_buf);
 
     emit(cg, "}\n\n");
 }
@@ -5573,7 +5660,7 @@ static void emit_extern_fn_abi_wrapper(CG *cg, Item *item,
         char buf[32];
         if (psh[i].kind != ABI_SCALAR) {
             int a = cg->tmp_id++;
-            emit(cg, "  %%t%d = alloca %s\n", a, llvm_type(params->data[i].ty));
+            emit_alloca(cg, "  %%t%d = alloca %s\n", a, llvm_type(params->data[i].ty));
             emit(cg, "  store %s %%p%zu, ptr %%t%d\n", llvm_type(params->data[i].ty), i, a);
             snprintf(buf, sizeof(buf), "%%t%d", a);
         } else {
@@ -5585,7 +5672,7 @@ static void emit_extern_fn_abi_wrapper(CG *cg, Item *item,
     int sret_alloca = -1;
     if (ret_shape.kind == ABI_MEMORY) {
         sret_alloca = cg->tmp_id++;
-        emit(cg, "  %%t%d = alloca %s\n", sret_alloca, llvm_type(ret_ty));
+        emit_alloca(cg, "  %%t%d = alloca %s\n", sret_alloca, llvm_type(ret_ty));
     }
 
     /* Pass A: for each REGS-classified param, load its coerced slot value(s)
@@ -5661,7 +5748,7 @@ static void emit_extern_fn_abi_wrapper(CG *cg, Item *item,
         }
     } else if (ret_shape.kind == ABI_REGS) {
         int slot = cg->tmp_id++;
-        emit(cg, "  %%t%d = alloca %s\n", slot, wrap_ret_llt);
+        emit_alloca(cg, "  %%t%d = alloca %s\n", slot, wrap_ret_llt);
         if (ret_shape.n == 1) {
             emit(cg, "  store %s %%t%d, ptr %%t%d\n", ret_shape.slot_llt[0], call_result, slot);
         } else {
@@ -5688,8 +5775,18 @@ static void emit_extern_fn_abi_wrapper(CG *cg, Item *item,
 
 static void cg_extern_fn(CG *cg, Item *item) {
     const char *c_name = item->extern_fn.c_name ? item->extern_fn.c_name : item->name;
-    /* skip if this exact declaration (by mangled name) was already emitted */
-    if (!mark_declared(cg, item->name)) return;
+    /* skip if this exact declaration (by mangled name) was already emitted.
+       Namespaced ("item:" prefix) rather than the bare item->name: a non-
+       imported extern fn needing ABI wrapping has item->name == the real C
+       symbol name (no alias to distinguish them), and emit_extern_fn_abi_
+       wrapper below does its own separate mark_declared(real_c_name) guard
+       around the actual `declare` — sharing one bare key between "this
+       item was processed" and "this real C symbol was declared" meant the
+       first check silently consumed the second's key, so the real C
+       function's `declare` was never emitted at all. */
+    char item_guard[300];
+    snprintf(item_guard, sizeof(item_guard), "item:%s", item->name);
+    if (!mark_declared(cg, arena_strdup(cg->arena, item_guard))) return;
     if (is_preamble_decl(c_name)) {
         /* preamble already declares the real C function; just emit a wrapper alias */
         if (item->extern_fn.c_name) {
@@ -5773,19 +5870,17 @@ static void cg_extern_fn(CG *cg, Item *item) {
     }
 
     /* Normal (non-imported) extern fn declaration. A struct/array-by-value
-       parameter or return here can't be routed through the ABI wrapper: with
-       no import alias there's no rewrite pass redirecting call sites to a
-       differently-named wrapper, and the wrapper can't share the real C
-       symbol's name (the linker would see two definitions). Fail loudly
-       rather than silently emit ABI-mismatched code — put the declaration in
-       its own module and `import()` it instead, which is supported. */
+       parameter or return still needs the ABI wrapper — the real C symbol
+       (declared under item->name, exactly as written, so the linker finds
+       it) can't also be the wrapper's own name (LLVM would see a `declare`
+       and a `define` for the same symbol), so the wrapper is defined under
+       a synthetic name instead (extern_fn_wrapper_llvm_name) — the same
+       one the symbol-table registration above already pointed every call
+       site at. */
     if (extern_fn_needs_abi(cg, item)) {
-        fatal_at(item->span,
-            "extern fn '%s': struct/array-by-value parameters or return types "
-            "are only supported when declared in a module reached via import() "
-            "(the ABI wrapper needs an import alias to redirect call sites to); "
-            "move this declaration into its own module and import it",
-            item->name);
+        emit_extern_fn_abi_wrapper(cg, item, item->name,
+                                    extern_fn_wrapper_llvm_name(cg, item->name));
+        return;
     }
 
     /* Normal extern fn declaration */
@@ -6126,7 +6221,22 @@ int codegen(Module *mod, FILE *out, int release, int test_mode, const char *out_
                     ty->fn.params.data[j] = item->extern_fn.params.data[j].ty;
             }
             ty->fn.variadic = item->extern_fn.variadic;
-            define_fn_sym_ex(&cg, item->name, ty, 1);
+            /* A non-imported extern fn needing struct/array-by-value ABI
+               handling gets a synthetic wrapper name — see
+               extern_fn_wrapper_llvm_name and cg_extern_fn's non-imported
+               branch, which actually emits that wrapper under this same
+               name. An imported one already has a distinct visible name
+               (the alias-mangled item->name vs the real extern_fn.c_name),
+               so it keeps using the plain "@name" registration. */
+            if (!item->extern_fn.c_name && extern_fn_needs_abi(&cg, item)) {
+                char llvm_buf[320];
+                snprintf(llvm_buf, sizeof(llvm_buf), "@%s",
+                         extern_fn_wrapper_llvm_name(&cg, item->name));
+                define_fn_sym_named(&cg, item->name,
+                                    arena_strdup(cg.arena, llvm_buf), ty, 1);
+            } else {
+                define_fn_sym_ex(&cg, item->name, ty, 1);
+            }
         }
     }
     /* also register impl methods */
