@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-50f5c83d.js";
+            window.path_to_searchindex_js = "searchindex-a68d79e9.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-4e58bc13.js"></script>
@@ -2909,7 +2909,6 @@ r: f64 = m.sqrt(2.0)
 <tr><td>Release UX</td><td>A future version command should be <code>przp version</code>, but versioning is intentionally deferred while beta work is moving quickly.</td></tr>
 <tr><td><code>any</code> type</td><td>Reserved keyword. Runtime-tagged values (boxing, type IDs, <code>when</code> dispatch on types) are designed but not implemented; removed from the reference until they exist.</td></tr>
 <tr><td>Two-level <code>mod</code> + <code>import</code> access in a type annotation</td><td><code>x: lib.Y.Circle = ...</code> (a struct/enum inside a <code>mod</code> block that itself lives inside an <em>imported</em> file, named directly in a type annotation) doesn’t parse — <code>parse_type</code> only resolves one level of import-alias-qualified type name. The equivalent <em>expression</em> access (<code>lib.Y.Circle.new(...)</code>, <code>lib.Y.someFreeFn()</code>, <code>lib.Y.Direction.North</code>, and matching that in a <code>when</code> pattern) all resolve correctly; work around the annotation gap with <code>:=</code>/<code>::</code> to infer the type from an expression instead (<code>x := lib.Y.Circle.new(...)</code>); see <a href="#modules">Modules</a>.</td></tr>
-<tr><td>A smart-pointer field access (<code>p.^field</code>) interpolated directly in <code>@pf</code>/<code>@epf</code>/<code>@fmt</code> fails to compile when the field is itself a struct</td><td><code>@pf("{p.^field}\n")</code> for a struct-typed <code>field</code> tries to pass the struct by value to <code>printf</code>’s varargs, but produces a mismatched-type LLVM IR error (<code>defined with type 'ptr' but expected '%Struct = type {...}'</code>) instead of compiling — found while testing the <code>@bitcast</code> pointer-type fix above, on code with no <code>@bitcast</code> involved at all. Assigning <code>p.^field</code> to a local first, then interpolating the local, works around it.</td></tr>
 </tbody>
 </table>
 </div>

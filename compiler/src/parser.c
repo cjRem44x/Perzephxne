@@ -598,6 +598,20 @@ static ExprList desugar_pf_interp(Parser *p, ExprList orig) {
             sub.peek2 = lexer_next(&sub.lexer);
             sub.peek3 = lexer_next(&sub.lexer);
             Expr *inner = parse_expr(&sub);
+            /* parse_expr only ever parses a prefix of its input and simply
+               stops at the first token it doesn't recognize as a
+               continuation — fine at the top level (the caller expects a
+               single expression followed by more source), but here the
+               "rest of the source" is only the sub-parser's synthetic EOF,
+               so any leftover text is a genuine syntax error in the
+               interpolated expression, not something to silently drop.
+               Without this check, e.g. `{f.^v}` (a typo for `{f.^.v}`)
+               parsed only "f.^" and discarded the trailing "v" with no
+               error at all, producing a confusing type-mismatch deep in
+               the generated LLVM IR instead of a clear parse error here. */
+            if (!check(&sub, TOK_EOF))
+                fatal_at(inner->span, "unexpected %s after expression in "
+                    "@pf format string interpolation", tok_kind_str(sub.cur.kind));
             LIST_PUSH(p->arena, &interp, Expr, inner);
         } else {
             if (nf < sizeof(new_fmt) - 1) new_fmt[nf++] = *s++;

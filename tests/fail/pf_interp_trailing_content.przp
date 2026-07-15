@@ -1,0 +1,16 @@
+# regression: @pf's {expr} interpolation used to silently drop trailing
+# unparsed text inside the braces instead of erroring — parse_expr only
+# ever parses a prefix and stops at the first token it doesn't recognize,
+# which is fine at the top level (more source follows) but not here, where
+# "more source" is just the interpolated substring's own synthetic EOF.
+# `f.^v` (missing the dot before the field name; correct is `f.^.v`) used
+# to parse only "f.^" and silently drop "v", surfacing as a confusing
+# type-mismatch deep in the generated LLVM IR instead of a clear parse
+# error pointing at the actual mistake.
+struct Foo { v: i32 }
+
+fn main() -> i32 {
+    f: ^Foo = @new(Foo{.v=99})
+    @pf("v = {f.^v}\n")
+    ret 0
+}
