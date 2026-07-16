@@ -287,57 +287,205 @@ static void rw_types_in_stmts(StmtList sl, const char **orig, size_t n, const ch
     }
 }
 
+/* Every name a STMT_LET, a for-loop's element/index binding, or a function
+   parameter introduces within a body — collected once per function before
+   rw_ident_* runs on it, so that pass can tell a local variable/parameter
+   apart from an actual reference to one of the module's own items, even
+   when the two happen to share a name. Without this, a local shadowing an
+   unrelated outer item's name got silently rewritten into a reference to
+   that item instead — normally harmless since a same-module collision is
+   unlikely, but a multi-level import chain merges an inner module's
+   already-mangled items into the outer module's own item list before the
+   outer alias's own mangle_items pass runs, so `orig` at that point can
+   contain a name that has nothing to do with the file being rewritten at
+   all — see the "entry_name" bug this was found from (a top-level
+   function in one file colliding with an unrelated local variable three
+   import-levels deep in a completely different file). */
+typedef struct {
+    const char **names;
+    size_t       n;
+    size_t       cap;
+    Arena       *arena;
+} LocalNames;
+
+static void add_local_name(LocalNames *ln, const char *name) {
+    if (!name) return;
+    if (ln->n >= ln->cap) {
+        size_t new_cap = ln->cap ? ln->cap * 2 : 8;
+        const char **nn = arena_alloc(ln->arena, new_cap * sizeof(char *));
+        if (ln->n) memcpy(nn, ln->names, ln->n * sizeof(char *));
+        ln->names = nn;
+        ln->cap   = new_cap;
+    }
+    ln->names[ln->n++] = name;
+}
+
+static int is_local_name(const LocalNames *ln, const char *name) {
+    for (size_t i = 0; i < ln->n; i++)
+        if (!strcmp(ln->names[i], name)) return 1;
+    return 0;
+}
+
+static void collect_locals_stmt(Stmt *s, LocalNames *ln);
+
+static void collect_locals_stmts(StmtList sl, LocalNames *ln) {
+    for (size_t i = 0; i < sl.len; i++) collect_locals_stmt(sl.data[i], ln);
+}
+
+/* Only needs to reach EXPR_IF/EXPR_WHEN — the only expression kinds that
+   embed statements (and so can introduce their own STMT_LET/for-bindings)
+   — so this mirrors rw_ident_expr's traversal shape but does nothing at
+   every other node beyond recursing into its sub-expressions to reach one. */
+static void collect_locals_expr(Expr *e, LocalNames *ln) {
+    if (!e) return;
+    switch (e->kind) {
+        case EXPR_CALL:
+            collect_locals_expr(e->call.callee, ln);
+            for (size_t i = 0; i < e->call.args.len; i++)
+                collect_locals_expr(e->call.args.data[i], ln);
+            break;
+        case EXPR_BINOP:
+            collect_locals_expr(e->binop.l, ln);
+            collect_locals_expr(e->binop.r, ln);
+            break;
+        case EXPR_UNOP:      collect_locals_expr(e->unop.operand, ln); break;
+        case EXPR_INDEX:
+            collect_locals_expr(e->index.arr, ln);
+            collect_locals_expr(e->index.idx, ln);
+            break;
+        case EXPR_DEREF:
+        case EXPR_SMARTDEREF: collect_locals_expr(e->deref.operand, ln); break;
+        case EXPR_CAST:      collect_locals_expr(e->cast.val, ln); break;
+        case EXPR_BUILTIN:
+            for (size_t i = 0; i < e->builtin.args.len; i++)
+                collect_locals_expr(e->builtin.args.data[i], ln);
+            break;
+        case EXPR_FIELD:     collect_locals_expr(e->field.obj, ln); break;
+        case EXPR_STRUCT_LIT:
+            for (size_t i = 0; i < e->struct_lit.fields.len; i++)
+                collect_locals_expr(e->struct_lit.fields.data[i].val, ln);
+            break;
+        case EXPR_ARRAY_LIT:
+        case EXPR_TUPLE:
+            for (size_t i = 0; i < e->array_lit.len; i++)
+                collect_locals_expr(e->array_lit.data[i], ln);
+            break;
+        case EXPR_IF:
+            collect_locals_expr(e->if_expr.cond, ln);
+            collect_locals_stmt(e->if_expr.then_, ln);
+            collect_locals_stmt(e->if_expr.else_, ln);
+            break;
+        case EXPR_WHEN:
+            collect_locals_expr(e->when.cond, ln);
+            for (size_t i = 0; i < e->when.arms.len; i++)
+                collect_locals_stmt(e->when.arms.data[i].body, ln);
+            break;
+        default: break;
+    }
+}
+
+static void collect_locals_stmt(Stmt *s, LocalNames *ln) {
+    if (!s) return;
+    switch (s->kind) {
+        case STMT_EXPR:   collect_locals_expr(s->expr, ln); break;
+        case STMT_LET:
+            add_local_name(ln, s->let.name);
+            collect_locals_expr(s->let.init, ln);
+            break;
+        case STMT_ASSIGN:
+            collect_locals_expr(s->assign.target, ln);
+            collect_locals_expr(s->assign.val, ln);
+            break;
+        case STMT_RET:    collect_locals_expr(s->ret.val, ln); break;
+        case STMT_IF:
+            for (size_t j = 0; j < s->if_.branches.len; j++) {
+                collect_locals_expr(s->if_.branches.data[j].cond, ln);
+                collect_locals_stmts(s->if_.branches.data[j].body, ln);
+            }
+            collect_locals_stmts(s->if_.else_body, ln);
+            break;
+        case STMT_WHILE:
+            collect_locals_expr(s->while_.cond, ln);
+            collect_locals_stmts(s->while_.body, ln);
+            break;
+        case STMT_FOR:
+            add_local_name(ln, s->for_.clause.elem);
+            add_local_name(ln, s->for_.clause.idx);
+            collect_locals_expr(s->for_.clause.iter, ln);
+            collect_locals_expr(s->for_.clause.range_end, ln);
+            collect_locals_expr(s->for_.clause.cond, ln);
+            collect_locals_stmt(s->for_.clause.init, ln);
+            collect_locals_stmt(s->for_.clause.step, ln);
+            collect_locals_stmts(s->for_.body, ln);
+            break;
+        case STMT_BLOCK:  collect_locals_stmts(s->block, ln); break;
+        case STMT_DEFER:  collect_locals_stmts(s->defer, ln); break;
+        case STMT_WHEN:
+            collect_locals_expr(s->when.val, ln);
+            for (size_t j = 0; j < s->when.arms.len; j++) {
+                WhenArm *arm = &s->when.arms.data[j];
+                for (size_t k = 0; k < arm->pats.len; k++)
+                    collect_locals_expr(arm->pats.data[k], ln);
+                collect_locals_stmt(arm->body, ln);
+            }
+            break;
+        default: break;
+    }
+}
+
 /* Rewrite EXPR_IDENT references inside function bodies: if the ident name
-   matches one of the module's own (non-extern) items, prefix it with alias__.
-   This handles intra-module calls like `slice(...)` inside `trim`'s body. */
+   matches one of the module's own (non-extern) items — and isn't shadowed
+   by a local of the same name (see LocalNames above) — prefix it with
+   alias__. This handles intra-module calls like `slice(...)` inside
+   `trim`'s body. */
 static void rw_ident_expr(Expr *e, const char **orig, size_t n_orig,
-                          const char *alias, Arena *a);
+                          const char *alias, Arena *a, const LocalNames *ln);
 static void rw_ident_stmts(StmtList sl, const char **orig, size_t n_orig,
-                            const char *alias, Arena *a);
+                            const char *alias, Arena *a, const LocalNames *ln);
 static void rw_ident_stmt(Stmt *s, const char **orig, size_t n_orig,
-                           const char *alias, Arena *a);
+                           const char *alias, Arena *a, const LocalNames *ln);
 
 static void rw_ident_stmts(StmtList sl, const char **orig, size_t n_orig,
-                            const char *alias, Arena *a) {
+                            const char *alias, Arena *a, const LocalNames *ln) {
     for (size_t i = 0; i < sl.len; i++) {
         Stmt *s = sl.data[i];
         if (!s) continue;
         switch (s->kind) {
-            case STMT_EXPR:   rw_ident_expr(s->expr, orig, n_orig, alias, a); break;
-            case STMT_LET:    rw_ident_expr(s->let.init, orig, n_orig, alias, a); break;
+            case STMT_EXPR:   rw_ident_expr(s->expr, orig, n_orig, alias, a, ln); break;
+            case STMT_LET:    rw_ident_expr(s->let.init, orig, n_orig, alias, a, ln); break;
             case STMT_ASSIGN:
-                rw_ident_expr(s->assign.target, orig, n_orig, alias, a);
-                rw_ident_expr(s->assign.val, orig, n_orig, alias, a);
+                rw_ident_expr(s->assign.target, orig, n_orig, alias, a, ln);
+                rw_ident_expr(s->assign.val, orig, n_orig, alias, a, ln);
                 break;
-            case STMT_RET:    rw_ident_expr(s->ret.val, orig, n_orig, alias, a); break;
+            case STMT_RET:    rw_ident_expr(s->ret.val, orig, n_orig, alias, a, ln); break;
             case STMT_IF:
                 for (size_t j = 0; j < s->if_.branches.len; j++) {
-                    rw_ident_expr(s->if_.branches.data[j].cond, orig, n_orig, alias, a);
-                    rw_ident_stmts(s->if_.branches.data[j].body, orig, n_orig, alias, a);
+                    rw_ident_expr(s->if_.branches.data[j].cond, orig, n_orig, alias, a, ln);
+                    rw_ident_stmts(s->if_.branches.data[j].body, orig, n_orig, alias, a, ln);
                 }
-                rw_ident_stmts(s->if_.else_body, orig, n_orig, alias, a);
+                rw_ident_stmts(s->if_.else_body, orig, n_orig, alias, a, ln);
                 break;
             case STMT_WHILE:
-                rw_ident_expr(s->while_.cond, orig, n_orig, alias, a);
-                rw_ident_stmts(s->while_.body, orig, n_orig, alias, a);
+                rw_ident_expr(s->while_.cond, orig, n_orig, alias, a, ln);
+                rw_ident_stmts(s->while_.body, orig, n_orig, alias, a, ln);
                 break;
             case STMT_FOR:
-                rw_ident_expr(s->for_.clause.iter, orig, n_orig, alias, a);
-                rw_ident_expr(s->for_.clause.range_end, orig, n_orig, alias, a);
-                rw_ident_expr(s->for_.clause.cond, orig, n_orig, alias, a);
-                rw_ident_stmt(s->for_.clause.init, orig, n_orig, alias, a);
-                rw_ident_stmt(s->for_.clause.step, orig, n_orig, alias, a);
-                rw_ident_stmts(s->for_.body, orig, n_orig, alias, a);
+                rw_ident_expr(s->for_.clause.iter, orig, n_orig, alias, a, ln);
+                rw_ident_expr(s->for_.clause.range_end, orig, n_orig, alias, a, ln);
+                rw_ident_expr(s->for_.clause.cond, orig, n_orig, alias, a, ln);
+                rw_ident_stmt(s->for_.clause.init, orig, n_orig, alias, a, ln);
+                rw_ident_stmt(s->for_.clause.step, orig, n_orig, alias, a, ln);
+                rw_ident_stmts(s->for_.body, orig, n_orig, alias, a, ln);
                 break;
-            case STMT_BLOCK:  rw_ident_stmts(s->block, orig, n_orig, alias, a); break;
-            case STMT_DEFER:  rw_ident_stmts(s->defer, orig, n_orig, alias, a); break;
+            case STMT_BLOCK:  rw_ident_stmts(s->block, orig, n_orig, alias, a, ln); break;
+            case STMT_DEFER:  rw_ident_stmts(s->defer, orig, n_orig, alias, a, ln); break;
             case STMT_WHEN:
-                rw_ident_expr(s->when.val, orig, n_orig, alias, a);
+                rw_ident_expr(s->when.val, orig, n_orig, alias, a, ln);
                 for (size_t j = 0; j < s->when.arms.len; j++) {
                     WhenArm *arm = &s->when.arms.data[j];
                     for (size_t k = 0; k < arm->pats.len; k++)
-                        rw_ident_expr(arm->pats.data[k], orig, n_orig, alias, a);
-                    rw_ident_stmt(arm->body, orig, n_orig, alias, a);
+                        rw_ident_expr(arm->pats.data[k], orig, n_orig, alias, a, ln);
+                    rw_ident_stmt(arm->body, orig, n_orig, alias, a, ln);
                 }
                 break;
             default: break;
@@ -346,17 +494,18 @@ static void rw_ident_stmts(StmtList sl, const char **orig, size_t n_orig,
 }
 
 static void rw_ident_stmt(Stmt *s, const char **orig, size_t n_orig,
-                           const char *alias, Arena *a) {
+                           const char *alias, Arena *a, const LocalNames *ln) {
     if (!s) return;
     StmtList sl = {.data = &s, .len = 1};
-    rw_ident_stmts(sl, orig, n_orig, alias, a);
+    rw_ident_stmts(sl, orig, n_orig, alias, a, ln);
 }
 
 static void rw_ident_expr(Expr *e, const char **orig, size_t n_orig,
-                          const char *alias, Arena *a) {
+                          const char *alias, Arena *a, const LocalNames *ln) {
     if (!e) return;
     switch (e->kind) {
         case EXPR_IDENT: {
+            if (ln && is_local_name(ln, e->ident.name)) break;
             for (size_t i = 0; i < n_orig; i++) {
                 if (names_generic_match(e->ident.name, orig[i])) {
                     char buf[512];
@@ -368,34 +517,34 @@ static void rw_ident_expr(Expr *e, const char **orig, size_t n_orig,
             break;
         }
         case EXPR_CALL:
-            rw_ident_expr(e->call.callee, orig, n_orig, alias, a);
+            rw_ident_expr(e->call.callee, orig, n_orig, alias, a, ln);
             for (size_t i = 0; i < e->call.args.len; i++)
-                rw_ident_expr(e->call.args.data[i], orig, n_orig, alias, a);
+                rw_ident_expr(e->call.args.data[i], orig, n_orig, alias, a, ln);
             break;
         case EXPR_BINOP:
-            rw_ident_expr(e->binop.l, orig, n_orig, alias, a);
-            rw_ident_expr(e->binop.r, orig, n_orig, alias, a);
+            rw_ident_expr(e->binop.l, orig, n_orig, alias, a, ln);
+            rw_ident_expr(e->binop.r, orig, n_orig, alias, a, ln);
             break;
         case EXPR_UNOP:
-            rw_ident_expr(e->unop.operand, orig, n_orig, alias, a);
+            rw_ident_expr(e->unop.operand, orig, n_orig, alias, a, ln);
             break;
         case EXPR_INDEX:
-            rw_ident_expr(e->index.arr, orig, n_orig, alias, a);
-            rw_ident_expr(e->index.idx, orig, n_orig, alias, a);
+            rw_ident_expr(e->index.arr, orig, n_orig, alias, a, ln);
+            rw_ident_expr(e->index.idx, orig, n_orig, alias, a, ln);
             break;
         case EXPR_DEREF:
         case EXPR_SMARTDEREF:
-            rw_ident_expr(e->deref.operand, orig, n_orig, alias, a);
+            rw_ident_expr(e->deref.operand, orig, n_orig, alias, a, ln);
             break;
         case EXPR_CAST:
-            rw_ident_expr(e->cast.val, orig, n_orig, alias, a);
+            rw_ident_expr(e->cast.val, orig, n_orig, alias, a, ln);
             break;
         case EXPR_BUILTIN:
             for (size_t i = 0; i < e->builtin.args.len; i++)
-                rw_ident_expr(e->builtin.args.data[i], orig, n_orig, alias, a);
+                rw_ident_expr(e->builtin.args.data[i], orig, n_orig, alias, a, ln);
             break;
         case EXPR_FIELD:
-            rw_ident_expr(e->field.obj, orig, n_orig, alias, a);
+            rw_ident_expr(e->field.obj, orig, n_orig, alias, a, ln);
             break;
         case EXPR_STRUCT_LIT:
             for (size_t i = 0; i < n_orig; i++) {
@@ -407,25 +556,25 @@ static void rw_ident_expr(Expr *e, const char **orig, size_t n_orig,
                 }
             }
             for (size_t i = 0; i < e->struct_lit.fields.len; i++)
-                rw_ident_expr(e->struct_lit.fields.data[i].val, orig, n_orig, alias, a);
+                rw_ident_expr(e->struct_lit.fields.data[i].val, orig, n_orig, alias, a, ln);
             break;
         case EXPR_ARRAY_LIT:
         case EXPR_TUPLE: /* EXPR_TUPLE reuses the array_lit field (parser.c) */
             for (size_t i = 0; i < e->array_lit.len; i++)
-                rw_ident_expr(e->array_lit.data[i], orig, n_orig, alias, a);
+                rw_ident_expr(e->array_lit.data[i], orig, n_orig, alias, a, ln);
             break;
         case EXPR_IF:
-            rw_ident_expr(e->if_expr.cond, orig, n_orig, alias, a);
-            rw_ident_stmt(e->if_expr.then_, orig, n_orig, alias, a);
-            rw_ident_stmt(e->if_expr.else_, orig, n_orig, alias, a);
+            rw_ident_expr(e->if_expr.cond, orig, n_orig, alias, a, ln);
+            rw_ident_stmt(e->if_expr.then_, orig, n_orig, alias, a, ln);
+            rw_ident_stmt(e->if_expr.else_, orig, n_orig, alias, a, ln);
             break;
         case EXPR_WHEN:
-            rw_ident_expr(e->when.cond, orig, n_orig, alias, a);
+            rw_ident_expr(e->when.cond, orig, n_orig, alias, a, ln);
             for (size_t i = 0; i < e->when.arms.len; i++) {
                 WhenArm *arm = &e->when.arms.data[i];
                 for (size_t j = 0; j < arm->pats.len; j++)
-                    rw_ident_expr(arm->pats.data[j], orig, n_orig, alias, a);
-                rw_ident_stmt(arm->body, orig, n_orig, alias, a);
+                    rw_ident_expr(arm->pats.data[j], orig, n_orig, alias, a, ln);
+                rw_ident_stmt(arm->body, orig, n_orig, alias, a, ln);
             }
             break;
         default: break;
@@ -519,8 +668,17 @@ static void mangle_items(Module *mod, const char *alias, Arena *arena) {
                 rw_type(item->fn.params.data[j].ty, all_orig, n_all_orig, alias, arena);
             rw_type(item->fn.ret, all_orig, n_all_orig, alias, arena);
             rw_types_in_stmts(item->fn.body, all_orig, n_all_orig, alias, arena);
-            /* rewrite direct calls to other module functions */
-            rw_ident_stmts(item->fn.body, orig, n_orig, alias, arena);
+            /* rewrite direct calls to other module functions, but never a
+               local (param or let/for-bound name) that happens to shadow
+               one of this module's own item names */
+            {
+                LocalNames ln = {0};
+                ln.arena = arena;
+                for (size_t j = 0; j < item->fn.params.len; j++)
+                    add_local_name(&ln, item->fn.params.data[j].name);
+                collect_locals_stmts(item->fn.body, &ln);
+                rw_ident_stmts(item->fn.body, orig, n_orig, alias, arena, &ln);
+            }
         } else if (item->kind == ITEM_EXTERN_FN) {
             /* extern fn: only rewrite type annotations (param/return types) */
             for (size_t j = 0; j < item->extern_fn.params.len; j++)
@@ -538,7 +696,12 @@ static void mangle_items(Module *mod, const char *alias, Arena *arena) {
                re-mangled global would reference stale, single-mangled names
                (e.g. "be__Backend" instead of "gl__be__Backend" once gl.przp
                is itself imported under the alias "gl"). */
-            rw_ident_expr(item->global.init, orig, n_orig, alias, arena);
+            {
+                LocalNames ln = {0};
+                ln.arena = arena;
+                collect_locals_expr(item->global.init, &ln);
+                rw_ident_expr(item->global.init, orig, n_orig, alias, arena, &ln);
+            }
         } else if (item->kind == ITEM_IMPL) {
             for (size_t j = 0; j < item->impl.methods.len; j++) {
                 Item *m = item->impl.methods.data[j];
@@ -546,7 +709,14 @@ static void mangle_items(Module *mod, const char *alias, Arena *arena) {
                     rw_type(m->fn.params.data[k].ty, all_orig, n_all_orig, alias, arena);
                 rw_type(m->fn.ret, all_orig, n_all_orig, alias, arena);
                 rw_types_in_stmts(m->fn.body, all_orig, n_all_orig, alias, arena);
-                rw_ident_stmts(m->fn.body, orig, n_orig, alias, arena);
+                {
+                    LocalNames ln = {0};
+                    ln.arena = arena;
+                    for (size_t k = 0; k < m->fn.params.len; k++)
+                        add_local_name(&ln, m->fn.params.data[k].name);
+                    collect_locals_stmts(m->fn.body, &ln);
+                    rw_ident_stmts(m->fn.body, orig, n_orig, alias, arena, &ln);
+                }
             }
         }
     }

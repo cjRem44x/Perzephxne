@@ -27,6 +27,10 @@ The core language surface is represented in the book and regression suite. The r
 | Release UX | A future version command should be `przp version`, but versioning is intentionally deferred while beta work is moving quickly. |
 | `any` type | Reserved keyword. Runtime-tagged values (boxing, type IDs, `when` dispatch on types) are designed but not implemented; removed from the reference until they exist. |
 
+## Bugs Found and Fixed Along the Way
+
+- **Nested-import local-variable collision** — a 3+-level-deep import chain (file A imports B, B imports C) could mis-rewrite an unrelated local variable inside C's own function body if its name happened to match a top-level item name declared in B. `mangle_items` merges an already-mangled imported module's items into the importer's own item list *before* the importer's own alias-rewrite pass runs, so that pass's name-match set ended up including names with no relation to the code it was walking, and the rewrite itself had no notion of lexical scope to tell a local apart from an item reference. Fixed by collecting each function's own locals (`LocalNames` in `main.c`) and always letting a local name shadow an outer item for that whole function body. Covered by `tests/run/local_name_collision.przp`.
+
 ## Documentation Rule
 
 Any compiler feature that is added or changed should update both the book source and the generated `book/book` output in the same change. The book should remain the user-facing source of truth for the current language.

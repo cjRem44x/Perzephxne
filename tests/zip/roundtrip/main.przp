@@ -1,0 +1,33 @@
+# regression: std/zip's zip_path/unzip_path over both a whole directory
+# tree and a single file, plus the nested-import local-variable-collision
+# bug this module's own entry_name() originally tripped over (see main.c's
+# LocalNames/collect_locals_* — a local var in std/file.przp's list() also
+# named "entry_name" used to get wrongly rewritten to this module's own
+# entry_name function once merged into the same mangle_items pass).
+
+import(zarc = "std/zip")
+import(file = "std/file")
+
+fn main() -> i32 {
+    ok1: bool = zarc.zip_path("out.zip", "photos")
+    @pf("zip dir: {ok1}\n")
+
+    ok2: bool = zarc.unzip_path("out.zip", "extracted")
+    @pf("unzip dir: {ok2}\n")
+
+    a: str = file.read_all("extracted/photos/a.txt")
+    b: str = file.read_all("extracted/photos/2024/b.txt")
+    @pf("a: {a}")
+    @pf("b: {b}")
+
+    ok3: bool = zarc.zip_path("single.zip", "photos/a.txt")
+    @pf("zip file: {ok3}\n")
+
+    ok4: bool = zarc.unzip_path("single.zip", "extract_single")
+    @pf("unzip file: {ok4}\n")
+
+    c: str = file.read_all("extract_single/a.txt")
+    @pf("c: {c}")
+
+    ret 0
+}

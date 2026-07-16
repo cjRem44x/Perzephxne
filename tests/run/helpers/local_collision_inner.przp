@@ -1,0 +1,8 @@
+# the inner-most file of the 3-level chain: its own local variable
+# `entry_name` (nothing to do with any item name in this file) is what an
+# outer importer's unrelated top-level function of the same name used to
+# get wrongly rewritten into — see local_name_collision.przp.
+fn helper(x: str) -> str {
+    entry_name: str = x
+    ret entry_name
+}

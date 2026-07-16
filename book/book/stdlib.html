@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-5937cb53.js";
+            window.path_to_searchindex_js = "searchindex-ee851666.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-4e58bc13.js"></script>
@@ -378,6 +378,28 @@ if err == 0 {
 file.make("build/assets/")           # mkdir -p — creates build/ and build/assets/
 file.make("build/assets/readme.txt") # an empty file, parent dirs already there
 file.delete("build")                 # gone — recursively, even though non-empty
+</code></pre>
+<h2 id="stdzip"><a class="header" href="#stdzip"><code>std/zip</code></a></h2>
+<p>Create and extract <code>.zip</code> archives, via <a href="https://libzip.org">libzip</a> — an extern FFI binding, not a hand-rolled format implementation. Needs <code>-lzip</code> at link time: add <code>link = ["zip"]</code> to <code>[build]</code> in your project’s <code>przp.toml</code> (see <a href="./build-system.html">Build System</a>); <code>sac</code> users pass <code>-lzip</code> directly on the command line.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Function</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>zip_path(out_zip, src_path)</code></td><td>create/overwrite the archive at <code>out_zip</code> from <code>src_path</code> — a single file, or an entire directory tree (recursively)</td></tr>
+<tr><td><code>unzip_path(zip_file, dest_dir)</code></td><td>extract every entry of <code>zip_file</code> into <code>dest_dir</code> (created if missing), recreating each entry’s own directory structure</td></tr>
+</tbody>
+</table>
+</div>
+<p>Zipping a directory names its entries relative to the directory’s own parent, so zipping <code>photos</code> produces entries like <code>photos/a.png</code> — the same convention <code>zip -r archive.zip photos</code> uses, and what <code>unzip_path</code> expects to recreate the tree under the destination.</p>
+<pre><code>import(zip = "std/zip")
+
+zip.zip_path("backup.zip", "photos")       # a whole directory tree
+zip.unzip_path("backup.zip", "restored")   # -&gt; restored/photos/...
+
+zip.zip_path("single.zip", "notes.txt")    # a single file
+zip.unzip_path("single.zip", "out")        # -&gt; out/notes.txt
 </code></pre>
 <h2 id="stdfmt"><a class="header" href="#stdfmt"><code>std/fmt</code></a></h2>
 <p>String formatting helpers. For interpolation-style formatting, use the <code>@fmt</code> builtin directly with named expressions, for example <code>@fmt("x={x}")</code>.</p>

@@ -332,6 +332,47 @@ run_gl_case() {
     fi
 }
 
+# std/zip tests (libzip FFI). Needs libzip-dev's runtime .so, not guaranteed
+# on every dev/CI machine — skipped with a message, not failed, when absent.
+run_zip_case() {
+    local src_dir="$1"
+    local name
+    name="$(basename "$src_dir")"
+    local bin="$TMP/bin/$name.zip"
+    local actual="$TMP/out/$name.zip.stdout"
+    local compile_err="$TMP/err/$name.zip.compile.stderr"
+    local run_err="$TMP/err/$name.zip.run.stderr"
+    local run_dir="$TMP/zip/$name"
+    local expected="$src_dir/stdout"
+
+    printf 'zip   %s\n' "$name"
+    if ! PRZP_STDLIB="$STDLIB" "$PRZP" sac "$src_dir/main.przp" -lzip -o="$bin" \
+            >"$TMP/out/$name.zip.compile.stdout" 2>"$compile_err"; then
+        printf 'FAIL  %s: zip compile failed\n' "$name" >&2
+        sed -n '1,120p' "$compile_err" >&2
+        failures=$((failures + 1))
+        return
+    fi
+
+    rm -rf "$run_dir"
+    mkdir -p "$run_dir"
+    if [ -d "$src_dir/fixture" ]; then
+        cp -r "$src_dir/fixture/." "$run_dir/"
+    fi
+
+    if ! (cd "$run_dir" && "$bin") >"$actual" 2>"$run_err"; then
+        printf 'FAIL  %s: zip run failed\n' "$name" >&2
+        sed -n '1,120p' "$run_err" >&2
+        failures=$((failures + 1))
+        return
+    fi
+
+    if ! diff -u "$expected" "$actual"; then
+        printf 'FAIL  %s: zip stdout mismatch\n' "$name" >&2
+        failures=$((failures + 1))
+    fi
+}
+
 run_cli_fail() {
     local name="$1"
     local expected="$2"
@@ -851,6 +892,15 @@ if run_x11_setup; then
         printf 'skip  gl tests: libGL not installed\n'
     fi
     run_x11_teardown
+fi
+
+if ldconfig -p 2>/dev/null | grep -q "libzip\.so"; then
+    for dir in "$ROOT"/tests/zip/*; do
+        [ -d "$dir" ] || continue
+        run_zip_case "$dir"
+    done
+else
+    printf 'skip  zip tests: libzip not installed\n'
 fi
 
 run_stdlib_resolution_case

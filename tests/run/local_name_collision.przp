@@ -1,0 +1,21 @@
+# regression: a 3-level-deep import chain (this file -> helpers/
+# local_collision_outer -> helpers/local_collision_inner) used to break
+# when the outer file declared a top-level function whose name happened
+# to match an unrelated *local variable* somewhere in the inner file.
+#
+# mangle_items merges an imported module's already-mangled items into the
+# importer's own item list before the importer's own mangle_items pass
+# runs. That pass's rewrite of intra-module EXPR_IDENT references did a
+# scope-blind string match against every top-level name in the (now
+# merged) item list, so it rewrote the inner file's local variable
+# reference as if it were a call to the outer file's unrelated top-level
+# function of the same name. Fixed by having the rewrite pass collect each
+# function's own locals (LocalNames in main.c) and always let a local
+# shadow an outer item name.
+import(outer = "helpers/local_collision_outer")
+
+fn main() -> i32 {
+    r: str = outer.call_it("hello")
+    @pf("{r}\n")
+    ret 0
+}

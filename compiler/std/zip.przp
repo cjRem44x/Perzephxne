@@ -1,0 +1,158 @@
+# std/zip — create and extract .zip archives, via libzip (extern FFI).
+#
+# Needs `-lzip` at link time: add `link = ["zip"]` to `[build]` in your
+# project's przp.toml (see book/build-system.md's [build].link) — this
+# module only declares the C signatures, it doesn't bundle the library.
+#
+# struct zip_stat's layout below is checked against a real offsetof
+# compile on libzip 1.7.3 (Ubuntu 24.04's libzip-dev) — sizeof 64 bytes,
+# with `.size` (the uncompressed length, what we actually need) at byte
+# offset 24 — the same "checked against a real offsetof compile, not
+# guessed" discipline std/file.przp's `struct stat` and
+# std/graphics/window's XEvent already use.
+
+import(file = "std/file")
+import(str  = "std/str")
+
+extern fn malloc(n: usize) -> *u8
+extern fn free(p: *u8)
+extern fn strlen(s: *u8) -> usize
+
+extern fn zip_open(path: *u8, flags: i32, errorp: *i32) -> *u8
+extern fn zip_close(archive: *u8) -> i32
+extern fn zip_discard(archive: *u8)
+
+extern fn zip_source_file(archive: *u8, fname: *u8, start: u64, len: i64) -> *u8
+extern fn zip_file_add(archive: *u8, name: *u8, source: *u8, flags: u32) -> i64
+extern fn zip_dir_add(archive: *u8, name: *u8, flags: u32) -> i64
+
+extern fn zip_get_num_entries(archive: *u8, flags: u32) -> i64
+extern fn zip_get_name(archive: *u8, index: u64, flags: u32) -> *u8
+extern fn zip_stat_index(archive: *u8, index: u64, flags: u32, sb: *u8) -> i32
+extern fn zip_fopen_index(archive: *u8, index: u64, flags: u32) -> *u8
+extern fn zip_fread(zf: *u8, buf: *u8, nbytes: u64) -> i64
+extern fn zip_fclose(zf: *u8) -> i32
+
+ZIP_CREATE: i32 : 1
+ZIP_RDONLY: i32 : 16
+ZIP_FL_ENC_GUESS: u32 : 0
+
+# byte offset of zip_stat_t.size (the field we need — uncompressed length)
+ZIP_STAT_SIZE_OFF: usize : 24
+ZIP_STAT_LEN: usize : 64
+
+# entry_name: `path` (which starts with base_dir) relative to base_dir,
+# with the separator between them stripped — "photos/2024/a.png" relative
+# to "photos" is "2024/a.png". A ZIP entry name always uses '/' regardless
+# of host OS, which matches this project's own paths already.
+fn entry_name(base_dir: str, path: str) -> str {
+    if base_dir.len == 0 || base_dir.len >= path.len { ret path }
+    rel: str = str.slice(path, base_dir.len, path.len)
+    first: *u8 = rel.data
+    if rel.len > 0 && first.* == 47u8 { ret str.slice(rel, 1, rel.len) }
+    ret rel
+}
+
+# add_path: add `path` — a file, or (recursively) every file and
+# subdirectory under it — into `archive`, with entry names relative to
+# base_dir (see entry_name).
+fn add_path(archive: *u8, base_dir: str, path: str) -> bool {
+    if file.is_dir(path) {
+        name: str = entry_name(base_dir, path)
+        if name.len > 0 {
+            if zip_dir_add(archive, name.data, ZIP_FL_ENC_GUESS) < 0 { ret false }
+        }
+        entries, err: ![]str = file.list(path)
+        if err != 0 { ret false }
+        for e => entries {
+            if !add_path(archive, base_dir, e) { ret false }
+        }
+        ret true
+    }
+
+    name: str = entry_name(base_dir, path)
+    src: *u8 = zip_source_file(archive, path.data, 0, -1)
+    if src == null { ret false }
+    idx: i64 = zip_file_add(archive, name.data, src, ZIP_FL_ENC_GUESS)
+    ret idx >= 0
+}
+
+# zip_path: create (or overwrite) a .zip archive at `out_zip` containing
+# `src_path` — a single file, or an entire directory tree. Entries are
+# named relative to src_path's own parent directory, so zipping a
+# directory "photos" produces entries like "photos/a.png" (unzipping
+# recreates "photos/..." under the destination) — the same convention
+# `zip -r archive.zip photos` uses.
+fn zip_path(out_zip: str, src_path: str) -> bool {
+    err: i32 = 0
+    archive: *u8 = zip_open(out_zip.data, ZIP_CREATE, &err)
+    if archive == null { ret false }
+
+    base_dir: str = file.parent_dir(src_path)
+    if !add_path(archive, base_dir, src_path) {
+        zip_discard(archive)
+        ret false
+    }
+    ret zip_close(archive) == 0
+}
+
+# unzip_path: extract every entry of the archive at `zip_file` into
+# `dest_dir` (created if missing), recreating each entry's own directory
+# structure underneath it.
+fn unzip_path(zip_file: str, dest_dir: str) -> bool {
+    err: i32 = 0
+    archive: *u8 = zip_open(zip_file.data, ZIP_RDONLY, &err)
+    if archive == null { ret false }
+    if !file.mkdir_all(dest_dir) {
+        zip_discard(archive)
+        ret false
+    }
+
+    n: i64 = zip_get_num_entries(archive, ZIP_FL_ENC_GUESS)
+    i: i64 = 0
+    while i < n {
+        name_raw: *u8 = zip_get_name(archive, @u64(i), ZIP_FL_ENC_GUESS)
+        name: str = @str_raw(name_raw, strlen(name_raw))
+        out_path: str = dest_dir + "/" + name
+
+        is_dir_entry: bool = false
+        if name.len > 0 {
+            last: *u8 = name.data + name.len - 1
+            if last.* == 47u8 { is_dir_entry = true }
+        }
+
+        if is_dir_entry {
+            file.mkdir_all(out_path)
+            i += 1
+            continue
+        }
+
+        parent: str = file.parent_dir(out_path)
+        if parent.len > 0 { file.mkdir_all(parent) }
+
+        sb: [64]u8 = undef
+        st: i32 = zip_stat_index(archive, @u64(i), ZIP_FL_ENC_GUESS, &sb[0])
+        if st != 0 { zip_close(archive) ret false }
+        size_p: *u64 = @bitcast(*u64, &sb[0] + ZIP_STAT_SIZE_OFF)
+        size: u64 = size_p.*
+
+        zf: *u8 = zip_fopen_index(archive, @u64(i), ZIP_FL_ENC_GUESS)
+        if zf == null { zip_close(archive) ret false }
+
+        buf: *u8 = malloc(@usize(size))
+        got: i64 = zip_fread(zf, buf, size)
+        zip_fclose(zf)
+        if got < 0 || @u64(got) != size {
+            free(buf)
+            zip_close(archive)
+            ret false
+        }
+
+        content: str = @str_raw(buf, @usize(size))
+        file.write_all(out_path, content)
+        free(buf)
+        i += 1
+    }
+
+    ret zip_close(archive) == 0
+}

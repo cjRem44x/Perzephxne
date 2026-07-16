@@ -1,0 +1,9 @@
+import(inner = "local_collision_inner")
+
+# a top-level function name that happens to collide with a local variable
+# name declared deep inside inner.przp's own helper() body.
+fn entry_name(a: str, b: str) -> str { ret b }
+
+fn call_it(x: str) -> str {
+    ret inner.helper(x)
+}
