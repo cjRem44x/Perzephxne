@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-5937cb53.js";
+            window.path_to_searchindex_js = "searchindex-ee851666.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-4e58bc13.js"></script>
@@ -208,6 +208,10 @@
 </tbody>
 </table>
 </div>
+<h2 id="bugs-found-and-fixed-along-the-way"><a class="header" href="#bugs-found-and-fixed-along-the-way">Bugs Found and Fixed Along the Way</a></h2>
+<ul>
+<li><strong>Nested-import local-variable collision</strong> — a 3+-level-deep import chain (file A imports B, B imports C) could mis-rewrite an unrelated local variable inside C’s own function body if its name happened to match a top-level item name declared in B. <code>mangle_items</code> merges an already-mangled imported module’s items into the importer’s own item list <em>before</em> the importer’s own alias-rewrite pass runs, so that pass’s name-match set ended up including names with no relation to the code it was walking, and the rewrite itself had no notion of lexical scope to tell a local apart from an item reference. Fixed by collecting each function’s own locals (<code>LocalNames</code> in <code>main.c</code>) and always letting a local name shadow an outer item for that whole function body. Covered by <code>tests/run/local_name_collision.przp</code>.</li>
+</ul>
 <h2 id="documentation-rule"><a class="header" href="#documentation-rule">Documentation Rule</a></h2>
 <p>Any compiler feature that is added or changed should update both the book source and the generated <code>book/book</code> output in the same change. The book should remain the user-facing source of truth for the current language.</p>
 

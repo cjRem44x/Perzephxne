@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-5937cb53.js";
+            window.path_to_searchindex_js = "searchindex-ee851666.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-4e58bc13.js"></script>
@@ -2550,6 +2550,28 @@ file.make("build/assets/")           # mkdir -p — creates build/ and build/ass
 file.make("build/assets/readme.txt") # an empty file, parent dirs already there
 file.delete("build")                 # gone — recursively, even though non-empty
 </code></pre>
+<h2 id="stdzip"><a class="header" href="#stdzip"><code>std/zip</code></a></h2>
+<p>Create and extract <code>.zip</code> archives, via <a href="https://libzip.org">libzip</a> — an extern FFI binding, not a hand-rolled format implementation. Needs <code>-lzip</code> at link time: add <code>link = ["zip"]</code> to <code>[build]</code> in your project’s <code>przp.toml</code> (see <a href="#build-system-przp">Build System</a>); <code>sac</code> users pass <code>-lzip</code> directly on the command line.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Function</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>zip_path(out_zip, src_path)</code></td><td>create/overwrite the archive at <code>out_zip</code> from <code>src_path</code> — a single file, or an entire directory tree (recursively)</td></tr>
+<tr><td><code>unzip_path(zip_file, dest_dir)</code></td><td>extract every entry of <code>zip_file</code> into <code>dest_dir</code> (created if missing), recreating each entry’s own directory structure</td></tr>
+</tbody>
+</table>
+</div>
+<p>Zipping a directory names its entries relative to the directory’s own parent, so zipping <code>photos</code> produces entries like <code>photos/a.png</code> — the same convention <code>zip -r archive.zip photos</code> uses, and what <code>unzip_path</code> expects to recreate the tree under the destination.</p>
+<pre><code>import(zip = "std/zip")
+
+zip.zip_path("backup.zip", "photos")       # a whole directory tree
+zip.unzip_path("backup.zip", "restored")   # -&gt; restored/photos/...
+
+zip.zip_path("single.zip", "notes.txt")    # a single file
+zip.unzip_path("single.zip", "out")        # -&gt; out/notes.txt
+</code></pre>
 <h2 id="stdfmt"><a class="header" href="#stdfmt"><code>std/fmt</code></a></h2>
 <p>String formatting helpers. For interpolation-style formatting, use the <code>@fmt</code> builtin directly with named expressions, for example <code>@fmt("x={x}")</code>.</p>
 <div class="table-wrapper">
@@ -2911,6 +2933,10 @@ r: f64 = m.sqrt(2.0)
 </tbody>
 </table>
 </div>
+<h2 id="bugs-found-and-fixed-along-the-way"><a class="header" href="#bugs-found-and-fixed-along-the-way">Bugs Found and Fixed Along the Way</a></h2>
+<ul>
+<li><strong>Nested-import local-variable collision</strong> — a 3+-level-deep import chain (file A imports B, B imports C) could mis-rewrite an unrelated local variable inside C’s own function body if its name happened to match a top-level item name declared in B. <code>mangle_items</code> merges an already-mangled imported module’s items into the importer’s own item list <em>before</em> the importer’s own alias-rewrite pass runs, so that pass’s name-match set ended up including names with no relation to the code it was walking, and the rewrite itself had no notion of lexical scope to tell a local apart from an item reference. Fixed by collecting each function’s own locals (<code>LocalNames</code> in <code>main.c</code>) and always letting a local name shadow an outer item for that whole function body. Covered by <code>tests/run/local_name_collision.przp</code>.</li>
+</ul>
 <h2 id="documentation-rule"><a class="header" href="#documentation-rule">Documentation Rule</a></h2>
 <p>Any compiler feature that is added or changed should update both the book source and the generated <code>book/book</code> output in the same change. The book should remain the user-facing source of truth for the current language.</p>
 <div style="break-before: page; page-break-before: always;"></div>

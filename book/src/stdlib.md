@@ -198,6 +198,27 @@ file.make("build/assets/readme.txt") # an empty file, parent dirs already there
 file.delete("build")                 # gone — recursively, even though non-empty
 ```
 
+## `std/zip`
+
+Create and extract `.zip` archives, via [libzip](https://libzip.org) — an extern FFI binding, not a hand-rolled format implementation. Needs `-lzip` at link time: add `link = ["zip"]` to `[build]` in your project's `przp.toml` (see [Build System](./build-system.md)); `sac` users pass `-lzip` directly on the command line.
+
+| Function | Description |
+|---|---|
+| `zip_path(out_zip, src_path)` | create/overwrite the archive at `out_zip` from `src_path` — a single file, or an entire directory tree (recursively) |
+| `unzip_path(zip_file, dest_dir)` | extract every entry of `zip_file` into `dest_dir` (created if missing), recreating each entry's own directory structure |
+
+Zipping a directory names its entries relative to the directory's own parent, so zipping `photos` produces entries like `photos/a.png` — the same convention `zip -r archive.zip photos` uses, and what `unzip_path` expects to recreate the tree under the destination.
+
+```
+import(zip = "std/zip")
+
+zip.zip_path("backup.zip", "photos")       # a whole directory tree
+zip.unzip_path("backup.zip", "restored")   # -> restored/photos/...
+
+zip.zip_path("single.zip", "notes.txt")    # a single file
+zip.unzip_path("single.zip", "out")        # -> out/notes.txt
+```
+
 ## `std/fmt`
 
 String formatting helpers. For interpolation-style formatting, use the `@fmt` builtin directly with named expressions, for example `@fmt("x={x}")`.
