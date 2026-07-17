@@ -170,9 +170,9 @@ fn list(dir: str) -> ![]str {
     ret @ok(@slice(arr, n))
 }
 
-# parent_dir: the portion of path before its last '/', or an empty str
-# if path has no '/' at all.
-fn parent_dir(path: str) -> str {
+# parent: the parent directory of path (file or dir) — the portion
+# before its last '/', or an empty str if path has no '/' at all.
+fn parent(path: str) -> str {
     i: usize = path.len
     while i > 0 {
         i -= 1
@@ -180,6 +180,18 @@ fn parent_dir(path: str) -> str {
         if p.* == 47u8 { ret str.slice(path, 0, i) } # '/'
     }
     ret @str_raw(path.data, 0)
+}
+
+# name: the portion of path after its last '/' (the file or directory's
+# own name), or the whole path if it has no '/' at all.
+fn name(path: str) -> str {
+    i: usize = path.len
+    while i > 0 {
+        i -= 1
+        p: *u8 = path.data + i
+        if p.* == 47u8 { ret str.slice(path, i + 1, path.len) } # '/'
+    }
+    ret path
 }
 
 # mkdir_all: create dir_path and any missing parent directories
@@ -191,9 +203,9 @@ fn parent_dir(path: str) -> str {
 fn mkdir_all(dir_path: str) -> bool {
     if dir_path.len == 0 { ret true }
     if is_dir(dir_path) { ret true }
-    parent: str = parent_dir(dir_path)
-    if parent.len > 0 {
-        if !mkdir_all(parent) { ret false }
+    parent_path: str = parent(dir_path)
+    if parent_path.len > 0 {
+        if !mkdir_all(parent_path) { ret false }
     }
     ret os.mkdir_dir(dir_path)
 }
@@ -210,9 +222,9 @@ fn make(path: str) -> bool {
         dir_path: str = str.slice(path, 0, path.len - 1)
         ret mkdir_all(dir_path)
     }
-    parent: str = parent_dir(path)
-    if parent.len > 0 {
-        if !mkdir_all(parent) { ret false }
+    parent_path: str = parent(path)
+    if parent_path.len > 0 {
+        if !mkdir_all(parent_path) { ret false }
     }
     f: *u8 = fopen(path.data, "w")
     if f == null { ret false }

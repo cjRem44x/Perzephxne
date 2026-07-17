@@ -8,5 +8,11 @@ fn main() -> i32 {
     exists: bool = file.exists("tests/tmp/std_file.txt")
     removed: bool = file.remove_file("tests/tmp/std_file.txt")
     @pf("{ok} {content} {sz} {exists} {removed}\n")
+
+    p: str = file.parent("photos/2024/a.png")
+    n: str = file.name("photos/2024/a.png")
+    p2: str = file.parent("noslash.txt")
+    n2: str = file.name("noslash.txt")
+    @pf("{p} {n} '{p2}' {n2}\n")
     ret 0
 }

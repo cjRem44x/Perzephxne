@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-ee851666.js";
+            window.path_to_searchindex_js = "searchindex-1c6708b1.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-4e58bc13.js"></script>
@@ -352,6 +352,8 @@ os.rmdir_dir("scratch")
 <tr><td><code>rename_file(old, new_path)</code></td><td>rename/move file</td></tr>
 <tr><td><code>is_file(path)</code></td><td>true if path exists and is a regular file</td></tr>
 <tr><td><code>is_dir(path)</code></td><td>true if path exists and is a directory</td></tr>
+<tr><td><code>parent(path)</code></td><td>the portion of <code>path</code> before its last <code>/</code>, or an empty str if <code>path</code> has no <code>/</code></td></tr>
+<tr><td><code>name(path)</code></td><td>the portion of <code>path</code> after its last <code>/</code> (its own file/dir name), or the whole <code>path</code> if it has no <code>/</code></td></tr>
 <tr><td><code>list(dir)</code></td><td><code>![]str</code> — dir-joined paths of <code>dir</code>’s entries (<code>.</code>/<code>..</code> skipped), ready to pass to <code>is_file</code>/<code>is_dir</code>/<code>read_all</code></td></tr>
 <tr><td><code>mkdir_all(dir_path)</code></td><td>create <code>dir_path</code> and any missing parent directories (<code>mkdir -p</code>); true if the directory exists afterward either way</td></tr>
 <tr><td><code>make(path)</code></td><td>create <code>path</code>: a trailing <code>/</code> makes a directory (plus missing parents); otherwise an empty file (plus missing parent directories) — truncates an existing file, leaves an existing directory alone</td></tr>
@@ -378,6 +380,11 @@ if err == 0 {
 file.make("build/assets/")           # mkdir -p — creates build/ and build/assets/
 file.make("build/assets/readme.txt") # an empty file, parent dirs already there
 file.delete("build")                 # gone — recursively, even though non-empty
+</code></pre>
+<pre><code>import(file = "std/file")
+
+p: str = file.parent("photos/2024/a.png") # "photos/2024"
+n: str = file.name("photos/2024/a.png")   # "a.png"
 </code></pre>
 <h2 id="stdzip"><a class="header" href="#stdzip"><code>std/zip</code></a></h2>
 <p>Create and extract <code>.zip</code> archives, via <a href="https://libzip.org">libzip</a> — an extern FFI binding, not a hand-rolled format implementation. Needs <code>-lzip</code> at link time: add <code>link = ["zip"]</code> to <code>[build]</code> in your project’s <code>przp.toml</code> (see <a href="./build-system.html">Build System</a>); <code>sac</code> users pass <code>-lzip</code> directly on the command line.</p>

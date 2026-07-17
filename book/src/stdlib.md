@@ -168,6 +168,8 @@ Path-based file utilities.
 | `rename_file(old, new_path)` | rename/move file |
 | `is_file(path)` | true if path exists and is a regular file |
 | `is_dir(path)` | true if path exists and is a directory |
+| `parent(path)` | the portion of `path` before its last `/`, or an empty str if `path` has no `/` |
+| `name(path)` | the portion of `path` after its last `/` (its own file/dir name), or the whole `path` if it has no `/` |
 | `list(dir)` | `![]str` — dir-joined paths of `dir`'s entries (`.`/`..` skipped), ready to pass to `is_file`/`is_dir`/`read_all` |
 | `mkdir_all(dir_path)` | create `dir_path` and any missing parent directories (`mkdir -p`); true if the directory exists afterward either way |
 | `make(path)` | create `path`: a trailing `/` makes a directory (plus missing parents); otherwise an empty file (plus missing parent directories) — truncates an existing file, leaves an existing directory alone |
@@ -196,6 +198,13 @@ import(file = "std/file")
 file.make("build/assets/")           # mkdir -p — creates build/ and build/assets/
 file.make("build/assets/readme.txt") # an empty file, parent dirs already there
 file.delete("build")                 # gone — recursively, even though non-empty
+```
+
+```
+import(file = "std/file")
+
+p: str = file.parent("photos/2024/a.png") # "photos/2024"
+n: str = file.name("photos/2024/a.png")   # "a.png"
 ```
 
 ## `std/zip`
