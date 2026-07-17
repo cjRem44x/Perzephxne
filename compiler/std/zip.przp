@@ -88,7 +88,7 @@ fn zip_path(out_zip: str, src_path: str) -> bool {
     archive: *u8 = zip_open(out_zip.data, ZIP_CREATE, &err)
     if archive == null { ret false }
 
-    base_dir: str = file.parent_dir(src_path)
+    base_dir: str = file.parent(src_path)
     if !add_path(archive, base_dir, src_path) {
         zip_discard(archive)
         ret false
@@ -127,8 +127,8 @@ fn unzip_path(zip_file: str, dest_dir: str) -> bool {
             continue
         }
 
-        parent: str = file.parent_dir(out_path)
-        if parent.len > 0 { file.mkdir_all(parent) }
+        parent_path: str = file.parent(out_path)
+        if parent_path.len > 0 { file.mkdir_all(parent_path) }
 
         sb: [64]u8 = undef
         st: i32 = zip_stat_index(archive, @u64(i), ZIP_FL_ENC_GUESS, &sb[0])
