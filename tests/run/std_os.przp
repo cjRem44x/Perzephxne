@@ -17,5 +17,15 @@ fn main() -> i32 {
     is_dir_missing: bool = os.is_dir("tests/tmp/std_os_mkdir_does_not_exist")
     os.rmdir_dir("tests/tmp/std_os_mkdir")
     @pf("{first} {second} {is_dir_r} {is_dir_missing}\n")
+
+    t0: i64 = os.monotonic_ms()
+    os.sleep_ms(20)
+    slept: bool = os.monotonic_ms() - t0 >= 20
+
+    t1: i64 = os.monotonic_ms()
+    os.waste_ms(20)
+    wasted: bool = os.monotonic_ms() - t1 >= 20
+
+    @pf("{slept} {wasted}\n")
     ret 0
 }

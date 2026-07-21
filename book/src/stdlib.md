@@ -143,6 +143,9 @@ Process, environment, and directory helpers.
 | `mkdir_dir(path)` | create a directory with mode `755` |
 | `chdir_to(path)` | change current directory |
 | `rmdir_dir(path)` | remove an empty directory |
+| `monotonic_ms()` | current monotonic clock reading, in ms — only meaningful as a difference between two calls |
+| `sleep_ms(ms)` | block the calling thread for at least `ms` milliseconds, yielding the CPU to the scheduler |
+| `waste_ms(ms)` | spend at least `ms` milliseconds busy-looping on the calling thread — pegs the CPU instead of yielding |
 
 ```
 import(os = "std/os")
@@ -151,6 +154,10 @@ dir: str = os.cwd()
 os.mkdir_dir("scratch")
 os.rmdir_dir("scratch")
 @pf("running in {dir}\n")
+
+t0: i64 = os.monotonic_ms()
+os.sleep_ms(50)             # yields — near-zero CPU time used
+@pf("slept {os.monotonic_ms() - t0}ms\n")
 ```
 
 ## `std/file`
