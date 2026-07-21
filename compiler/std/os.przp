@@ -11,9 +11,17 @@ extern fn mkdir(path: *u8, mode: u32) -> i32
 extern fn chdir(path: *u8) -> i32
 extern fn rmdir(path: *u8) -> i32
 extern fn stat(path: *u8, buf: *u8) -> i32
+extern fn nanosleep(req: *u8, rem: *u8) -> i32
+extern fn clock_gettime(clk_id: i32, tp: *u8) -> i32
 
 S_IFMT:  u32 = 0xF000
 S_IFDIR: u32 = 0x4000
+
+# struct timespec { i64 tv_sec; i64 tv_nsec; } — checked against a real
+# offsetof compile (glibc, x86-64 Linux): sizeof 16, tv_sec at byte
+# offset 0, tv_nsec at offset 8 — same discipline std/file.przp's
+# `struct stat` uses.
+CLOCK_MONOTONIC: i32 : 1
 
 # exit with a status code
 fn quit(code: i32) {
@@ -71,5 +79,37 @@ fn chdir_to(path: str) -> bool {
 # rmdir_dir: remove an empty directory; returns true on success
 fn rmdir_dir(path: str) -> bool {
     ret rmdir(path.data) == 0
+}
+
+# monotonic_ms: current reading of the monotonic clock, in milliseconds.
+# Only meaningful as a difference between two calls, never as a wall-clock
+# timestamp.
+fn monotonic_ms() -> i64 {
+    ts: [16]u8 = undef
+    clock_gettime(CLOCK_MONOTONIC, &ts[0])
+    sec_p: *i64 = @bitcast(*i64, &ts[0])
+    nsec_p: *i64 = @bitcast(*i64, &ts[0] + 8)
+    ret sec_p.* * 1000 + nsec_p.* / 1000000
+}
+
+# sleep_ms: block the calling thread for at least `ms` milliseconds,
+# yielding the CPU to the scheduler (a real OS sleep via nanosleep) —
+# contrast with waste_ms, which burns the full duration busy-looping.
+fn sleep_ms(ms: i64) {
+    ts: [16]u8 = undef
+    sec_p: *i64 = @bitcast(*i64, &ts[0])
+    nsec_p: *i64 = @bitcast(*i64, &ts[0] + 8)
+    sec_p.* = ms / 1000
+    nsec_p.* = (ms % 1000) * 1000000
+    nanosleep(&ts[0], null)
+}
+
+# waste_ms: spend at least `ms` milliseconds spinning on the calling
+# thread — no syscall blocks it, so the CPU stays pegged for the whole
+# duration. Useful for busy-wait benchmarking; sleep_ms is what you want
+# for anything that should actually yield.
+fn waste_ms(ms: i64) {
+    start: i64 = monotonic_ms()
+    while monotonic_ms() - start < ms {}
 }
 

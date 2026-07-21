@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-1c6708b1.js";
+            window.path_to_searchindex_js = "searchindex-97e98a3b.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-4e58bc13.js"></script>
@@ -2496,6 +2496,9 @@ c: i32 = m.clamp_i32(15, 0, 10)      # 10
 <tr><td><code>mkdir_dir(path)</code></td><td>create a directory with mode <code>755</code></td></tr>
 <tr><td><code>chdir_to(path)</code></td><td>change current directory</td></tr>
 <tr><td><code>rmdir_dir(path)</code></td><td>remove an empty directory</td></tr>
+<tr><td><code>monotonic_ms()</code></td><td>current monotonic clock reading, in ms — only meaningful as a difference between two calls</td></tr>
+<tr><td><code>sleep_ms(ms)</code></td><td>block the calling thread for at least <code>ms</code> milliseconds, yielding the CPU to the scheduler</td></tr>
+<tr><td><code>waste_ms(ms)</code></td><td>spend at least <code>ms</code> milliseconds busy-looping on the calling thread — pegs the CPU instead of yielding</td></tr>
 </tbody>
 </table>
 </div>
@@ -2505,6 +2508,10 @@ dir: str = os.cwd()
 os.mkdir_dir("scratch")
 os.rmdir_dir("scratch")
 @pf("running in {dir}\n")
+
+t0: i64 = os.monotonic_ms()
+os.sleep_ms(50)             # yields — near-zero CPU time used
+@pf("slept {os.monotonic_ms() - t0}ms\n")
 </code></pre>
 <h2 id="stdfile"><a class="header" href="#stdfile"><code>std/file</code></a></h2>
 <p>Path-based file utilities.</p>
