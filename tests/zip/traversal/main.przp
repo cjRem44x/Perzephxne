@@ -1,0 +1,22 @@
+# regression: unzip_path used to build out_path as a plain string join
+# (dest_dir + "/" + entry_name) with zero validation of the entry name —
+# a malicious archive with an entry like "../../etc/whatever" ("Zip Slip",
+# CWE-22) could write anywhere the process has permissions, entirely
+# outside dest_dir. is_safe_entry_name now rejects (skips, rather than
+# extracts) any entry that's an absolute path or contains a ".." segment.
+# fixture/malicious.zip has one such entry plus one legitimate entry, to
+# confirm the traversal entry is dropped while normal extraction still
+# works.
+
+import(zip = "std/zip")
+import(file = "std/file")
+
+fn main() -> i32 {
+    ok: bool = zip.unzip_path("malicious.zip", "dest")
+    escaped: bool = file.exists("dest/../../etc/przp_test_traversal_marker.txt")
+    legit: str = file.read_all("dest/legit/ok.txt")
+    @pf("unzip ok: {ok}\n")
+    @pf("escaped: {escaped}\n")
+    @pf("legit: {legit}\n")
+    ret 0
+}

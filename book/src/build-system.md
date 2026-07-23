@@ -66,7 +66,7 @@ Supported fields:
 | `[package].name` | yes | Package name. Used as the default `przp build`/`przp run` binary name. |
 | `[package].version` | no | Package version metadata. |
 | `[build].entry` | no | Entry source file. Defaults to `src/main.przp`. |
-| `[build].link` | no | Array of system library names to link against — each entry becomes a `-l<name>` flag on the final link step (`link = ["X11", "GL"]` links `-lX11 -lGL`). For linking against `extern fn` declarations backed by libraries the OS already ships (no bundled `.so`/`.a` of your own). |
+| `[build].link` | no | Array of system library names to link against — each entry becomes a `-l<name>` flag on the final link step (`link = ["X11", "GL"]` links `-lX11 -lGL`). For linking against `extern fn` declarations backed by libraries the OS already ships (no bundled `.so`/`.a` of your own). Each entry may only contain letters, digits, `_`, `-`, or `.` — anything else is rejected before it reaches the link command. |
 
 `[deps]` is accepted as a reserved section, but the current toolchain does not download or resolve packages. Standard library modules are shipped with the compiler and imported with paths such as `"std/io"`.
 

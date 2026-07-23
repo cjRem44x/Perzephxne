@@ -53,6 +53,24 @@ fn entry_name(base_dir: str, path: str) -> str {
     ret rel
 }
 
+# is_safe_entry_name: false for anything that could escape dest_dir once
+# joined on with "/" — an absolute path, or a ".." path segment anywhere
+# in it (leading, trailing, or in the middle). Zip archives are untrusted
+# input by nature (unlike zip_path's own output), so unzip_path must
+# never extract an entry outside the directory it was asked to extract
+# into ("Zip Slip", CWE-22) regardless of what the archive's own entry
+# names claim.
+fn is_safe_entry_name(name: str) -> bool {
+    if name.len == 0 { ret false }
+    first: *u8 = name.data
+    if first.* == 47u8 { ret false } # absolute path
+    if str.eq(name, "..") { ret false }
+    if str.starts_with(name, "../") { ret false }
+    if str.ends_with(name, "/..") { ret false }
+    if str.contains(name, "/../") { ret false }
+    ret true
+}
+
 # add_path: add `path` — a file, or (recursively) every file and
 # subdirectory under it — into `archive`, with entry names relative to
 # base_dir (see entry_name).
@@ -113,6 +131,11 @@ fn unzip_path(zip_file: str, dest_dir: str) -> bool {
     while i < n {
         name_raw: *u8 = zip_get_name(archive, @u64(i), ZIP_FL_ENC_GUESS)
         name: str = @str_raw(name_raw, strlen(name_raw))
+
+        if !is_safe_entry_name(name) {
+            i += 1
+            continue
+        }
         out_path: str = dest_dir + "/" + name
 
         is_dir_entry: bool = false

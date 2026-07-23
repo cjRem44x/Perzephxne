@@ -1645,6 +1645,24 @@ static int read_manifest(Manifest *m) {
                 fclose(f);
                 return -1;
             }
+            /* link_libs is spliced verbatim into a `-l<name>` clang flag,
+               which itself ends up in a system() command line (see
+               compile_file) — a real library name is only ever
+               [A-Za-z0-9_.-], so anything else is either a mistake or a
+               shell-metacharacter injection attempt (e.g. "m; rm -rf ~"),
+               and must be rejected outright rather than passed through. */
+            for (int i = 0; i < n; i++) {
+                for (const char *p = m->link_libs[i]; *p; p++) {
+                    if (!isalnum((unsigned char)*p) && *p != '_' && *p != '-' && *p != '.') {
+                        fprintf(stderr, "przp.toml:%d: error: [build].link entry '%s' has an "
+                                        "invalid character — library names may only contain "
+                                        "letters, digits, '_', '-', or '.'\n",
+                                line_no, m->link_libs[i]);
+                        fclose(f);
+                        return -1;
+                    }
+                }
+            }
             m->n_link_libs = n;
         } else if (section == SEC_NONE) {
             fprintf(stderr, "przp.toml:%d: error: key '%s' must be inside [package], [build], or [deps]\n", line_no, key);

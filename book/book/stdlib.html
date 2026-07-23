@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-97e98a3b.js";
+            window.path_to_searchindex_js = "searchindex-c0c4162d.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-4e58bc13.js"></script>
@@ -407,6 +407,7 @@ n: str = file.name("photos/2024/a.png")   # "a.png"
 </table>
 </div>
 <p>Zipping a directory names its entries relative to the directory’s own parent, so zipping <code>photos</code> produces entries like <code>photos/a.png</code> — the same convention <code>zip -r archive.zip photos</code> uses, and what <code>unzip_path</code> expects to recreate the tree under the destination.</p>
+<p><code>unzip_path</code> rejects (silently skips, without failing the whole extraction) any entry whose name is an absolute path or contains a <code>..</code> segment, so an untrusted <code>.zip</code> can’t write outside <code>dest_dir</code> (“Zip Slip”, CWE-22).</p>
 <pre><code>import(zip = "std/zip")
 
 zip.zip_path("backup.zip", "photos")       # a whole directory tree

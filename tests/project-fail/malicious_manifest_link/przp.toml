@@ -1,0 +1,7 @@
+[package]
+name = "malicious_manifest_link"
+version = "0.1.0"
+
+[build]
+entry = "src/main.przp"
+link = ["m; touch /tmp/przp_test_pwned;"]

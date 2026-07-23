@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-97e98a3b.js";
+            window.path_to_searchindex_js = "searchindex-c0c4162d.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-4e58bc13.js"></script>
@@ -237,7 +237,7 @@ link  = ["X11", "GL"]
 <tr><td><code>[package].name</code></td><td style="text-align: right">yes</td><td>Package name. Used as the default <code>przp build</code>/<code>przp run</code> binary name.</td></tr>
 <tr><td><code>[package].version</code></td><td style="text-align: right">no</td><td>Package version metadata.</td></tr>
 <tr><td><code>[build].entry</code></td><td style="text-align: right">no</td><td>Entry source file. Defaults to <code>src/main.przp</code>.</td></tr>
-<tr><td><code>[build].link</code></td><td style="text-align: right">no</td><td>Array of system library names to link against — each entry becomes a <code>-l&lt;name&gt;</code> flag on the final link step (<code>link = ["X11", "GL"]</code> links <code>-lX11 -lGL</code>). For linking against <code>extern fn</code> declarations backed by libraries the OS already ships (no bundled <code>.so</code>/<code>.a</code> of your own).</td></tr>
+<tr><td><code>[build].link</code></td><td style="text-align: right">no</td><td>Array of system library names to link against — each entry becomes a <code>-l&lt;name&gt;</code> flag on the final link step (<code>link = ["X11", "GL"]</code> links <code>-lX11 -lGL</code>). For linking against <code>extern fn</code> declarations backed by libraries the OS already ships (no bundled <code>.so</code>/<code>.a</code> of your own). Each entry may only contain letters, digits, <code>_</code>, <code>-</code>, or <code>.</code> — anything else is rejected before it reaches the link command.</td></tr>
 </tbody>
 </table>
 </div>
