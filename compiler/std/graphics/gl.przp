@@ -38,6 +38,10 @@ extern fn glReadPixels(x: i32, y: i32, w: i32, h: i32, format: u32, ty: u32, dat
 extern fn glMatrixMode(mode: u32)
 extern fn glLoadIdentity()
 extern fn glOrtho(left: f64, right: f64, bottom: f64, top: f64, near: f64, far: f64)
+extern fn glPushMatrix()
+extern fn glPopMatrix()
+extern fn glTranslatef(x: f32, y: f32, z: f32)
+extern fn glScalef(x: f32, y: f32, z: f32)
 extern fn glBegin(mode: u32)
 extern fn glEnd()
 extern fn glVertex2f(x: f32, y: f32)
@@ -200,26 +204,57 @@ fn delete_texture(tex: u32) {
     glDeleteTextures(1, &t)
 }
 
-# draw_textured_rect: an axis-aligned rect at (x, y) sized w x h, textured
-# with `tex` at full opacity (glColor4f(1,1,1,1) so the texture's own
-# colors show through unmodified). GL_TEXTURE_2D is enabled/disabled
-# around the draw rather than left on globally, so it doesn't leak into
-# draw_rect/draw_circle/draw_line calls elsewhere in a frame.
-fn draw_textured_rect(tex: u32, x: f32, y: f32, w: f32, h: f32) {
+# draw_textured_rect_uv: an axis-aligned rect at (x, y) sized w x h,
+# textured with `tex` at full opacity (glColor4f(1,1,1,1) so the
+# texture's own colors show through unmodified), sampling the
+# arbitrary axis-aligned sub-region of the texture from (u0, v0) to
+# (u1, v1) in normalized [0, 1] texture coordinates — (0,0)-(1,1) for
+# the whole image, or a smaller box for one frame of a spritesheet/atlas.
+# GL_TEXTURE_2D is enabled/disabled around the draw rather than left on
+# globally, so it doesn't leak into draw_rect/draw_circle/draw_line
+# calls elsewhere in a frame.
+fn draw_textured_rect_uv(tex: u32, x: f32, y: f32, w: f32, h: f32,
+                          u0: f32, v0: f32, u1: f32, v1: f32) {
     glEnable(GL_TEXTURE_2D)
     glBindTexture(GL_TEXTURE_2D, tex)
     glColor4f(1.0, 1.0, 1.0, 1.0)
     glBegin(GL_QUADS)
-    glTexCoord2f(0.0, 0.0)
+    glTexCoord2f(u0, v0)
     glVertex2f(x, y)
-    glTexCoord2f(1.0, 0.0)
+    glTexCoord2f(u1, v0)
     glVertex2f(x + w, y)
-    glTexCoord2f(1.0, 1.0)
+    glTexCoord2f(u1, v1)
     glVertex2f(x + w, y + h)
-    glTexCoord2f(0.0, 1.0)
+    glTexCoord2f(u0, v1)
     glVertex2f(x, y + h)
     glEnd()
     glDisable(GL_TEXTURE_2D)
+}
+
+# draw_textured_rect: the whole texture, stretched to fill (x, y, w, h).
+fn draw_textured_rect(tex: u32, x: f32, y: f32, w: f32, h: f32) {
+    draw_textured_rect_uv(tex, x, y, w, h, 0.0, 0.0, 1.0, 1.0)
+}
+
+# push_camera_2d/pop_camera_2d: apply (and later undo) a 2D camera's
+# scroll+zoom as a modelview transform on top of set_ortho_2d's
+# projection — offset is the screen-space point target maps to (usually
+# screen center), target is the world-space point the camera centers on,
+# zoom is a scale factor (1.0 = no zoom). Every draw_* call between the
+# two, in either screen or world space, ends up drawn in camera space;
+# draw_* calls outside the pair are unaffected. Order matters: GL's
+# modelview multiply is right-to-left, so translate-by-offset happens
+# last (screen space) and translate-by-target happens first (world
+# space), with the zoom scale in between.
+fn push_camera_2d(offset_x: f32, offset_y: f32, target_x: f32, target_y: f32, zoom: f32) {
+    glPushMatrix()
+    glTranslatef(offset_x, offset_y, 0.0)
+    glScalef(zoom, zoom, 1.0)
+    glTranslatef(-target_x, -target_y, 0.0)
+}
+
+fn pop_camera_2d() {
+    glPopMatrix()
 }
 
 # ── Backend contract conformance ────────────────────────────────────────────

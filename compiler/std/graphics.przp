@@ -28,6 +28,9 @@ import(img = "std/image")
 
 struct Color { r: u8, g: u8, b: u8, a: u8 }
 
+struct Vector2 { x: f32, y: f32 }
+struct Rectangle { x: f32, y: f32, w: f32, h: f32 }
+
 # A handful of named colors (raylib's palette values), since typing out
 # four byte literals every draw call gets old fast. Not exhaustive — add
 # more as real use turns them up.
@@ -244,5 +247,20 @@ impl Texture {
 }
 
 fn draw_texture(t: Texture, x: f32, y: f32) {
-    gl.draw_textured_rect(t.id, x, y, @f32(t.w), @f32(t.h))
+    whole: Rectangle = Rectangle{.x=0.0, .y=0.0, .w=@f32(t.w), .h=@f32(t.h)}
+    draw_texture_rec(t, whole, Vector2{.x=x, .y=y})
+}
+
+# draw_texture_rec: draw just the `source` sub-rectangle (in pixel
+# coordinates within `t`) at `pos`, at `source`'s own size — the
+# building block for spritesheet/atlas frames, where one Texture holds
+# many frames and each draw call picks out one. `source`'s coordinates
+# must stay within the texture's own (t.w, t.h) bounds; nothing here
+# clips or wraps an out-of-range source.
+fn draw_texture_rec(t: Texture, source: Rectangle, pos: Vector2) {
+    u0: f32 = source.x / @f32(t.w)
+    v0: f32 = source.y / @f32(t.h)
+    u1: f32 = (source.x + source.w) / @f32(t.w)
+    v1: f32 = (source.y + source.h) / @f32(t.h)
+    gl.draw_textured_rect_uv(t.id, pos.x, pos.y, source.w, source.h, u0, v0, u1, v1)
 }
