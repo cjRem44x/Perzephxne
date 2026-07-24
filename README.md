@@ -1,5 +1,8 @@
 # Perzephxne
 
+> [!WARNING]
+> **This language is in active development and is still in its early stages. The API and behavior are subject to change without notice, and stability is not guaranteed. *USE AT YOUR OWN RISK!***
+
 <img src="assets/logo.png" alt="Perzephxne logo" width="120">
 
 A compiled, statically typed systems language with a C-flavored syntax and an LLVM backend.
