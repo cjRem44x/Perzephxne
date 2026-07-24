@@ -1,5 +1,7 @@
 # Perzephxne
 
+<img src="assets/logo.png" alt="Perzephxne logo" width="120">
+
 A compiled, statically typed systems language with a C-flavored syntax and an LLVM backend.
 
 ```
