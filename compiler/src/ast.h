@@ -278,6 +278,20 @@ struct Item {
     ItemKind    kind;
     Span        span;
     const char *name;     /* NULL for ITEM_IMPORT */
+    /* set once this item has been merged into an importer's module as
+       part of a *cross-file* import() (see main.c's load_imports) — a
+       frozen item's name is final and must never be prefixed again by a
+       later mangle_items pass, even if the module it was merged into
+       itself later gets imported under another alias. This is what lets
+       two different files that both import() the same third file (a
+       "diamond") end up sharing one canonical name for its types instead
+       of each accumulating a different alias-chain prefix. Deliberately
+       NOT set by expand_mod_items's own same-file `mod Name {}`
+       flattening — a mod block's items are still genuinely part of the
+       containing file's own content, and still need the containing
+       file's own import alias prefixed onto them if that file is later
+       imported elsewhere (see tests/run/mod_in_imported_file.przp). */
+    int         mangled;
     union {
         struct {
             ParamList    params;

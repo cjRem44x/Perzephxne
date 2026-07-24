@@ -1,6 +1,6 @@
-# Graphics — Design Sketch (Layer 1 Implemented, Layer 2 In Progress)
+# Graphics — Design Sketch (Layers 1-2 Implemented, `gdev` 2D Core In Progress)
 
-> **Layer 1 and layer 2's 2D surface are now real; `gdev`/`guix` remain a plan.** This is an architecture sketch — written to guide implementation — for a future media stack in the spirit of [raylib](https://www.raylib.com/): simple enough for a weekend game, capable enough for a native GUI app. **This is not a raylib binding.** The plan is to write Perzephxne's own renderer and windowing layer from scratch, on raw platform APIs, and shape its call-level ergonomics after raylib's — because raylib's API is a genuinely good design, not because the library itself is a dependency worth taking on. Every other chapter in this book documents the compiler as it is; this one documents a plan, with a growing exception: `std/graphics/window` (open/close, resize, keyboard/mouse input), the backend contract, `std/graphics/gl` (context setup, clear/present, 2D immediate-mode drawing, and texture upload), `std/image` (PNG decoding), and `std/graphics` itself (window lifecycle, input queries, `Color`, `draw_rectangle`/`draw_circle`/`draw_line`, and `Texture`/`draw_texture`) are real, shipped, and regression-tested — see their sections below. Only `draw_text` (needs text layout) is still sketched in layer 2; `gdev` and `guix` remain unbuilt.
+> **Layer 1, layer 2's 2D surface, and `gdev`'s 2D core are now real; 3D, audio, and `guix` remain a plan.** This is an architecture sketch — written to guide implementation — for a future media stack in the spirit of [raylib](https://www.raylib.com/): simple enough for a weekend game, capable enough for a native GUI app. **This is not a raylib binding.** The plan is to write Perzephxne's own renderer and windowing layer from scratch, on raw platform APIs, and shape its call-level ergonomics after raylib's — because raylib's API is a genuinely good design, not because the library itself is a dependency worth taking on. Every other chapter in this book documents the compiler as it is; this one documents a plan, with a growing exception: `std/graphics/window` (open/close, resize, keyboard/mouse input), the backend contract, `std/graphics/gl` (context setup, clear/present, 2D immediate-mode drawing, texture upload, and 2D camera transforms), `std/image` (PNG decoding), `std/graphics` itself (window lifecycle, input queries, `Color`, `draw_rectangle`/`draw_circle`/`draw_line`, `Texture`/`draw_texture`/`draw_texture_rec`, `Vector2`/`Rectangle`), and `std/gdev`'s 2D core (frame timing, `Sprite`, `Camera2D`, collision checks) are real, shipped, and regression-tested — see their sections below. Only `draw_text` (needs text layout) is still sketched in layer 2; `gdev`'s 3D/audio pieces, `guix`, and `gmed` remain unbuilt.
 
 The stack splits into purpose-specific libraries built on one shared foundation:
 
@@ -285,47 +285,60 @@ fn draw_text(s: str, x: f32, y: f32, size: i32, c: Color)
 
 ### Layer 3a — `gdev`, game-dev primitives
 
-Built on `std/graphics`, adding the pieces a game needs that a GUI app doesn't:
+Built on `std/graphics`, adding the pieces a 2D game needs that a GUI app doesn't. Scope, deliberately: **2D only** — `Camera3D`/`draw_cube`/3D primitives are a separate, later addition once this 2D surface is solid (see the suggested build order below); there's nothing 3D in `std/gdev` by design, not by omission. Import it *alongside* `std/graphics`, not instead of it — `gdev` only adds game-specific pieces on top; `Window`, `Color`, `Key`, `is_key_down`, `draw_rectangle`, and the rest of the drawing/input surface still come from `std/graphics` directly.
+
+**Implemented**: frame timing, sprite drawing from a texture atlas, a 2D camera, and AABB/circle/point collision checks. See `compiler/std/gdev.przp`:
 
 ```
-struct Camera3D { position: Vector3, target: Vector3, up: Vector3, fovy: f32 }
-fn begin_mode_3d(cam: Camera3D)
-fn end_mode_3d()
-fn draw_cube(pos: Vector3, w: f32, h: f32, d: f32, c: Color)
-fn draw_grid(slices: i32, spacing: f32)
+struct GdevState { last_frame_ms: i64, frame_time_s: f32, target_ms: i64 }
 
-struct Sprite { texture: Texture, frame: Rectangle }
+fn set_target_fps(fps: i32)     # cap the loop by sleeping out the rest of the frame budget
+fn get_frame_time() -> f32      # seconds elapsed during the previous frame
+fn begin_drawing()              # wraps gfx.begin_drawing with frame-timing bookkeeping
+fn end_drawing()                # wraps gfx.end_drawing likewise
+
+fn check_collision_recs(a: gfx.Rectangle, b: gfx.Rectangle) -> bool
+fn check_collision_circles(c1: gfx.Vector2, r1: f32, c2: gfx.Vector2, r2: f32) -> bool
+fn check_collision_point_rec(p: gfx.Vector2, r: gfx.Rectangle) -> bool
+
+struct Sprite { texture: gfx.Texture, frame: gfx.Rectangle }
 impl Sprite {
-    fn draw(self: Sprite, pos: Vector2) { draw_texture_rec(self.texture, self.frame, pos) }
+    fn draw(self, pos: gfx.Vector2)   # draws just `frame`'s sub-rectangle of `texture`
 }
 
-struct Sound { id: u32 }
-impl Sound {
-    fn load(path: str) -> !Sound { ret gdev_load_sound(path) }
-    fn play(self: Sound) { gdev_play_sound(self.id) }
-}
+struct Camera2D { offset: gfx.Vector2, target: gfx.Vector2, zoom: f32 }
+fn begin_mode_2d(cam: Camera2D)   # every draw_* call until end_mode_2d is drawn through cam
+fn end_mode_2d()
 ```
 
-A full program, in the style the rest of the book uses:
+`std/graphics` itself grew the two pieces `Sprite`/`Camera2D` are built on: `Vector2`/`Rectangle` structs, and `draw_texture_rec(t: Texture, source: Rectangle, pos: Vector2)` — draws just `source`'s pixel-coordinate sub-rectangle of `t`, the building block for a spritesheet/atlas where one `Texture` holds many frames. `std/graphics/gl` correspondingly grew `draw_textured_rect_uv` (arbitrary normalized-UV sub-rect sampling) and `push_camera_2d`/`pop_camera_2d` (2D scroll+zoom via the GL modelview matrix stack, underneath `begin_mode_2d`/`end_mode_2d`).
+
+A full program, in the style the rest of the book uses — note both `gdev` and `gfx` are imported, since `gdev` only adds to `std/graphics`'s surface rather than re-wrapping all of it:
 
 ```
 import(gdev = "std/gdev")
+import(gfx  = "std/graphics")
 
 fn main() -> i32 {
-    win: gdev.Window = gdev.Window.open("demo", 800, 450)
-    pos: (f32, f32) = (400.0, 225.0)
+    win: gfx.Window = gfx.Window.open("demo", 800, 450)
+    gdev.set_target_fps(60)
+    pos: gfx.Vector2 = gfx.Vector2{.x=400.0, .y=225.0}
 
     while !win.should_close() {
-        if gdev.is_key_pressed(gdev.Key.Right) { pos.0 += 5.0 }
+        if gfx.is_key_down(gfx.Key.Right) { pos.x += 300.0 * gdev.get_frame_time() }
         gdev.begin_drawing()
-        gdev.clear_background(gdev.Color.RayWhite)
-        gdev.draw_circle(pos.0, pos.1, 20.0, gdev.Color.Red)
+        gfx.clear_background(gfx.RAYWHITE)
+        gfx.draw_circle(pos.x, pos.y, 20.0, gfx.RED)
         gdev.end_drawing()
     }
     win.close()
     ret 0
 }
 ```
+
+Sound (`gdev_load_sound`/`gdev_play_sound`-style playback) isn't implemented yet — audio is deferred until an audio-output backend exists (see the [Status & Next Work](./status-next.md) direction on media codecs).
+
+Writing this exposed a real compiler bug, since it's exactly the shape `gdev` needs (a program importing both `gdev` and `std/graphics` directly, sharing `Rectangle`/`Vector2`/`Texture` between them): a "diamond" import — the same file reached both directly and transitively through a second file — used to produce two incompatible types for what was actually one struct. Fixed at the compiler level; see [Status & Next Work](./status-next.md)'s bug list and `tests/run/diamond_import.przp`.
 
 ### Layer 3b — `guix`, native GUI widgets
 
@@ -449,7 +462,7 @@ This means the FFI mechanics and linking layer 1 depends on (struct-by-value cal
 3. Write `std/graphics/gl` as the first implementation of the backend contract, and get a single triangle or cleared background on screen — this is the point where "a window exists" becomes "a frame can be drawn." **Done, for 2D**: `GL_BACKEND`'s `init`/`clear`/`present`/`shutdown` conform to the contract, and `set_ortho_2d`/`draw_rect`/`draw_circle`/`draw_line` get real filled shapes on screen via GL 1.1 immediate mode (verified via pixel readback, see `tests/gl/graphics_layer2`). Rasterizing an arbitrary mesh via vertex buffers, and anything past GL 1.1 (shaders, VBOs), still needs the loader (prerequisite #2).
 4. Write layer 2 (`std/graphics`) over that same small surface: 2D shapes, keyboard/mouse input, then texture loading once an image codec exists. Resist building out the full raylib-equivalent surface up front — this is also where the "simple by default" goal gets tested for real: a first-time caller should get a circle on screen in a handful of raylib-shaped lines, with 3D, shaders, and custom batching all staying opt-in layers underneath, not something the 2D path has to route around. **Done**: `Window` lifecycle, `is_key_down`/`is_mouse_button_down`/`mouse_position`, `draw_rectangle`/`draw_circle`/`draw_line`, and `Texture.load`/`draw_texture` (backed by the new `std/image` PNG decoder) are all real (see the layer 2 section above).
 5. Write a regression test per wrapped function group (window, shapes, input, textures), following the existing `tests/run/std_*.przp` convention, to the extent a windowing/GPU-dependent test can run headlessly in CI. **Done**: `tests/x11/window_close`, `tests/x11/input_and_resize`, `tests/gl/backend_contract`, `tests/gl/clear_and_read_pixel`, `tests/gl/graphics_layer2`, `tests/gl/texture_load`.
-6. Start `gdev` once `std/graphics`'s 2D primitives, input, and texture loading are solid, and finish its 2D surface (sprites, 2D camera/scrolling, basic audio) before touching 3D or starting `guix`. `gdev` is the priority once layer 1 is done — `guix` is deliberately sequenced after, not developed in lockstep with it, so effort doesn't split across both toolkits while neither is finished.
+6. Start `gdev` once `std/graphics`'s 2D primitives, input, and texture loading are solid, and finish its 2D surface (sprites, 2D camera/scrolling, basic audio) before touching 3D or starting `guix`. `gdev` is the priority once layer 1 is done — `guix` is deliberately sequenced after, not developed in lockstep with it, so effort doesn't split across both toolkits while neither is finished. **In progress**: frame timing (`set_target_fps`/`get_frame_time`), `Sprite` (atlas/spritesheet frame drawing via `std/graphics`'s new `draw_texture_rec`), `Camera2D` (scroll+zoom), and AABB/circle/point collision checks are done. Still open: basic audio (needs an audio-output backend first — nothing exists yet), then 3D once the 2D surface has seen real use.
 7. `gdev`: only once the 2D surface above is solid, extend to 3D (`Camera3D`-equivalent, cube/grid primitives).
 8. `guix`: start once `gdev`'s 2D surface is solid (does not need to wait for `gdev`'s 3D work). Extend to DPI scaling, text editing/cursor handling, focus/tab order, and clipboard. Prioritize mouse-interaction latency here specifically, since that's the axis this design most wants to win on: input state should be sampled once per frame with nothing between the OS event and code reading it.
 9. `gmed`: start on the codec I/O binding (prerequisite #8) independently of `guix`'s progress if there's appetite to de-risk it early — it has no dependency on `guix` internals, only on `std/graphics`'s texture upload for displaying decoded frames. The clip/timeline data model and editor-specific widgets (scrubber, thumbnails, waveform) come once `guix` has real generic widgets to borrow from; stay on cut/trim/cross-fade compositing, not a full effects graph, until something concrete demands more.

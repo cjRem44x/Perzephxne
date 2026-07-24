@@ -1,0 +1,11 @@
+# imports diamond_shared.przp under the same alias ("sh") the top-level
+# test also uses directly for it — see diamond_import.przp.
+import(sh = "diamond_shared")
+
+fn make_point(x: i32, y: i32) -> sh.Point {
+    ret sh.Point{.x=x, .y=y}
+}
+
+fn offset(p: sh.Point, dx: i32, dy: i32) -> sh.Point {
+    ret sh.Point{.x=p.x + dx, .y=p.y + dy}
+}

@@ -25,7 +25,7 @@ struct GdevState {
     target_ms:     i64,   # 0 means uncapped
 }
 
-GDEV: GdevState : GdevState{.last_frame_ms=0, .frame_time_s=0.0, .target_ms=0}
+GDEV: GdevState = GdevState{.last_frame_ms=0, .frame_time_s=0.0, .target_ms=0}
 
 # set_target_fps: cap the loop to at most `fps` frames per second by
 # sleeping out whatever's left of the frame budget in end_drawing. 0 (the
