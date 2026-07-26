@@ -15,8 +15,8 @@
         <link rel="icon" href="favicon-de23e50b.svg">
         <link rel="shortcut icon" href="favicon-8114d1fc.png">
         <link rel="stylesheet" href="css/variables-8adf115d.css">
-        <link rel="stylesheet" href="css/general-0392ca55.css">
-        <link rel="stylesheet" href="css/chrome-fc474251.css">
+        <link rel="stylesheet" href="css/general-e96d0476.css">
+        <link rel="stylesheet" href="css/chrome-d279d366.css">
         <link rel="stylesheet" href="css/print-9e4910d8.css" media="print">
 
         <!-- Fonts -->
@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-933d4d33.js";
+            window.path_to_searchindex_js = "searchindex-3635d286.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-4e58bc13.js"></script>
@@ -210,8 +210,18 @@
 </div>
 <h2 id="bugs-found-and-fixed-along-the-way"><a class="header" href="#bugs-found-and-fixed-along-the-way">Bugs Found and Fixed Along the Way</a></h2>
 <ul>
-<li><strong>Nested-import local-variable collision</strong> — a 3+-level-deep import chain (file A imports B, B imports C) could mis-rewrite an unrelated local variable inside C’s own function body if its name happened to match a top-level item name declared in B. <code>mangle_items</code> merges an already-mangled imported module’s items into the importer’s own item list <em>before</em> the importer’s own alias-rewrite pass runs, so that pass’s name-match set ended up including names with no relation to the code it was walking, and the rewrite itself had no notion of lexical scope to tell a local apart from an item reference. Fixed by collecting each function’s own locals (<code>LocalNames</code> in <code>main.c</code>) and always letting a local name shadow an outer item for that whole function body. Covered by <code>tests/run/local_name_collision.przp</code>.</li>
-<li><strong>Diamond imports produced two incompatible types for the same struct</strong> — a file that imported some module both directly <em>and</em> transitively (through a second module that itself imports it) got two different mangled names for the same underlying type, depending on which path reached it — e.g. <code>sh__Point</code> via the direct import, <code>wr__sh__Point</code> via the transitive one — because <code>mangle_items</code> named a module’s items by the alias chain used to reach it rather than the module’s own identity, and nested imports always picked up one <em>extra</em> prefix layer every time the module holding them was itself re-imported. This blocked exactly the layering <code>std/gdev</code> needs (a program importing both <code>std/gdev</code> and <code>std/graphics</code> directly, passing <code>Rectangle</code>/<code>Vector2</code>/<code>Texture</code> values between them). Fixed by freezing an item’s name (<code>Item.mangled</code> in <code>ast.h</code>) the moment it’s merged in via a cross-file <code>import()</code> — no later <code>mangle_items</code> pass may prefix it again — and letting the existing merged-import cache (previously top-level-imports-only) apply at any nesting depth, so a second import of the same (path, alias) pair anywhere in the compile reuses the first one’s already-frozen names instead of re-parsing a differently-prefixed copy. Deliberately scoped to cross-file imports only — a same-file <code>mod Name {}</code> block’s own items (<code>expand_mod_items</code>) still pick up the containing file’s import alias when that file is imported elsewhere, unaffected by this change (see <code>tests/run/mod_in_imported_file.przp</code>). Covered by <code>tests/run/diamond_import.przp</code>.</li>
+<li>
+<p><strong>Nested-import local-variable collision</strong> — a 3+-level-deep import chain (file A imports B, B imports C) could mis-rewrite an unrelated local variable inside C’s own function body if its name happened to match a top-level item name declared in B. <code>mangle_items</code> merges an already-mangled imported module’s items into the importer’s own item list <em>before</em> the importer’s own alias-rewrite pass runs, so that pass’s name-match set ended up including names with no relation to the code it was walking, and the rewrite itself had no notion of lexical scope to tell a local apart from an item reference. Fixed by collecting each function’s own locals (<code>LocalNames</code> in <code>main.c</code>) and always letting a local name shadow an outer item for that whole function body. Covered by <code>tests/run/local_name_collision.przp</code>.</p>
+</li>
+<li>
+<p><strong>Diamond imports produced two incompatible types for the same struct</strong> — a file that imported some module both directly <em>and</em> transitively (through a second module that itself imports it) got two different mangled names for the same underlying type, depending on which path reached it — e.g. <code>sh__Point</code> via the direct import, <code>wr__sh__Point</code> via the transitive one — because <code>mangle_items</code> named a module’s items by the alias chain used to reach it rather than the module’s own identity, and nested imports always picked up one <em>extra</em> prefix layer every time the module holding them was itself re-imported. This blocked exactly the layering <code>std/gdev</code> needs (a program importing both <code>std/gdev</code> and <code>std/graphics</code> directly, passing <code>Rectangle</code>/<code>Vector2</code>/<code>Texture</code> values between them). Fixed by freezing an item’s name (<code>Item.mangled</code> in <code>ast.h</code>) the moment it’s merged in via a cross-file <code>import()</code> — no later <code>mangle_items</code> pass may prefix it again — and letting the existing merged-import cache (previously top-level-imports-only) apply at any nesting depth, so a second import of the same (path, alias) pair anywhere in the compile reuses the first one’s already-frozen names instead of re-parsing a differently-prefixed copy. Deliberately scoped to cross-file imports only — a same-file <code>mod Name {}</code> block’s own items (<code>expand_mod_items</code>) still pick up the containing file’s import alias when that file is imported elsewhere, unaffected by this change (see <code>tests/run/mod_in_imported_file.przp</code>). Covered by <code>tests/run/diamond_import.przp</code>.</p>
+</li>
+<li>
+<p><strong>A statement starting with <code>(</code> or <code>[</code> could be silently swallowed as a call/index continuation of the previous statement</strong> — the grammar has no semicolons and relies entirely on each statement’s own expression parsing stopping at the right point; <code>parse_postfix</code>’s call (<code>(</code>) and index (<code>[</code>) continuations had no check for a newline in between, so <code>a: i32 = foo()</code> followed by <code>(a + 1)</code> on the next line parsed as one statement, <code>a: i32 = foo()(a + 1)</code> — calling <code>foo()</code>’s result with <code>(a + 1)</code> as an argument, silently absorbing what was meant to be an independent next statement. This surfaced first as a parse error (“unexpected token ‘=’ in expression”) for a deref-assignment (<code>(dst + x).* = value</code>) written directly in a function’s own top-level body, but the underlying issue is general and would have silently miscompiled (not errored) any case where the “merged” interpretation happened to still type-check. Fixed by tracking each token’s source line (<code>Parser.prev_end_line</code>) and only treating <code>(</code>/<code>[</code> as a continuation when it starts on the same line the previous token ended on. Covered by <code>tests/run/postfix_newline_boundary.przp</code>.</p>
+</li>
+<li>
+<p><strong><code>@alo(T, N)</code>/<code>@realo(ptr, T, N)</code> silently ignored <code>N</code> whenever it wasn’t a literal integer</strong> — codegen’s count-argument handling only recognized a literal (<code>EXPR_INT</code>) and fell back to allocating/resizing for exactly 1 element for anything else (a variable, a computed expression), a heap buffer overflow on every write past the first element with no error at compile or run time. Found while writing <code>std/image</code>’s GIF decoder: a growable array of frame structs sized by a variable (<code>frames_cap</code>) corrupted an unrelated, already-populated slot a few writes later. Fixed by evaluating the count argument as a real expression, mirroring how <code>@realo</code>’s count argument already worked correctly when explicitly passed — which also exposed an identical, separate, latent bug in <code>@realo</code>’s own no-count-argument fallback path (invalid LLVM IR, a constant-expression form used directly as an instruction), fixed the same way. Covered by <code>tests/run/alo_variable_count.przp</code>.</p>
+</li>
 </ul>
 <h2 id="documentation-rule"><a class="header" href="#documentation-rule">Documentation Rule</a></h2>
 <p>Any compiler feature that is added or changed should update both the book source and the generated <code>book/book</code> output in the same change. The book should remain the user-facing source of truth for the current language.</p>
@@ -264,7 +274,7 @@
 
         <script src="clipboard-1626706a.min.js"></script>
         <script src="highlight-abc7f01d.js"></script>
-        <script src="book-c22b7243.js"></script>
+        <script src="book-609e4cb8.js"></script>
 
         <!-- Custom JS scripts -->
 

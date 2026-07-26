@@ -15,8 +15,8 @@
         <link rel="icon" href="favicon-de23e50b.svg">
         <link rel="shortcut icon" href="favicon-8114d1fc.png">
         <link rel="stylesheet" href="css/variables-8adf115d.css">
-        <link rel="stylesheet" href="css/general-0392ca55.css">
-        <link rel="stylesheet" href="css/chrome-fc474251.css">
+        <link rel="stylesheet" href="css/general-e96d0476.css">
+        <link rel="stylesheet" href="css/chrome-d279d366.css">
         <link rel="stylesheet" href="css/print-9e4910d8.css" media="print">
 
         <!-- Fonts -->
@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-933d4d33.js";
+            window.path_to_searchindex_js = "searchindex-3635d286.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-4e58bc13.js"></script>
@@ -399,6 +399,13 @@ impl Texture {
 fn draw_texture(t: Texture, x: f32, y: f32)   # native resolution, no scaling
 </code></pre>
 <p>Texture upload/draw goes through <code>std/graphics/gl</code>’s <code>create_texture</code>/<code>draw_textured_rect</code> (nearest-neighbor filtering, edge-clamped wrapping — real GL 1.1 texturing calls, no runtime loader needed), the same direct-to-GL coupling <code>draw_rect</code>/<code>draw_circle</code>/<code>draw_line</code> already have, for the same reason (no <code>Backend.submit</code> yet). <code>tests/gl/texture_load</code> verifies the full round trip — decode, upload, draw, read back — against two fixtures: a hand-rolled RGB PNG (every scanline filter type <code>None</code>) and a real libpng-encoded RGBA PNG using adaptive per-row filter selection, so all five PNG filter types (<code>None</code>/<code>Sub</code>/<code>Up</code>/<code>Average</code>/<code>Paeth</code>) are exercised, not just the trivial one.</p>
+<p><strong>GIF decoding is also implemented</strong>, for animated textures — GIF87a/89a, non-interlaced only (same “reject rather than misdecode” precedent as PNG’s own scope note above). Unlike PNG’s DEFLATE, GIF’s own LZW variant predates it and has no system-library equivalent, so it’s entirely hand-written:</p>
+<pre><code>struct GifFrame { pixels: *u8, delay_ms: i32 }   # width*height*4 (RGBA), one decoded+composited frame
+struct Gif { width: i32, height: i32, frames: *GifFrame, n_frames: usize }
+fn load_gif(path: str) -&gt; !Gif
+fn free_gif(g: Gif)
+</code></pre>
+<p>Every frame is fully composited against a persistent canvas honoring the Graphic Control Extension’s disposal method (0/1 leave in place, 2 restore to background, 3 restore to previous) and transparent color index — real animated GIFs routinely only redraw the changed region per frame and rely on this compositing, so skipping it would visibly corrupt most real-world animated GIFs, not just an edge case. <code>tests/run/std_image_gif.przp</code> verifies this against three fixtures (two-color, a moving dot over a persistent background, and transparency layered over a previous frame), each cross-checked pixel-for-pixel against Pillow’s independent GIF decoder while writing it. <code>gdev</code>/<code>guix</code> don’t wrap this into an animated-sprite player yet — that’s the natural next step once something real needs one.</p>
 <p><code>draw_text</code> is still a sketch — no text layout exists yet (prerequisite #5):</p>
 <pre><code>fn draw_text(s: str, x: f32, y: f32, size: i32, c: Color)
 </code></pre>
@@ -612,7 +619,7 @@ fn main() -&gt; i32 {
 
         <script src="clipboard-1626706a.min.js"></script>
         <script src="highlight-abc7f01d.js"></script>
-        <script src="book-c22b7243.js"></script>
+        <script src="book-609e4cb8.js"></script>
 
         <!-- Custom JS scripts -->
 

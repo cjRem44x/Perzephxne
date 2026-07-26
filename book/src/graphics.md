@@ -277,6 +277,17 @@ fn draw_texture(t: Texture, x: f32, y: f32)   # native resolution, no scaling
 
 Texture upload/draw goes through `std/graphics/gl`'s `create_texture`/`draw_textured_rect` (nearest-neighbor filtering, edge-clamped wrapping — real GL 1.1 texturing calls, no runtime loader needed), the same direct-to-GL coupling `draw_rect`/`draw_circle`/`draw_line` already have, for the same reason (no `Backend.submit` yet). `tests/gl/texture_load` verifies the full round trip — decode, upload, draw, read back — against two fixtures: a hand-rolled RGB PNG (every scanline filter type `None`) and a real libpng-encoded RGBA PNG using adaptive per-row filter selection, so all five PNG filter types (`None`/`Sub`/`Up`/`Average`/`Paeth`) are exercised, not just the trivial one.
 
+**GIF decoding is also implemented**, for animated textures — GIF87a/89a, non-interlaced only (same "reject rather than misdecode" precedent as PNG's own scope note above). Unlike PNG's DEFLATE, GIF's own LZW variant predates it and has no system-library equivalent, so it's entirely hand-written:
+
+```
+struct GifFrame { pixels: *u8, delay_ms: i32 }   # width*height*4 (RGBA), one decoded+composited frame
+struct Gif { width: i32, height: i32, frames: *GifFrame, n_frames: usize }
+fn load_gif(path: str) -> !Gif
+fn free_gif(g: Gif)
+```
+
+Every frame is fully composited against a persistent canvas honoring the Graphic Control Extension's disposal method (0/1 leave in place, 2 restore to background, 3 restore to previous) and transparent color index — real animated GIFs routinely only redraw the changed region per frame and rely on this compositing, so skipping it would visibly corrupt most real-world animated GIFs, not just an edge case. `tests/run/std_image_gif.przp` verifies this against three fixtures (two-color, a moving dot over a persistent background, and transparency layered over a previous frame), each cross-checked pixel-for-pixel against Pillow's independent GIF decoder while writing it. `gdev`/`guix` don't wrap this into an animated-sprite player yet — that's the natural next step once something real needs one.
+
 `draw_text` is still a sketch — no text layout exists yet (prerequisite #5):
 
 ```

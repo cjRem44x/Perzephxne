@@ -51,6 +51,42 @@ run_success_case() {
     fi
 }
 
+# Like run_success_case, but links -lz — for tests/run/*.przp files that
+# import std/image (its uncompress() extern needs zlib even when only its
+# GIF decoder, which needs no zlib itself, is actually exercised). Gated
+# on libz's presence like tests/zip/gl's own link-time deps, though zlib
+# is ubiquitous enough this should essentially never skip in practice.
+run_lz_case() {
+    local src="$1"
+    local name
+    name="$(basename "$src" .przp)"
+    local bin="$TMP/bin/$name"
+    local actual="$TMP/out/$name.stdout"
+    local compile_err="$TMP/err/$name.compile.stderr"
+    local run_err="$TMP/err/$name.run.stderr"
+    local expected="${src%.przp}.stdout"
+
+    printf 'run   %s\n' "$name"
+    if ! PRZP_STDLIB="$STDLIB" "$PRZP" sac "$src" -lz -o="$bin" >"$TMP/out/$name.compile.stdout" 2>"$compile_err"; then
+        printf 'FAIL  %s: compile failed\n' "$name" >&2
+        sed -n '1,120p' "$compile_err" >&2
+        failures=$((failures + 1))
+        return
+    fi
+
+    if ! "$bin" >"$actual" 2>"$run_err"; then
+        printf 'FAIL  %s: run failed\n' "$name" >&2
+        sed -n '1,120p' "$run_err" >&2
+        failures=$((failures + 1))
+        return
+    fi
+
+    if ! diff -u "$expected" "$actual"; then
+        printf 'FAIL  %s: stdout mismatch\n' "$name" >&2
+        failures=$((failures + 1))
+    fi
+}
+
 run_fail_case() {
     local src="$1"
     local name
@@ -855,8 +891,19 @@ EOF
 
 for src in "$ROOT"/tests/run/*.przp; do
     [ -e "$src" ] || continue
+    # std_image_gif needs -lz (std/image's uncompress() extern) — run via
+    # run_lz_case below instead of the plain no-extra-links case here.
+    case "$(basename "$src")" in
+        std_image_gif.przp) continue ;;
+    esac
     run_success_case "$src"
 done
+
+if ldconfig -p 2>/dev/null | grep -q "libz\.so"; then
+    run_lz_case "$ROOT/tests/run/std_image_gif.przp"
+else
+    printf 'skip  std_image_gif: libz not installed\n'
+fi
 
 for dir in "$ROOT"/tests/project/*; do
     [ -d "$dir" ] || continue

@@ -1765,17 +1765,43 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
 
             /* @alo */
             if (!strcmp(name, "alo")) {
-                /* @alo(T) or @alo(T, N) — malloc with proper sizeof via GEP trick */
+                /* @alo(T) or @alo(T, N) — malloc with proper sizeof via GEP
+                   trick. N can be any expression, not just a literal —
+                   evaluated at runtime and multiplied into the size,
+                   mirroring @realo below. A previous version only handled
+                   a literal-integer N (checking EXPR_INT) and silently
+                   fell back to count=1 for anything else (a variable, a
+                   computed expression, ...), under-allocating by however
+                   many elements the real count exceeded 1 — a heap buffer
+                   overflow on every write past the first element, with no
+                   error at compile or run time. */
                 int t = new_tmp(cg);
                 /* If no type arg available at LLVM level, default to 8 bytes */
                 if (e->builtin.args.len >= 1 && e->builtin.args.data[0]->ty) {
                     const char *inner_llt = llvm_type(e->builtin.args.data[0]->ty);
-                    int count = 1;
-                    if (e->builtin.args.len >= 2 && e->builtin.args.data[1]->kind == EXPR_INT)
-                        count = (int)e->builtin.args.data[1]->ival;
                     int sz = new_tmp(cg);
-                    emit(cg, "  %%t%d = mul i64 %d, ptrtoint (ptr getelementptr (%s, ptr null, i32 1) to i64)\n",
-                         sz, count, inner_llt);
+                    if (e->builtin.args.len >= 2) {
+                        Type *cnt_ty = NULL;
+                        Val cnt = cg_expr(cg, e->builtin.args.data[1], &cnt_ty);
+                        if (cnt_ty && cnt_ty->kind != TY_I64 && cnt_ty->kind != TY_U64 &&
+                            cnt_ty->kind != TY_USIZE) {
+                            int ext = new_tmp(cg);
+                            emit(cg, "  %%t%d = sext %s %s to i64\n", ext,
+                                 llvm_type(cnt_ty), cnt.buf);
+                            cnt = val_tmp(ext);
+                        }
+                        emit(cg, "  %%t%d = mul i64 %s, ptrtoint (ptr getelementptr (%s, ptr null, i32 1) to i64)\n",
+                             sz, cnt.buf, inner_llt);
+                    } else {
+                        /* `ptrtoint (...)` with parens is a *constant
+                           expression* form, only valid as an operand —
+                           using it directly as an instruction's RHS (no
+                           parens allowed there) is invalid IR ("expected
+                           type"). mul by the constant 1 keeps it as an
+                           operand, same as the count>=2 branch above. */
+                        emit(cg, "  %%t%d = mul i64 1, ptrtoint (ptr getelementptr (%s, ptr null, i32 1) to i64)\n",
+                             sz, inner_llt);
+                    }
                     emit(cg, "  %%t%d = call ptr @malloc(i64 %%t%d)\n", t, sz);
                 } else {
                     emit(cg, "  %%t%d = call ptr @malloc(i64 8)\n", t);
@@ -1902,7 +1928,11 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                         emit(cg, "  %%t%d = mul i64 %s, ptrtoint (ptr getelementptr (%s, ptr null, i32 1) to i64)\n",
                              nsz, cnt.buf, inner);
                     } else {
-                        emit(cg, "  %%t%d = ptrtoint (ptr getelementptr (%s, ptr null, i32 1) to i64)\n",
+                        /* see @alo's identical fix above: `ptrtoint (...)`
+                           with parens is a constant-expression form, only
+                           valid as an operand, not as a bare instruction
+                           RHS — mul by 1 keeps it as an operand. */
+                        emit(cg, "  %%t%d = mul i64 1, ptrtoint (ptr getelementptr (%s, ptr null, i32 1) to i64)\n",
                              nsz, inner);
                     }
                 } else {
