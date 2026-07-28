@@ -5946,6 +5946,22 @@ static void emit_const_init(CG *cg, Expr *e, Type *ty) {
         case EXPR_BOOL:  emit(cg, "%d", e->bval); return;
         case EXPR_NULL:  emit(cg, "null"); return;
         case EXPR_UNDEF: emit(cg, "undef"); return;
+        case EXPR_UNOP: {
+            /* a negative literal (-12) parses as UNOP_NEG over a positive
+               EXPR_INT/EXPR_FLOAT, not a single literal node — fold that
+               one level here so e.g. `X: i32 = -12` is recognized as the
+               compile-time constant it plainly is. */
+            if (e->unop.op == UNOP_NEG && e->unop.operand->kind == EXPR_INT) {
+                emit(cg, "-%" PRIu64, e->unop.operand->ival);
+                return;
+            }
+            if (e->unop.op == UNOP_NEG && e->unop.operand->kind == EXPR_FLOAT) {
+                union { double d; uint64_t u; } bits; bits.d = -e->unop.operand->fval;
+                emit(cg, "0x%016" PRIX64, bits.u);
+                return;
+            }
+            break;
+        }
         case EXPR_IDENT: {
             Symbol *sym = lookup(cg, e->ident.name);
             if (sym && sym->is_fn_ref) { emit(cg, "%s", sym->llvm_name); return; }

@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-3635d286.js";
+            window.path_to_searchindex_js = "searchindex-638b242c.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-4e58bc13.js"></script>
@@ -221,6 +221,9 @@
 </li>
 <li>
 <p><strong><code>@alo(T, N)</code>/<code>@realo(ptr, T, N)</code> silently ignored <code>N</code> whenever it wasn’t a literal integer</strong> — codegen’s count-argument handling only recognized a literal (<code>EXPR_INT</code>) and fell back to allocating/resizing for exactly 1 element for anything else (a variable, a computed expression), a heap buffer overflow on every write past the first element with no error at compile or run time. Found while writing <code>std/image</code>’s GIF decoder: a growable array of frame structs sized by a variable (<code>frames_cap</code>) corrupted an unrelated, already-populated slot a few writes later. Fixed by evaluating the count argument as a real expression, mirroring how <code>@realo</code>’s count argument already worked correctly when explicitly passed — which also exposed an identical, separate, latent bug in <code>@realo</code>’s own no-count-argument fallback path (invalid LLVM IR, a constant-expression form used directly as an instruction), fixed the same way. Covered by <code>tests/run/alo_variable_count.przp</code>.</p>
+</li>
+<li>
+<p><strong>A negative literal in a global’s initializer failed to compile</strong> — <code>X: i32 = -12</code> reported “global initializer must be a compile-time constant”, even though it plainly is one. <code>-12</code> parses as <code>UNOP_NEG</code> over a positive <code>EXPR_INT</code>, not a single literal node, and the constant emitter that walks a global’s initializer expression only recognized bare literals, struct/array literals, and function references — a unary negation of one of those wasn’t among them. Found writing <code>std/audio</code>’s libmpg123 status-code constants (<code>MPG123_DONE = -12</code>, <code>MPG123_NEW_FORMAT = -11</code>), which are negative by definition. Fixed by folding one level of <code>UNOP_NEG</code> over an <code>EXPR_INT</code>/<code>EXPR_FLOAT</code> operand into the equivalent negative constant. Covered by <code>tests/run/global_negative_const.przp</code>.</p>
 </li>
 </ul>
 <h2 id="documentation-rule"><a class="header" href="#documentation-rule">Documentation Rule</a></h2>

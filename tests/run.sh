@@ -87,6 +87,41 @@ run_lz_case() {
     fi
 }
 
+# std/audio tests (libmpg123 + ALSA FFI). Needs both libraries' runtime
+# .so's — gated separately below, skipped (not failed) when absent.
+# Playback goes to ALSA's "null" PCM device, so no real sound hardware is
+# needed (see run_gl_case's Xvfb for the analogous graphics story).
+run_audio_case() {
+    local src="$1"
+    local name
+    name="$(basename "$src" .przp)"
+    local bin="$TMP/bin/$name"
+    local actual="$TMP/out/$name.stdout"
+    local compile_err="$TMP/err/$name.compile.stderr"
+    local run_err="$TMP/err/$name.run.stderr"
+    local expected="${src%.przp}.stdout"
+
+    printf 'audio %s\n' "$name"
+    if ! PRZP_STDLIB="$STDLIB" "$PRZP" sac "$src" -lasound -lmpg123 -o="$bin" >"$TMP/out/$name.compile.stdout" 2>"$compile_err"; then
+        printf 'FAIL  %s: compile failed\n' "$name" >&2
+        sed -n '1,120p' "$compile_err" >&2
+        failures=$((failures + 1))
+        return
+    fi
+
+    if ! "$bin" >"$actual" 2>"$run_err"; then
+        printf 'FAIL  %s: run failed\n' "$name" >&2
+        sed -n '1,120p' "$run_err" >&2
+        failures=$((failures + 1))
+        return
+    fi
+
+    if ! diff -u "$expected" "$actual"; then
+        printf 'FAIL  %s: stdout mismatch\n' "$name" >&2
+        failures=$((failures + 1))
+    fi
+}
+
 run_fail_case() {
     local src="$1"
     local name
@@ -894,7 +929,7 @@ for src in "$ROOT"/tests/run/*.przp; do
     # std_image_gif needs -lz (std/image's uncompress() extern) — run via
     # run_lz_case below instead of the plain no-extra-links case here.
     case "$(basename "$src")" in
-        std_image_gif.przp) continue ;;
+        std_image_gif.przp|std_audio.przp) continue ;;
     esac
     run_success_case "$src"
 done
@@ -903,6 +938,12 @@ if ldconfig -p 2>/dev/null | grep -q "libz\.so"; then
     run_lz_case "$ROOT/tests/run/std_image_gif.przp"
 else
     printf 'skip  std_image_gif: libz not installed\n'
+fi
+
+if ldconfig -p 2>/dev/null | grep -q "libasound\.so" && ldconfig -p 2>/dev/null | grep -q "libmpg123\.so"; then
+    run_audio_case "$ROOT/tests/run/std_audio.przp"
+else
+    printf 'skip  std_audio: libasound/libmpg123 not installed\n'
 fi
 
 for dir in "$ROOT"/tests/project/*; do
