@@ -13,6 +13,15 @@ typedef struct {
     Token       peek;
     Token       peek2;     /* 3-token lookahead for generic disambiguation */
     Token       peek3;     /* 4-token lookahead for label vs type disambiguation */
+    uint32_t    prev_end_line; /* span.end.line of the token just before `cur`
+                                   (see advance()) — lets parse_postfix tell a
+                                   genuine call/index continuation ("foo()(x)"
+                                   all on one line) apart from an unrelated new
+                                   statement that merely starts with '(' or '['
+                                   on the next line ("foo()\n(x).* = y"), which
+                                   would otherwise silently get swallowed as a
+                                   call/index on foo()'s result instead of
+                                   starting its own statement. */
     Arena      *arena;
     GenInstList gen_insts; /* generic instantiations seen during parse */
     int         no_struct_lit;    /* suppress struct-literal parsing in conditions */
@@ -32,6 +41,7 @@ typedef struct {
 /* ── helpers ──────────────────────────────────────────────────────────────── */
 
 static void advance(Parser *p) {
+    p->prev_end_line = p->cur.span.end.line;
     p->cur   = p->peek;
     p->peek  = p->peek2;
     p->peek2 = p->peek3;
@@ -47,6 +57,17 @@ static int check(Parser *p, TokenKind k) {
     return p->cur.kind == k;
 }
 static int check2(Parser *p, TokenKind k) { return p->peek.kind == k; }
+
+/* true if `cur` starts on the same source line the previous token ended
+   on — see Parser.prev_end_line. Used only to gate parse_postfix's call
+   ('(') and index ('[') continuations: a '(' or '[' on a *new* line is
+   almost always the start of an unrelated next statement, not a
+   continuation of the expression just finished (field access ('.') isn't
+   gated the same way — a leading '.' can't itself start a statement, so
+   there's no equivalent ambiguity to resolve there). */
+static int cur_starts_new_line(Parser *p) {
+    return p->cur.span.start.line != p->prev_end_line;
+}
 
 static Token expect(Parser *p, TokenKind k) {
     if (k == TOK_GT && p->pending_gt > 0) {
@@ -1061,13 +1082,13 @@ static const char *flatten_ident_chain(Parser *p, Expr *e) {
 static Expr *parse_postfix(Parser *p, Expr *e) {
     for (;;) {
         Span span = e->span;
-        if (check(p, TOK_LPAREN)) {
+        if (check(p, TOK_LPAREN) && !cur_starts_new_line(p)) {
             ExprList args = parse_args(p);
             Expr *call = mkexpr(p, EXPR_CALL, span_merge(span, cur(p).span));
             call->call.callee = e;
             call->call.args   = args;
             e = call;
-        } else if (check(p, TOK_LBRACKET)) {
+        } else if (check(p, TOK_LBRACKET) && !cur_starts_new_line(p)) {
             advance(p);
             Expr *idx = parse_expr(p);
             Span end = cur(p).span;

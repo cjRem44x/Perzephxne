@@ -1,0 +1,52 @@
+# regression: @alo(T, N) and @realo(ptr, T, N) silently ignored N whenever
+# it wasn't a literal integer expression (checking EXPR_INT specifically)
+# and fell back to allocating/resizing for exactly 1 element — a heap
+# buffer overflow on every write past the first element, with no error at
+# compile or run time. Found while writing std/image's GIF decoder: a
+# growable array of GifFrame structs sized by a *variable* (frames_cap)
+# corrupted an unrelated, already-populated slot a few writes later.
+#
+# Fixed in codegen.c's @alo/@realo handling to evaluate the count
+# argument as a real expression (mirroring how @realo's 3rd argument
+# already worked) instead of only special-casing a literal.
+
+struct Pair { a: i32, b: i32 }
+
+fn main() -> i32 {
+    n: usize = 5              # a variable, not a literal — this is exactly
+                               # the case the old code silently mishandled
+    arr: *Pair = @alo(Pair, n)
+
+    i: usize = 0
+    while i < n {
+        arr[i] = Pair{.a=@i32(i), .b=@i32(i) * 10}
+        i += 1
+    }
+
+    # if @alo under-allocated, later writes clobber earlier slots —
+    # check every slot still holds what it was given, not something a
+    # later iteration overwrote
+    ok: bool = true
+    i = 0
+    while i < n {
+        if arr[i].a != @i32(i) || arr[i].b != @i32(i) * 10 { ok = false }
+        i += 1
+    }
+    @pf("alo variable count ok: {ok}\n")
+
+    grown: usize = n * 2
+    arr = @realo(arr, Pair, grown)
+    i = n
+    while i < grown {
+        arr[i] = Pair{.a=@i32(i), .b=@i32(i) * 10}
+        i += 1
+    }
+    ok = true
+    i = 0
+    while i < grown {
+        if arr[i].a != @i32(i) || arr[i].b != @i32(i) * 10 { ok = false }
+        i += 1
+    }
+    @pf("realo variable count ok: {ok}\n")
+    ret 0
+}

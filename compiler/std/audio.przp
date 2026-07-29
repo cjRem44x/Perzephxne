@@ -1,0 +1,163 @@
+# std/audio — MP3 decoding (libmpg123) and PCM playback (ALSA). Both are
+# system libraries every mainstream Linux desktop/server ships (see
+# [build].link in book/build-system.md) — no hand-written MP3 decoder or
+# audio driver, same reasoning as PNG's zlib dependency in std/image.
+#
+# Playback goes straight to ALSA's PCM API rather than a higher-level
+# sound-server abstraction (PulseAudio/PipeWire) — both of those still
+# expose an ALSA-compatible PCM device on any system that has them, so
+# there's nothing an extra layer would add here.
+
+extern fn malloc(n: usize) -> *u8
+extern fn realloc(p: *u8, n: usize) -> *u8
+extern fn free(p: *u8)
+extern fn memcpy(dst: *u8, src: *u8, n: usize) -> *u8
+
+extern fn mpg123_init() -> i32
+extern fn mpg123_new(decoder: *u8, err: *i32) -> *u8
+extern fn mpg123_delete(mh: *u8)
+extern fn mpg123_open(mh: *u8, path: *u8) -> i32
+extern fn mpg123_close(mh: *u8) -> i32
+extern fn mpg123_format_none(mh: *u8) -> i32
+extern fn mpg123_format(mh: *u8, rate: i64, channels: i32, encodings: i32) -> i32
+extern fn mpg123_getformat(mh: *u8, rate: *i64, channels: *i32, encoding: *i32) -> i32
+extern fn mpg123_read(mh: *u8, outmemory: *u8, outmemsize: usize, done: *usize) -> i32
+
+MPG123_OK:         i32 = 0
+MPG123_DONE:       i32 = -12
+MPG123_NEW_FORMAT: i32 = -11
+MPG123_ENC_SIGNED_16: i32 = 0xD0
+
+extern fn snd_pcm_open(pcm: **u8, name: *u8, stream: i32, mode: i32) -> i32
+extern fn snd_pcm_close(pcm: *u8) -> i32
+extern fn snd_pcm_set_params(pcm: *u8, format: i32, access: i32, channels: u32, rate: u32, soft_resample: i32, latency: u32) -> i32
+extern fn snd_pcm_writei(pcm: *u8, buffer: *u8, size: u64) -> i64
+extern fn snd_pcm_drain(pcm: *u8) -> i32
+extern fn snd_pcm_recover(pcm: *u8, err: i32, silent: i32) -> i32
+
+SND_PCM_STREAM_PLAYBACK:      i32 = 0
+SND_PCM_FORMAT_S16_LE:        i32 = 2
+SND_PCM_ACCESS_RW_INTERLEAVED: i32 = 3
+
+# Sound: fully decoded PCM, signed 16-bit little-endian, interleaved
+# channels — the format both mpg123_format() forces on decode and ALSA's
+# writei expects, so no per-sample conversion sits between the two.
+struct Sound {
+    pcm:      *u8,   # n_frames * channels * 2 bytes
+    n_frames: usize,
+    channels: i32,
+    rate:     i32,
+}
+
+fn free_sound(s: Sound) {
+    if s.pcm != null { free(s.pcm) }
+}
+
+# decode_mp3: fully decodes an MP3 file into memory as signed 16-bit PCM.
+# Fine for the short sound effects/music loops 2D games actually use —
+# streaming decode during playback is a straightforward extension of the
+# same mpg123_read loop if a future caller ever needs it for long tracks.
+fn decode_mp3(path: str) -> !Sound {
+    mpg123_init()
+
+    err: i32 = 0
+    mh: *u8 = mpg123_new(null, &err)
+    if mh == null { ret @err(1) }
+
+    if mpg123_open(mh, path.data) != MPG123_OK {
+        mpg123_delete(mh)
+        ret @err(2)
+    }
+
+    rate: i64 = 0
+    channels: i32 = 0
+    encoding: i32 = 0
+    if mpg123_getformat(mh, &rate, &channels, &encoding) != MPG123_OK {
+        mpg123_close(mh)
+        mpg123_delete(mh)
+        ret @err(3)
+    }
+    mpg123_format_none(mh)
+    mpg123_format(mh, rate, channels, MPG123_ENC_SIGNED_16)
+
+    cap: usize = 1048576
+    buf: *u8 = @alo(u8, cap)
+    len: usize = 0
+
+    chunk_cap: usize = 65536
+    chunk: *u8 = @alo(u8, chunk_cap)
+
+    done: bool = false
+    while !done {
+        got: usize = 0
+        r: i32 = mpg123_read(mh, chunk, chunk_cap, &got)
+        if got > 0 {
+            if len + got > cap {
+                while len + got > cap { cap = cap * 2 }
+                buf = @realo(buf, u8, cap)
+            }
+            memcpy(buf + len, chunk, got)
+            len += got
+        }
+        if r == MPG123_NEW_FORMAT {
+            mpg123_getformat(mh, &rate, &channels, &encoding)
+        } elif r != MPG123_OK {
+            done = true # MPG123_DONE, or any error — either way, stop
+        }
+    }
+
+    free(chunk)
+    mpg123_close(mh)
+    mpg123_delete(mh)
+
+    bytes_per_frame: usize = @usize(channels) * 2
+    n_frames: usize = len / bytes_per_frame
+
+    ret Sound{.pcm=buf, .n_frames=n_frames, .channels=channels, .rate=@i32(rate)}
+}
+
+# AudioOutput: an open ALSA PCM playback handle. `device` is an ALSA PCM
+# name — "default" for the system's default output, "null" for ALSA's
+# hardware-free sink (useful for testing FFI plumbing on a machine with
+# no real sound card, the same role Xvfb plays for std/graphics/gl).
+struct AudioOutput {
+    pcm:      *u8,
+    channels: i32,
+}
+
+fn open_output(device: str, rate: i32, channels: i32) -> !AudioOutput {
+    pcm: *u8 = null
+    if snd_pcm_open(&pcm, device.data, SND_PCM_STREAM_PLAYBACK, 0) < 0 {
+        ret @err(1)
+    }
+    if snd_pcm_set_params(pcm, SND_PCM_FORMAT_S16_LE, SND_PCM_ACCESS_RW_INTERLEAVED,
+            @u32(channels), @u32(rate), 1, 500000u32) < 0 {
+        snd_pcm_close(pcm)
+        ret @err(2)
+    }
+    ret AudioOutput{.pcm=pcm, .channels=channels}
+}
+
+# write_frames: blocking write of `n_frames` interleaved sample frames.
+# Returns the number of frames actually written, or a negative ALSA error
+# code. A single automatic xrun-recovery retry covers the common
+# buffer-underrun case; a caller that wants more control can inspect the
+# negative return itself.
+fn write_frames(out: AudioOutput, pcm: *u8, n_frames: usize) -> i64 {
+    r: i64 = snd_pcm_writei(out.pcm, pcm, @u64(n_frames))
+    if r < 0 {
+        if snd_pcm_recover(out.pcm, @i32(r), 1) == 0 {
+            r = snd_pcm_writei(out.pcm, pcm, @u64(n_frames))
+        }
+    }
+    ret r
+}
+
+fn play_sound(out: AudioOutput, s: Sound) -> i64 {
+    ret write_frames(out, s.pcm, s.n_frames)
+}
+
+fn close_output(out: AudioOutput) {
+    snd_pcm_drain(out.pcm)
+    snd_pcm_close(out.pcm)
+}

@@ -594,7 +594,7 @@ static void mangle_items(Module *mod, const char *alias, Arena *arena) {
     size_t n_orig = 0;
     for (size_t i = 0; i < mod->items.len; i++) {
         Item *item = mod->items.data[i];
-        if (item->name)
+        if (item->name && !item->mangled)
             orig[n_orig++] = item->name;
     }
 
@@ -603,7 +603,7 @@ static void mangle_items(Module *mod, const char *alias, Arena *arena) {
     size_t n_all_orig = 0;
     for (size_t i = 0; i < mod->items.len; i++) {
         Item *item = mod->items.data[i];
-        if (item->name) all_orig[n_all_orig++] = item->name;
+        if (item->name && !item->mangled) all_orig[n_all_orig++] = item->name;
     }
 
     /* gen_insts recorded while parsing this module reference its own
@@ -635,17 +635,13 @@ static void mangle_items(Module *mod, const char *alias, Arena *arena) {
     for (size_t i = 0; i < mod->items.len; i++) {
         Item *item = mod->items.data[i];
         if (!item->name) continue;
+        if (item->mangled) continue; /* frozen by a prior cross-file import merge */
         if (item->kind == ITEM_EXTERN_FN) {
             /* Save the original C symbol name, then mangle item->name so
-               alias.fn rewrites work — but only capture c_name on the first
-               mangling pass. A transitively-imported extern fn (e.g.
-               std/collections re-exported through a module that itself gets
-               imported) goes through mangle_items more than once as each
-               importer's alias gets applied in turn; capturing c_name again
-               on a later pass would overwrite the real C symbol ("malloc")
-               with the previous pass's already-mangled item->name
-               ("collections__malloc"), and the linker would then look for a
-               C symbol that was never actually exported under that name. */
+               alias.fn rewrites work. Frozen extern fns (see item->mangled
+               above) never reach here a second time, so this only ever
+               runs once per item — capturing the real C symbol exactly
+               once, never overwriting it with an already-mangled name. */
             if (!item->extern_fn.c_name) item->extern_fn.c_name = item->name;
             snprintf(buf, sizeof(buf), "%s__%s", alias, item->name);
             item->name = arena_strdup(arena, buf);
@@ -663,6 +659,7 @@ static void mangle_items(Module *mod, const char *alias, Arena *arena) {
     /* rewrite TY_NAMED annotations and intra-module EXPR_IDENT calls in bodies */
     for (size_t i = 0; i < mod->items.len; i++) {
         Item *item = mod->items.data[i];
+        if (item->mangled) continue; /* frozen; its body was already rewritten once */
         if (item->kind == ITEM_FN) {
             for (size_t j = 0; j < item->fn.params.len; j++)
                 rw_type(item->fn.params.data[j].ty, all_orig, n_all_orig, alias, arena);
@@ -1072,34 +1069,40 @@ static int load_imports(Module *mod, const char *src_path, const char *src,
                 return 0;
             }
 
-            /* already loaded, mangled, and merged under this exact alias by
-               some other independent top-level file in this same compile
-               (the entry file, another tests/ file, another multi-file sac
-               argument) — its items are already present in the final
-               module under these same mangled names, so skip re-parsing
-               and re-merging a duplicate copy. `alias` still needs adding
-               below so rw_item rewrites this file's own `alias.foo` uses
-               to the (already-merged) mangled names.
-               n_loading == 1 restricts this to *top-level* imports only —
-               mod itself is one of those independent top-level files, not
-               something reached via another file's import(). A nested
-               import (n_loading > 1) gets an additional mangle pass applied
-               by whichever file imported *it*, so the same (path, alias)
-               pair produces a different final name depending on nesting
-               depth; deduping those against a top-level import of the same
-               (path, alias) would skip a merge whose mangled names never
-               actually end up in the final module, leaving a dangling
-               reference to a name that was never defined. */
-            if (n_loading == 1) {
-                MergedImport *mi = find_merged_import(full, alias);
-                if (mi) {
-                    record_dep_file(full);
-                    aliases[n_aliases].alias       = alias;
-                    aliases[n_aliases].mod_names   = mi->mod_names;
-                    aliases[n_aliases].n_mod_names = mi->n_mod_names;
-                    n_aliases++;
-                    continue;
-                }
+            /* already loaded, mangled, and merged under this exact alias
+               somewhere else in this same compile — either by another
+               independent top-level file (the entry file, a tests/ file,
+               another multi-file sac argument), or by a completely
+               different import path that happens to reach the same file
+               under the same alias (e.g. two sibling modules that both
+               import "std/graphics" as `gfx` — a "diamond"). Its items
+               are already present in the final module under these same
+               mangled names (see item->mangled in ast.h: once merged,
+               those names are frozen and never get a further alias
+               prefix layered on, no matter how many more times the
+               module holding them is itself re-imported), so skip
+               re-parsing and re-merging a duplicate copy — that would
+               either redefine the same names twice, or (before
+               item->mangled existed) produce a same-content, differently
+               -prefixed-by-nesting-depth duplicate that user code on
+               either side of the diamond couldn't pass between each
+               other. `alias` still needs adding below so rw_item
+               rewrites this file's own `alias.foo` uses to the
+               already-merged mangled names. This check applies
+               regardless of nesting depth now that item->mangled makes
+               a module's own re-export of a borrowed import a no-op
+               rename-wise — a nested import used to get an *additional*
+               mangle pass applied by whichever file imported it, making
+               the same (path, alias) pair's final name depend on nesting
+               depth; that's exactly what item->mangled prevents. */
+            MergedImport *mi = find_merged_import(full, alias);
+            if (mi) {
+                record_dep_file(full);
+                aliases[n_aliases].alias       = alias;
+                aliases[n_aliases].mod_names   = mi->mod_names;
+                aliases[n_aliases].n_mod_names = mi->n_mod_names;
+                n_aliases++;
+                continue;
             }
 
             /* cycle detection */
@@ -1135,9 +1138,18 @@ static int load_imports(Module *mod, const char *src_path, const char *src,
 
             /* mangle imported items, merge into main module */
             mangle_items(imp, alias, arena);
+            /* freeze every item this cross-file import is about to
+               contribute — its name is now final, and no later
+               mangle_items pass (triggered by *this* module itself being
+               imported elsewhere) may prefix it again. Deliberately not
+               done inside mangle_items itself: expand_mod_items reuses
+               mangle_items for a same-file `mod Name {}` block, whose
+               items are still genuinely part of the containing file and
+               must still pick up that file's own import alias later. */
+            for (size_t k = 0; k < imp->items.len; k++)
+                imp->items.data[k]->mangled = 1;
             merge_items(mod, imp);
-            if (n_loading == 1)
-                record_merged_import(full, alias, imp->mod_names, imp->n_mod_names);
+            record_merged_import(full, alias, imp->mod_names, imp->n_mod_names);
 
             aliases[n_aliases].alias       = alias;
             aliases[n_aliases].mod_names   = imp->mod_names;

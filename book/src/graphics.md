@@ -1,6 +1,6 @@
-# Graphics — Design Sketch (Layer 1 Implemented, Layer 2 In Progress)
+# Graphics — Design Sketch (Layers 1-2 Implemented, `gdev` 2D Core In Progress)
 
-> **Layer 1 and layer 2's 2D surface are now real; `gdev`/`guix` remain a plan.** This is an architecture sketch — written to guide implementation — for a future media stack in the spirit of [raylib](https://www.raylib.com/): simple enough for a weekend game, capable enough for a native GUI app. **This is not a raylib binding.** The plan is to write Perzephxne's own renderer and windowing layer from scratch, on raw platform APIs, and shape its call-level ergonomics after raylib's — because raylib's API is a genuinely good design, not because the library itself is a dependency worth taking on. Every other chapter in this book documents the compiler as it is; this one documents a plan, with a growing exception: `std/graphics/window` (open/close, resize, keyboard/mouse input), the backend contract, `std/graphics/gl` (context setup, clear/present, 2D immediate-mode drawing, and texture upload), `std/image` (PNG decoding), and `std/graphics` itself (window lifecycle, input queries, `Color`, `draw_rectangle`/`draw_circle`/`draw_line`, and `Texture`/`draw_texture`) are real, shipped, and regression-tested — see their sections below. Only `draw_text` (needs text layout) is still sketched in layer 2; `gdev` and `guix` remain unbuilt.
+> **Layer 1, layer 2's 2D surface, and `gdev`'s 2D core (including basic audio) are now real; 3D and `guix` remain a plan.** This is an architecture sketch — written to guide implementation — for a future media stack in the spirit of [raylib](https://www.raylib.com/): simple enough for a weekend game, capable enough for a native GUI app. **This is not a raylib binding.** The plan is to write Perzephxne's own renderer and windowing layer from scratch, on raw platform APIs, and shape its call-level ergonomics after raylib's — because raylib's API is a genuinely good design, not because the library itself is a dependency worth taking on. Every other chapter in this book documents the compiler as it is; this one documents a plan, with a growing exception: `std/graphics/window` (open/close, resize, keyboard/mouse input), the backend contract, `std/graphics/gl` (context setup, clear/present, 2D immediate-mode drawing, texture upload, and 2D camera transforms), `std/image` (PNG and GIF decoding), `std/audio` (MP3 decoding, ALSA PCM playback), `std/graphics` itself (window lifecycle, input queries, `Color`, `draw_rectangle`/`draw_circle`/`draw_line`, `Texture`/`draw_texture`/`draw_texture_rec`, `Vector2`/`Rectangle`), and `std/gdev`'s 2D core (frame timing, `Sprite`, `Camera2D`, collision checks) are real, shipped, and regression-tested — see their sections below. Only `draw_text` (needs text layout) is still sketched in layer 2; `gdev`'s 3D pieces, `guix`, and `gmed` remain unbuilt.
 
 The stack splits into purpose-specific libraries built on one shared foundation:
 
@@ -255,7 +255,7 @@ fn main() -> i32 {
 }
 ```
 
-**Texture loading is implemented** (prerequisite #4, for images — audio is still open), via a new `std/image` module — an 8-bit-per-channel RGB/RGBA PNG decoder, hand-written except for DEFLATE decompression, which goes through the system zlib (`uncompress()`, linked via `-lz` the same way `-lX11`/`-lGL` already are):
+**Texture loading is implemented** (prerequisite #4, for images and now audio — see `std/audio` at the end of this section), via a new `std/image` module — an 8-bit-per-channel RGB/RGBA PNG decoder, hand-written except for DEFLATE decompression, which goes through the system zlib (`uncompress()`, linked via `-lz` the same way `-lX11`/`-lGL` already are):
 
 ```
 struct Image { width: i32, height: i32, channels: i32, pixels: *u8 }
@@ -277,55 +277,95 @@ fn draw_texture(t: Texture, x: f32, y: f32)   # native resolution, no scaling
 
 Texture upload/draw goes through `std/graphics/gl`'s `create_texture`/`draw_textured_rect` (nearest-neighbor filtering, edge-clamped wrapping — real GL 1.1 texturing calls, no runtime loader needed), the same direct-to-GL coupling `draw_rect`/`draw_circle`/`draw_line` already have, for the same reason (no `Backend.submit` yet). `tests/gl/texture_load` verifies the full round trip — decode, upload, draw, read back — against two fixtures: a hand-rolled RGB PNG (every scanline filter type `None`) and a real libpng-encoded RGBA PNG using adaptive per-row filter selection, so all five PNG filter types (`None`/`Sub`/`Up`/`Average`/`Paeth`) are exercised, not just the trivial one.
 
+**GIF decoding is also implemented**, for animated textures — GIF87a/89a, non-interlaced only (same "reject rather than misdecode" precedent as PNG's own scope note above). Unlike PNG's DEFLATE, GIF's own LZW variant predates it and has no system-library equivalent, so it's entirely hand-written:
+
+```
+struct GifFrame { pixels: *u8, delay_ms: i32 }   # width*height*4 (RGBA), one decoded+composited frame
+struct Gif { width: i32, height: i32, frames: *GifFrame, n_frames: usize }
+fn load_gif(path: str) -> !Gif
+fn free_gif(g: Gif)
+```
+
+Every frame is fully composited against a persistent canvas honoring the Graphic Control Extension's disposal method (0/1 leave in place, 2 restore to background, 3 restore to previous) and transparent color index — real animated GIFs routinely only redraw the changed region per frame and rely on this compositing, so skipping it would visibly corrupt most real-world animated GIFs, not just an edge case. `tests/run/std_image_gif.przp` verifies this against three fixtures (two-color, a moving dot over a persistent background, and transparency layered over a previous frame), each cross-checked pixel-for-pixel against Pillow's independent GIF decoder while writing it. `gdev`/`guix` don't wrap this into an animated-sprite player yet — that's the natural next step once something real needs one.
+
 `draw_text` is still a sketch — no text layout exists yet (prerequisite #5):
 
 ```
 fn draw_text(s: str, x: f32, y: f32, size: i32, c: Color)
 ```
 
+**MP3 decoding and PCM playback are also implemented**, via a new `std/audio` module — both bind system libraries (`libmpg123` for decode, ALSA for output) rather than hand-writing an MP3 decoder or an audio driver, the same reasoning as PNG's zlib dependency above:
+
+```
+struct Sound { pcm: *u8, n_frames: usize, channels: i32, rate: i32 }   # signed 16-bit PCM, interleaved
+fn decode_mp3(path: str) -> !Sound
+fn free_sound(s: Sound)
+
+struct AudioOutput { pcm: *u8, channels: i32 }
+fn open_output(device: str, rate: i32, channels: i32) -> !AudioOutput   # "default", or "null" for a hardware-free sink
+fn write_frames(out: AudioOutput, pcm: *u8, n_frames: usize) -> i64
+fn play_sound(out: AudioOutput, s: Sound) -> i64
+fn close_output(out: AudioOutput)
+```
+
+`decode_mp3` fully decodes into memory as signed 16-bit PCM (fine for the short sound effects/music loops a 2D game actually uses; streaming decode for long tracks is a straightforward extension of the same `mpg123_read` loop if something ever needs it) — `mpg123_format`/`mpg123_format_none` force that output encoding so no per-sample conversion sits between decode and `snd_pcm_writei`, which expects exactly that layout. Playback targets ALSA's PCM API directly (`snd_pcm_set_params`/`snd_pcm_writei`) rather than a higher-level sound-server abstraction, since PulseAudio/PipeWire both still expose an ALSA-compatible PCM device on any system that has them. `tests/run/std_audio.przp` verifies decode against known-good sample values captured from an independent C program calling `libmpg123` with the identical call sequence, then plays the result through ALSA's `"null"` device — a real, userspace-only PCM sink that needs no sound hardware, the same role Xvfb plays for the GL tests below.
+
 ### Layer 3a — `gdev`, game-dev primitives
 
-Built on `std/graphics`, adding the pieces a game needs that a GUI app doesn't:
+Built on `std/graphics`, adding the pieces a 2D game needs that a GUI app doesn't. Scope, deliberately: **2D only** — `Camera3D`/`draw_cube`/3D primitives are a separate, later addition once this 2D surface is solid (see the suggested build order below); there's nothing 3D in `std/gdev` by design, not by omission. Import it *alongside* `std/graphics`, not instead of it — `gdev` only adds game-specific pieces on top; `Window`, `Color`, `Key`, `is_key_down`, `draw_rectangle`, and the rest of the drawing/input surface still come from `std/graphics` directly.
+
+**Implemented**: frame timing, sprite drawing from a texture atlas, a 2D camera, and AABB/circle/point collision checks. See `compiler/std/gdev.przp`:
 
 ```
-struct Camera3D { position: Vector3, target: Vector3, up: Vector3, fovy: f32 }
-fn begin_mode_3d(cam: Camera3D)
-fn end_mode_3d()
-fn draw_cube(pos: Vector3, w: f32, h: f32, d: f32, c: Color)
-fn draw_grid(slices: i32, spacing: f32)
+struct GdevState { last_frame_ms: i64, frame_time_s: f32, target_ms: i64 }
 
-struct Sprite { texture: Texture, frame: Rectangle }
+fn set_target_fps(fps: i32)     # cap the loop by sleeping out the rest of the frame budget
+fn get_frame_time() -> f32      # seconds elapsed during the previous frame
+fn begin_drawing()              # wraps gfx.begin_drawing with frame-timing bookkeeping
+fn end_drawing()                # wraps gfx.end_drawing likewise
+
+fn check_collision_recs(a: gfx.Rectangle, b: gfx.Rectangle) -> bool
+fn check_collision_circles(c1: gfx.Vector2, r1: f32, c2: gfx.Vector2, r2: f32) -> bool
+fn check_collision_point_rec(p: gfx.Vector2, r: gfx.Rectangle) -> bool
+
+struct Sprite { texture: gfx.Texture, frame: gfx.Rectangle }
 impl Sprite {
-    fn draw(self: Sprite, pos: Vector2) { draw_texture_rec(self.texture, self.frame, pos) }
+    fn draw(self, pos: gfx.Vector2)   # draws just `frame`'s sub-rectangle of `texture`
 }
 
-struct Sound { id: u32 }
-impl Sound {
-    fn load(path: str) -> !Sound { ret gdev_load_sound(path) }
-    fn play(self: Sound) { gdev_play_sound(self.id) }
-}
+struct Camera2D { offset: gfx.Vector2, target: gfx.Vector2, zoom: f32 }
+fn begin_mode_2d(cam: Camera2D)   # every draw_* call until end_mode_2d is drawn through cam
+fn end_mode_2d()
 ```
 
-A full program, in the style the rest of the book uses:
+`std/graphics` itself grew the two pieces `Sprite`/`Camera2D` are built on: `Vector2`/`Rectangle` structs, and `draw_texture_rec(t: Texture, source: Rectangle, pos: Vector2)` — draws just `source`'s pixel-coordinate sub-rectangle of `t`, the building block for a spritesheet/atlas where one `Texture` holds many frames. `std/graphics/gl` correspondingly grew `draw_textured_rect_uv` (arbitrary normalized-UV sub-rect sampling) and `push_camera_2d`/`pop_camera_2d` (2D scroll+zoom via the GL modelview matrix stack, underneath `begin_mode_2d`/`end_mode_2d`).
+
+A full program, in the style the rest of the book uses — note both `gdev` and `gfx` are imported, since `gdev` only adds to `std/graphics`'s surface rather than re-wrapping all of it:
 
 ```
 import(gdev = "std/gdev")
+import(gfx  = "std/graphics")
 
 fn main() -> i32 {
-    win: gdev.Window = gdev.Window.open("demo", 800, 450)
-    pos: (f32, f32) = (400.0, 225.0)
+    win: gfx.Window = gfx.Window.open("demo", 800, 450)
+    gdev.set_target_fps(60)
+    pos: gfx.Vector2 = gfx.Vector2{.x=400.0, .y=225.0}
 
     while !win.should_close() {
-        if gdev.is_key_pressed(gdev.Key.Right) { pos.0 += 5.0 }
+        if gfx.is_key_down(gfx.Key.Right) { pos.x += 300.0 * gdev.get_frame_time() }
         gdev.begin_drawing()
-        gdev.clear_background(gdev.Color.RayWhite)
-        gdev.draw_circle(pos.0, pos.1, 20.0, gdev.Color.Red)
+        gfx.clear_background(gfx.RAYWHITE)
+        gfx.draw_circle(pos.x, pos.y, 20.0, gfx.RED)
         gdev.end_drawing()
     }
     win.close()
     ret 0
 }
 ```
+
+Sound (`gdev_load_sound`/`gdev_play_sound`-style playback) isn't implemented yet — audio is deferred until an audio-output backend exists (see the [Status & Next Work](./status-next.md) direction on media codecs).
+
+Writing this exposed a real compiler bug, since it's exactly the shape `gdev` needs (a program importing both `gdev` and `std/graphics` directly, sharing `Rectangle`/`Vector2`/`Texture` between them): a "diamond" import — the same file reached both directly and transitively through a second file — used to produce two incompatible types for what was actually one struct. Fixed at the compiler level; see [Status & Next Work](./status-next.md)'s bug list and `tests/run/diamond_import.przp`.
 
 ### Layer 3b — `guix`, native GUI widgets
 
@@ -436,7 +476,7 @@ This means the FFI mechanics and linking layer 1 depends on (struct-by-value cal
 | 1 | **Backend contract design.** The fixed interface `std/graphics` calls through needs to be designed and settled *before* the GL backend is written against it — this is what makes future Vulkan/Metal/D3D12 backends additive instead of a rewrite. **Done, at today's scope**: `std/graphics/backend`'s `Backend` struct fixes `init`/`clear`/`present`/`shutdown`; `submit`/`upload_texture`/`bind_shader` are deliberately not fields yet (see `std/graphics/backend` above) until prerequisite #2 makes a real implementation possible. |
 | 2 | **GL function loading.** Nothing beyond OpenGL 1.1 is available as a link-time symbol — every modern GL entry point (shaders, buffers, textures beyond the basics) has to be resolved at runtime via `glXGetProcAddress` and called through a function pointer. This needs a small runtime loader written once, not per-project. **Not started** — `std/graphics/gl` so far only uses real link-time GL 1.1 symbols (`glClear`, `glClearColor`, `glGetError`, `glReadPixels`), which don't need this loader. |
 | 3 | **Windowing backend.** X11 first (works everywhere on Linux, including under Wayland via XWayland); a native Wayland backend, then Win32/Cocoa, come later behind the same `std/graphics/window` surface so `std/graphics`, `gdev`, and `guix` never have to change per platform. **Done, for X11**: open/title/close (including the `WM_DELETE_WINDOW` handshake), resize reporting, and keyboard/mouse input events are all implemented and tested. Still open: a second (Wayland/Win32/Cocoa) backend, which is intentionally not started until a real cross-platform need shows up. |
-| 4 | **Image and audio codecs.** No bundled renderer means no bundled codecs either — PNG/JPEG decoding (for `guix` icons and `gdev` textures alike) and audio file loading (for `gdev`) need their own (likely also hand-written or minimally-bound) implementations. **Done, for images**: `std/image` decodes 8-bit RGB/RGBA PNG (DEFLATE via system zlib, everything else hand-written) — see the layer 2 section above. JPEG and audio file loading are still open, deferred until something real needs them. |
+| 4 | **Image and audio codecs.** No bundled renderer means no bundled codecs either — PNG/JPEG/GIF decoding (for `guix` icons and `gdev` textures alike) and audio file loading (for `gdev`) need their own (likely also hand-written or minimally-bound) implementations. **Done, for images and MP3 audio**: `std/image` decodes 8-bit RGB/RGBA PNG (DEFLATE via system zlib) and GIF87a/89a (hand-written LZW, no system library covers it) — see the layer 2 section above; `std/audio` decodes MP3 via system `libmpg123` and plays PCM via ALSA — see the layer 2 section's `std/audio` entry. JPEG decoding is still open, deferred until something real needs it. |
 | 5 | **Text layout.** `guix` needs real text shaping/layout (cursor positioning, line wrapping, at minimum) to be a credible native-app toolkit; `gdev` only needs simple bitmap-font text draw calls. This is a `guix`-specific investment, not a `std/graphics` one. |
 | 6 | **Variadic/macro helpers.** Small conveniences like a `printf`-style text-formatting helper for on-screen debug text are built on `@fmt` rather than needing any new compiler feature — a non-issue, listed for completeness. |
 | 7 | **Threading model.** GPU contexts are tied to the thread that created them; the wrapper should document a single-threaded main loop (window, input, and drawing calls all from one thread) as the initial supported model rather than attempt general multi-threaded rendering from the start. |
@@ -449,7 +489,7 @@ This means the FFI mechanics and linking layer 1 depends on (struct-by-value cal
 3. Write `std/graphics/gl` as the first implementation of the backend contract, and get a single triangle or cleared background on screen — this is the point where "a window exists" becomes "a frame can be drawn." **Done, for 2D**: `GL_BACKEND`'s `init`/`clear`/`present`/`shutdown` conform to the contract, and `set_ortho_2d`/`draw_rect`/`draw_circle`/`draw_line` get real filled shapes on screen via GL 1.1 immediate mode (verified via pixel readback, see `tests/gl/graphics_layer2`). Rasterizing an arbitrary mesh via vertex buffers, and anything past GL 1.1 (shaders, VBOs), still needs the loader (prerequisite #2).
 4. Write layer 2 (`std/graphics`) over that same small surface: 2D shapes, keyboard/mouse input, then texture loading once an image codec exists. Resist building out the full raylib-equivalent surface up front — this is also where the "simple by default" goal gets tested for real: a first-time caller should get a circle on screen in a handful of raylib-shaped lines, with 3D, shaders, and custom batching all staying opt-in layers underneath, not something the 2D path has to route around. **Done**: `Window` lifecycle, `is_key_down`/`is_mouse_button_down`/`mouse_position`, `draw_rectangle`/`draw_circle`/`draw_line`, and `Texture.load`/`draw_texture` (backed by the new `std/image` PNG decoder) are all real (see the layer 2 section above).
 5. Write a regression test per wrapped function group (window, shapes, input, textures), following the existing `tests/run/std_*.przp` convention, to the extent a windowing/GPU-dependent test can run headlessly in CI. **Done**: `tests/x11/window_close`, `tests/x11/input_and_resize`, `tests/gl/backend_contract`, `tests/gl/clear_and_read_pixel`, `tests/gl/graphics_layer2`, `tests/gl/texture_load`.
-6. Start `gdev` once `std/graphics`'s 2D primitives, input, and texture loading are solid, and finish its 2D surface (sprites, 2D camera/scrolling, basic audio) before touching 3D or starting `guix`. `gdev` is the priority once layer 1 is done — `guix` is deliberately sequenced after, not developed in lockstep with it, so effort doesn't split across both toolkits while neither is finished.
+6. Start `gdev` once `std/graphics`'s 2D primitives, input, and texture loading are solid, and finish its 2D surface (sprites, 2D camera/scrolling, basic audio) before touching 3D or starting `guix`. `gdev` is the priority once layer 1 is done — `guix` is deliberately sequenced after, not developed in lockstep with it, so effort doesn't split across both toolkits while neither is finished. **In progress**: frame timing (`set_target_fps`/`get_frame_time`), `Sprite` (atlas/spritesheet frame drawing via `std/graphics`'s new `draw_texture_rec`), `Camera2D` (scroll+zoom), AABB/circle/point collision checks, and basic audio (`std/audio`'s MP3 decode + ALSA playback, see the layer 2 section) are done. Still open: 3D, once the 2D surface has seen real use.
 7. `gdev`: only once the 2D surface above is solid, extend to 3D (`Camera3D`-equivalent, cube/grid primitives).
 8. `guix`: start once `gdev`'s 2D surface is solid (does not need to wait for `gdev`'s 3D work). Extend to DPI scaling, text editing/cursor handling, focus/tab order, and clipboard. Prioritize mouse-interaction latency here specifically, since that's the axis this design most wants to win on: input state should be sampled once per frame with nothing between the OS event and code reading it.
 9. `gmed`: start on the codec I/O binding (prerequisite #8) independently of `guix`'s progress if there's appetite to de-risk it early — it has no dependency on `guix` internals, only on `std/graphics`'s texture upload for displaying decoded frames. The clip/timeline data model and editor-specific widgets (scrubber, thumbnails, waveform) come once `guix` has real generic widgets to borrow from; stay on cut/trim/cross-fade compositing, not a full effects graph, until something concrete demands more.

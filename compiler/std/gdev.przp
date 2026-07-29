@@ -1,0 +1,126 @@
+# std/gdev — game-dev primitives built on std/graphics's shared 2D
+# foundation (see book/graphics.md's "Layer 3a"): frame timing for a real
+# game loop, sprite drawing from a texture atlas, a scrollable/zoomable
+# 2D camera, and axis-aligned collision checks.
+#
+# Import alongside std/graphics, not instead of it — gdev only adds
+# game-specific pieces on top (Sprite, Camera2D, collision, frame
+# timing); Window, Color, Key, is_key_down, draw_rectangle, and the rest
+# of the drawing/input surface still come from std/graphics directly.
+#
+# Scope, deliberately: 2D only. Camera3D/draw_cube/3D primitives are a
+# separate, later addition once this 2D surface is solid (see
+# book/graphics.md's suggested build order) — there is nothing 3D here
+# by design, not by omission.
+
+import(gfx = "std/graphics")
+import(gl  = "std/graphics/gl")
+import(os  = "std/os")
+
+# ── Frame timing ─────────────────────────────────────────────────────────────
+
+struct GdevState {
+    last_frame_ms: i64,   # 0 means "no frame timed yet"
+    frame_time_s:  f32,
+    target_ms:     i64,   # 0 means uncapped
+}
+
+GDEV: GdevState = GdevState{.last_frame_ms=0, .frame_time_s=0.0, .target_ms=0}
+
+# set_target_fps: cap the loop to at most `fps` frames per second by
+# sleeping out whatever's left of the frame budget in end_drawing. 0 (the
+# default) means uncapped.
+fn set_target_fps(fps: i32) {
+    if fps <= 0 {
+        GDEV.target_ms = 0
+        ret
+    }
+    GDEV.target_ms = 1000 / @i64(fps)
+}
+
+# get_frame_time: seconds elapsed during the previous frame (between the
+# two most recent end_drawing calls) — multiply movement/physics by this
+# so behavior stays frame-rate-independent. 0.0 until a second frame has
+# completed.
+fn get_frame_time() -> f32 { ret GDEV.frame_time_s }
+
+# begin_drawing/end_drawing: wrap std/graphics's own pair with the frame
+# timing above. Use these instead of gfx.begin_drawing/end_drawing
+# whenever get_frame_time or set_target_fps matter; gfx's own pair still
+# works standalone for anything that doesn't need them.
+fn begin_drawing() {
+    gfx.begin_drawing()
+}
+
+fn end_drawing() {
+    gfx.end_drawing()
+    now: i64 = os.monotonic_ms()
+    if GDEV.last_frame_ms > 0 {
+        elapsed: i64 = now - GDEV.last_frame_ms
+        if GDEV.target_ms > 0 && elapsed < GDEV.target_ms {
+            os.sleep_ms(GDEV.target_ms - elapsed)
+            elapsed = GDEV.target_ms
+        }
+        GDEV.frame_time_s = @f32(elapsed) / 1000.0
+    }
+    GDEV.last_frame_ms = os.monotonic_ms()
+}
+
+# ── Collision ────────────────────────────────────────────────────────────────
+
+fn check_collision_recs(a: gfx.Rectangle, b: gfx.Rectangle) -> bool {
+    ret a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h
+}
+
+fn check_collision_circles(c1: gfx.Vector2, r1: f32, c2: gfx.Vector2, r2: f32) -> bool {
+    dx: f32 = c2.x - c1.x
+    dy: f32 = c2.y - c1.y
+    dist2: f32 = dx * dx + dy * dy
+    rsum: f32 = r1 + r2
+    ret dist2 <= rsum * rsum
+}
+
+fn check_collision_point_rec(p: gfx.Vector2, r: gfx.Rectangle) -> bool {
+    ret p.x >= r.x && p.x <= r.x + r.w && p.y >= r.y && p.y <= r.y + r.h
+}
+
+# ── Sprite ───────────────────────────────────────────────────────────────────
+
+# Sprite: one frame of a (possibly multi-frame) Texture — `frame` is the
+# sub-rectangle, in pixel coordinates, this sprite draws from `texture`.
+# A spritesheet animation is just a Sprite whose `frame` you update over
+# time (e.g. stepping frame.x by the frame width every N calls).
+struct Sprite {
+    texture: gfx.Texture,
+    frame:   gfx.Rectangle,
+}
+
+impl Sprite {
+    fn draw(self, pos: gfx.Vector2) {
+        gfx.draw_texture_rec(self.texture, self.frame, pos)
+    }
+}
+
+# ── 2D camera ────────────────────────────────────────────────────────────────
+
+# Camera2D: a scrollable, zoomable view over world space. `target` is the
+# world-space point the camera centers on; `offset` is the screen-space
+# point `target` maps to (usually the screen center); `zoom` is a scale
+# factor (1.0 = no zoom, 2.0 = 2x closer).
+struct Camera2D {
+    offset: gfx.Vector2,
+    target: gfx.Vector2,
+    zoom:   f32,
+}
+
+# begin_mode_2d/end_mode_2d: every draw_* call between the two is drawn
+# through `cam` — world-space coordinates land in the right place on
+# screen once the camera's scroll and zoom are applied. Draw UI (health
+# bars, menus, ...) outside this pair, in plain screen space.
+fn begin_mode_2d(cam: Camera2D) {
+    gl.push_camera_2d(cam.offset.x, cam.offset.y, cam.target.x, cam.target.y, cam.zoom)
+}
+
+fn end_mode_2d() {
+    gl.pop_camera_2d()
+}

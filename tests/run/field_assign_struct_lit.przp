@@ -1,0 +1,27 @@
+# regression: `obj.field = StructLit{...}` (or `= other_struct_var`), where
+# `field` is itself a named struct, stored the *pointer* to the literal's
+# alloca into the field instead of the struct's bytes — every other lvalue
+# shape that can receive a struct/array literal (`p.* =`, `p.^ =`,
+# `arr[i] =`) already loads the aggregate through its pointer first before
+# storing (see book/status-next.md's "p.* = <struct or array literal>"
+# entry), but the plain `x.field = ...` shape was missed. Found writing
+# examples/games/astro_blaster: `asteroids[i].pos = gfx.Vector2{...}`
+# failed to even compile ("defined with type 'ptr' but expected" the
+# struct's LLVM type) since the two GEPs computed off the un-loaded
+# pointer, exposing the bug as a type error rather than silently
+# corrupting memory only by luck of this exact shape.
+
+struct Vec2 { x: f64, y: f64 }
+struct Holder { v: Vec2, tag: i32 }
+
+fn main() -> i32 {
+    h: Holder = Holder{.v=Vec2{.x=0.0, .y=0.0}, .tag=0}
+    h.v = Vec2{.x=3.0, .y=4.0}
+    @pf("{h.v.x} {h.v.y}\n")
+
+    other: Vec2 = Vec2{.x=10.0, .y=20.0}
+    h.v = other
+    @pf("{h.v.x} {h.v.y}\n")
+
+    ret 0
+}

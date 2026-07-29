@@ -1,0 +1,39 @@
+# regression: `EXPR_FIELD` (accessing a struct/array-typed field, e.g.
+# `holder.point`) returns a pointer to that field for aggregate types —
+# "return the field ptr so chained access works", per its own cg_expr
+# case — the same convention EXPR_IDENT/EXPR_STRUCT_LIT/EXPR_INDEX/
+# EXPR_SMARTDEREF already follow. But every site that specifically
+# allowlists which expression kinds return a pointer (so it knows to
+# load-before-store/return/pack) was missing EXPR_FIELD, and some were
+# also missing EXPR_INDEX: STMT_LET's own scalar init, @ok/@new's
+# argument handling, three STMT_ASSIGN target shapes' RHS handling, and
+# STMT_RET. Found writing examples/games/astro_blaster:
+# `hit_pos: gfx.Vector2 = asteroids[ai].pos` failed to compile with a
+# raw LLVM type mismatch (a GEP pointer stored where the struct's value
+# was expected).
+
+struct Vec2 { x: f64, y: f64 }
+struct Holder { point: Vec2, tag: i32 }
+struct Wrap { h: Holder }
+
+fn make_point(src: Holder) -> Vec2 {
+    ret src.point   # STMT_RET, EXPR_FIELD
+}
+
+fn main() -> i32 {
+    holders: [2]Holder = undef
+    holders[0] = Holder{.point=Vec2{.x=1.0, .y=2.0}, .tag=10}
+    holders[1] = Holder{.point=Vec2{.x=3.0, .y=4.0}, .tag=20}
+
+    p: Vec2 = holders[0].point   # STMT_LET init, EXPR_FIELD on an EXPR_INDEX base
+    @pf("{p.x} {p.y}\n")
+
+    w: Wrap = Wrap{.h=Holder{.point=Vec2{.x=5.0, .y=6.0}, .tag=30}}
+    w.h.point = holders[1].point   # STMT_ASSIGN target EXPR_FIELD, rhs EXPR_FIELD
+    @pf("{w.h.point.x} {w.h.point.y}\n")
+
+    q: Vec2 = make_point(holders[1])
+    @pf("{q.x} {q.y}\n")
+
+    ret 0
+}

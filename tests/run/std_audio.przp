@@ -1,0 +1,41 @@
+# std/audio's MP3 decoder (a thin libmpg123 FFI binding) and ALSA PCM
+# playback binding. The expected sample values below were captured from
+# an independent C program calling libmpg123 directly with the identical
+# open/getformat/format/read sequence used inside std/audio — this test
+# is about verifying the FFI plumbing (argument types, struct layout,
+# byte counts) is correct, not re-verifying libmpg123's own decode
+# accuracy. Playback goes to ALSA's "null" device — a real, userspace-
+# only PCM sink that needs no sound hardware, the same role Xvfb plays
+# for std/graphics/gl tests.
+
+import(audio = "std/audio")
+
+fn main() -> i32 {
+    s, err: !audio.Sound = audio.decode_mp3("tests/run/audio_fixtures/tone.mp3")
+    if err != 0 { @pf("decode_mp3 failed: {err}\n") ret 1 }
+    @pf("rate={s.rate} channels={s.channels} n_frames={s.n_frames}\n")
+
+    samples: *i16 = @bitcast(*i16, s.pcm)
+    @pf("first10: {samples[0]} {samples[1]} {samples[2]} {samples[3]} {samples[4]} {samples[5]} {samples[6]} {samples[7]} {samples[8]} {samples[9]}\n")
+
+    n: i64 = @i64(s.n_frames) * @i64(s.channels)
+    last: *i16 = samples + @usize(n - 10)
+    @pf("last10: {last[0]} {last[1]} {last[2]} {last[3]} {last[4]} {last[5]} {last[6]} {last[7]} {last[8]} {last[9]}\n")
+
+    sum: i64 = 0
+    i: i64 = 0
+    while i < n {
+        sum += @i64((samples + @usize(i)).*)
+        i += 1
+    }
+    @pf("sum={sum}\n")
+
+    out, oerr: !audio.AudioOutput = audio.open_output("null", s.rate, s.channels)
+    if oerr != 0 { @pf("open_output failed: {oerr}\n") ret 1 }
+    written: i64 = audio.play_sound(out, s)
+    @pf("written={written}\n")
+    audio.close_output(out)
+
+    audio.free_sound(s)
+    ret 0
+}

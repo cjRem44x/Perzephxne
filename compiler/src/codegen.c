@@ -1520,7 +1520,8 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                    must be stored directly instead. */
                 int val_is_struct_ptr = vty && vty->kind == TY_NAMED && find_struct(cg, vty->named.name)
                     && (arg0->kind == EXPR_IDENT || arg0->kind == EXPR_STRUCT_LIT
-                        || arg0->kind == EXPR_SMARTDEREF);
+                        || arg0->kind == EXPR_SMARTDEREF
+                        || arg0->kind == EXPR_FIELD || arg0->kind == EXPR_INDEX);
                 if (val_is_struct_ptr) {
                     int loaded = new_tmp(cg);
                     emit(cg, "  %%t%d = load %s, ptr %s\n", loaded, inner_llt, val.buf);
@@ -1765,17 +1766,43 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
 
             /* @alo */
             if (!strcmp(name, "alo")) {
-                /* @alo(T) or @alo(T, N) — malloc with proper sizeof via GEP trick */
+                /* @alo(T) or @alo(T, N) — malloc with proper sizeof via GEP
+                   trick. N can be any expression, not just a literal —
+                   evaluated at runtime and multiplied into the size,
+                   mirroring @realo below. A previous version only handled
+                   a literal-integer N (checking EXPR_INT) and silently
+                   fell back to count=1 for anything else (a variable, a
+                   computed expression, ...), under-allocating by however
+                   many elements the real count exceeded 1 — a heap buffer
+                   overflow on every write past the first element, with no
+                   error at compile or run time. */
                 int t = new_tmp(cg);
                 /* If no type arg available at LLVM level, default to 8 bytes */
                 if (e->builtin.args.len >= 1 && e->builtin.args.data[0]->ty) {
                     const char *inner_llt = llvm_type(e->builtin.args.data[0]->ty);
-                    int count = 1;
-                    if (e->builtin.args.len >= 2 && e->builtin.args.data[1]->kind == EXPR_INT)
-                        count = (int)e->builtin.args.data[1]->ival;
                     int sz = new_tmp(cg);
-                    emit(cg, "  %%t%d = mul i64 %d, ptrtoint (ptr getelementptr (%s, ptr null, i32 1) to i64)\n",
-                         sz, count, inner_llt);
+                    if (e->builtin.args.len >= 2) {
+                        Type *cnt_ty = NULL;
+                        Val cnt = cg_expr(cg, e->builtin.args.data[1], &cnt_ty);
+                        if (cnt_ty && cnt_ty->kind != TY_I64 && cnt_ty->kind != TY_U64 &&
+                            cnt_ty->kind != TY_USIZE) {
+                            int ext = new_tmp(cg);
+                            emit(cg, "  %%t%d = sext %s %s to i64\n", ext,
+                                 llvm_type(cnt_ty), cnt.buf);
+                            cnt = val_tmp(ext);
+                        }
+                        emit(cg, "  %%t%d = mul i64 %s, ptrtoint (ptr getelementptr (%s, ptr null, i32 1) to i64)\n",
+                             sz, cnt.buf, inner_llt);
+                    } else {
+                        /* `ptrtoint (...)` with parens is a *constant
+                           expression* form, only valid as an operand —
+                           using it directly as an instruction's RHS (no
+                           parens allowed there) is invalid IR ("expected
+                           type"). mul by the constant 1 keeps it as an
+                           operand, same as the count>=2 branch above. */
+                        emit(cg, "  %%t%d = mul i64 1, ptrtoint (ptr getelementptr (%s, ptr null, i32 1) to i64)\n",
+                             sz, inner_llt);
+                    }
                     emit(cg, "  %%t%d = call ptr @malloc(i64 %%t%d)\n", t, sz);
                 } else {
                     emit(cg, "  %%t%d = call ptr @malloc(i64 8)\n", t);
@@ -1902,7 +1929,11 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                         emit(cg, "  %%t%d = mul i64 %s, ptrtoint (ptr getelementptr (%s, ptr null, i32 1) to i64)\n",
                              nsz, cnt.buf, inner);
                     } else {
-                        emit(cg, "  %%t%d = ptrtoint (ptr getelementptr (%s, ptr null, i32 1) to i64)\n",
+                        /* see @alo's identical fix above: `ptrtoint (...)`
+                           with parens is a constant-expression form, only
+                           valid as an operand, not as a bare instruction
+                           RHS — mul by 1 keeps it as an operand. */
+                        emit(cg, "  %%t%d = mul i64 1, ptrtoint (ptr getelementptr (%s, ptr null, i32 1) to i64)\n",
                              nsz, inner);
                     }
                 } else {
@@ -2331,7 +2362,8 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                 ExprKind vk = e->builtin.args.data[0]->kind;
                 if (vty && ((vty->kind == TY_NAMED && !find_enum(cg, vty->named.name))
                             || vty->kind == TY_ARRAY)
-                        && (vk == EXPR_IDENT || vk == EXPR_STRUCT_LIT || vk == EXPR_ARRAY_LIT)) {
+                        && (vk == EXPR_IDENT || vk == EXPR_STRUCT_LIT || vk == EXPR_ARRAY_LIT
+                            || vk == EXPR_FIELD || vk == EXPR_INDEX)) {
                     int loaded = new_tmp(cg);
                     emit(cg, "  %%t%d = load %s, ptr %s\n", loaded, llvm_type(vty), val.buf);
                     val = val_tmp(loaded);
@@ -3974,17 +4006,34 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                                                   : (val_ty ? llvm_type(val_ty) : "i64");
                 const char *val_llt   = val_ty ? llvm_type(val_ty) : store_llt;
                 if (strcmp(val_llt, store_llt) != 0) {
-                    int sv = 0, lv = 0;
-                    if (!strcmp(val_llt,"i8"))   sv=8;  else if (!strcmp(val_llt,"i16"))  sv=16;
-                    else if (!strcmp(val_llt,"i32")) sv=32; else if (!strcmp(val_llt,"i64")) sv=64;
-                    if (!strcmp(store_llt,"i8"))  lv=8;  else if (!strcmp(store_llt,"i16")) lv=16;
-                    else if (!strcmp(store_llt,"i32")) lv=32; else if (!strcmp(store_llt,"i64")) lv=64;
-                    if (sv && lv && sv != lv) {
+                    /* float width coercion (e.g. a bare f64-typed literal —
+                       -1.5707963's UNOP_NEG wrapper isn't reached by
+                       adopt_float_lit's literal-widening — landing in an
+                       f32 field) — same pattern STMT_LET's own scalar-store
+                       coercion already handles; struct-literal field-store
+                       here just never had the float-width case, only the
+                       integer one right below. */
+                    if (!strcmp(val_llt,"double") && !strcmp(store_llt,"float")) {
                         int ct = new_tmp(cg);
-                        int is_signed = val_ty ? type_is_signed(val_ty) : 0;
-                        const char *op = (lv < sv) ? "trunc" : (is_signed ? "sext" : "zext");
-                        emit(cg, "  %%t%d = %s %s %s to %s\n", ct, op, val_llt, fv.buf, store_llt);
+                        emit(cg, "  %%t%d = fptrunc double %s to float\n", ct, fv.buf);
                         fv = val_tmp(ct);
+                    } else if (!strcmp(val_llt,"float") && !strcmp(store_llt,"double")) {
+                        int ct = new_tmp(cg);
+                        emit(cg, "  %%t%d = fpext float %s to double\n", ct, fv.buf);
+                        fv = val_tmp(ct);
+                    } else {
+                        int sv = 0, lv = 0;
+                        if (!strcmp(val_llt,"i8"))   sv=8;  else if (!strcmp(val_llt,"i16"))  sv=16;
+                        else if (!strcmp(val_llt,"i32")) sv=32; else if (!strcmp(val_llt,"i64")) sv=64;
+                        if (!strcmp(store_llt,"i8"))  lv=8;  else if (!strcmp(store_llt,"i16")) lv=16;
+                        else if (!strcmp(store_llt,"i32")) lv=32; else if (!strcmp(store_llt,"i64")) lv=64;
+                        if (sv && lv && sv != lv) {
+                            int ct = new_tmp(cg);
+                            int is_signed = val_ty ? type_is_signed(val_ty) : 0;
+                            const char *op = (lv < sv) ? "trunc" : (is_signed ? "sext" : "zext");
+                            emit(cg, "  %%t%d = %s %s %s to %s\n", ct, op, val_llt, fv.buf, store_llt);
+                            fv = val_tmp(ct);
+                        }
                     }
                 }
                 int fp = new_tmp(cg);
@@ -4203,12 +4252,15 @@ static void cg_stmt(CG *cg, Stmt *s) {
                        EXPR_SMARTDEREF on a ^Struct also returns a ptr (past the RC header) —
                        see the "struct value = ptr convention" comment in its EXPR_SMARTDEREF case.
                        EXPR_INDEX on an array/slice of structs is the same: a GEP to the
-                       element, not a loaded value ("t: Task = tasks[i]"). */
+                       element, not a loaded value ("t: Task = tasks[i]"). EXPR_FIELD on a
+                       struct-typed field is the same again — see EXPR_FIELD's own cg_expr
+                       case ("return the field ptr so chained access works"). */
                     int init_is_ptr = is_struct &&
                                       (s->let.init->kind == EXPR_IDENT
                                        || s->let.init->kind == EXPR_STRUCT_LIT
                                        || s->let.init->kind == EXPR_SMARTDEREF
-                                       || s->let.init->kind == EXPR_INDEX);
+                                       || s->let.init->kind == EXPR_INDEX
+                                       || s->let.init->kind == EXPR_FIELD);
                     /* ^T copy: auto-increment RC when source is an identifier */
                     int is_rc_copy = init_ty && init_ty->kind == TY_SMART_PTR
                                      && s->let.init->kind == EXPR_IDENT;
@@ -4377,20 +4429,34 @@ static void cg_stmt(CG *cg, Stmt *s) {
                     Val sl = array_to_slice(cg, rhs, vty);
                     emit(cg, "  store { ptr, i64 } %s, ptr %s\n", sl.buf, sym->llvm_name);
                 } else if (s->assign.op == ASSIGN_EQ) {
-                    /* coerce rhs integer width to match lhs type */
+                    /* coerce rhs integer/float width to match lhs type — e.g.
+                       "dt = 1.0 / 60.0" into an f32 var: both literals default
+                       to f64, and nothing upstream narrows a plain expression
+                       (as opposed to a bare literal, which adopt_float_lit
+                       handles) to the target's declared width. */
                     if (vty && strcmp(llvm_type(vty), llt) != 0) {
-                        int sv4 = 0, lv4 = 0;
                         const char *src_llt4 = llvm_type(vty);
-                        if (!strcmp(src_llt4,"i8"))  sv4=8; else if (!strcmp(src_llt4,"i16")) sv4=16;
-                        else if (!strcmp(src_llt4,"i32")) sv4=32; else if (!strcmp(src_llt4,"i64")) sv4=64;
-                        if (!strcmp(llt,"i8"))  lv4=8; else if (!strcmp(llt,"i16")) lv4=16;
-                        else if (!strcmp(llt,"i32")) lv4=32; else if (!strcmp(llt,"i64")) lv4=64;
-                        if (sv4 && lv4 && sv4 != lv4) {
+                        if (!strcmp(src_llt4,"double") && !strcmp(llt,"float")) {
                             int ct4 = new_tmp(cg);
-                            const char *op4 = (lv4 < sv4) ? "trunc"
-                                            : (type_is_signed(vty) ? "sext" : "zext");
-                            emit(cg, "  %%t%d = %s %s %s to %s\n", ct4, op4, src_llt4, rhs.buf, llt);
+                            emit(cg, "  %%t%d = fptrunc double %s to float\n", ct4, rhs.buf);
                             rhs = val_tmp(ct4);
+                        } else if (!strcmp(src_llt4,"float") && !strcmp(llt,"double")) {
+                            int ct4 = new_tmp(cg);
+                            emit(cg, "  %%t%d = fpext float %s to double\n", ct4, rhs.buf);
+                            rhs = val_tmp(ct4);
+                        } else {
+                            int sv4 = 0, lv4 = 0;
+                            if (!strcmp(src_llt4,"i8"))  sv4=8; else if (!strcmp(src_llt4,"i16")) sv4=16;
+                            else if (!strcmp(src_llt4,"i32")) sv4=32; else if (!strcmp(src_llt4,"i64")) sv4=64;
+                            if (!strcmp(llt,"i8"))  lv4=8; else if (!strcmp(llt,"i16")) lv4=16;
+                            else if (!strcmp(llt,"i32")) lv4=32; else if (!strcmp(llt,"i64")) lv4=64;
+                            if (sv4 && lv4 && sv4 != lv4) {
+                                int ct4 = new_tmp(cg);
+                                const char *op4 = (lv4 < sv4) ? "trunc"
+                                                : (type_is_signed(vty) ? "sext" : "zext");
+                                emit(cg, "  %%t%d = %s %s %s to %s\n", ct4, op4, src_llt4, rhs.buf, llt);
+                                rhs = val_tmp(ct4);
+                            }
                         }
                     }
                     emit(cg, "  store %s %s, ptr %s\n", llt, rhs.buf, sym->llvm_name);
@@ -4406,17 +4472,27 @@ static void cg_stmt(CG *cg, Stmt *s) {
                     /* coerce rhs integer/float width to match lhs for compound assignment */
                     if (vty && strcmp(llvm_type(vty), llt) != 0) {
                         const char *src_llt5 = llvm_type(vty);
-                        int sv5 = 0, lv5 = 0;
-                        if (!strcmp(src_llt5,"i8"))  sv5=8; else if (!strcmp(src_llt5,"i16")) sv5=16;
-                        else if (!strcmp(src_llt5,"i32")) sv5=32; else if (!strcmp(src_llt5,"i64")) sv5=64;
-                        if (!strcmp(llt,"i8"))  lv5=8; else if (!strcmp(llt,"i16")) lv5=16;
-                        else if (!strcmp(llt,"i32")) lv5=32; else if (!strcmp(llt,"i64")) lv5=64;
-                        if (sv5 && lv5 && sv5 != lv5) {
+                        if (!strcmp(src_llt5,"double") && !strcmp(llt,"float")) {
                             int ct5 = new_tmp(cg);
-                            const char *op5 = (lv5 < sv5) ? "trunc"
-                                            : (type_is_signed(vty) ? "sext" : "zext");
-                            emit(cg, "  %%t%d = %s %s %s to %s\n", ct5, op5, src_llt5, rhs.buf, llt);
+                            emit(cg, "  %%t%d = fptrunc double %s to float\n", ct5, rhs.buf);
                             rhs = val_tmp(ct5);
+                        } else if (!strcmp(src_llt5,"float") && !strcmp(llt,"double")) {
+                            int ct5 = new_tmp(cg);
+                            emit(cg, "  %%t%d = fpext float %s to double\n", ct5, rhs.buf);
+                            rhs = val_tmp(ct5);
+                        } else {
+                            int sv5 = 0, lv5 = 0;
+                            if (!strcmp(src_llt5,"i8"))  sv5=8; else if (!strcmp(src_llt5,"i16")) sv5=16;
+                            else if (!strcmp(src_llt5,"i32")) sv5=32; else if (!strcmp(src_llt5,"i64")) sv5=64;
+                            if (!strcmp(llt,"i8"))  lv5=8; else if (!strcmp(llt,"i16")) lv5=16;
+                            else if (!strcmp(llt,"i32")) lv5=32; else if (!strcmp(llt,"i64")) lv5=64;
+                            if (sv5 && lv5 && sv5 != lv5) {
+                                int ct5 = new_tmp(cg);
+                                const char *op5 = (lv5 < sv5) ? "trunc"
+                                                : (type_is_signed(vty) ? "sext" : "zext");
+                                emit(cg, "  %%t%d = %s %s %s to %s\n", ct5, op5, src_llt5, rhs.buf, llt);
+                                rhs = val_tmp(ct5);
+                            }
                         }
                     }
                     /* load, operate, store */
@@ -4518,6 +4594,26 @@ static void cg_stmt(CG *cg, Stmt *s) {
                         emit(cg, "  %%t%d = getelementptr %%%s, ptr %s, i32 0, i32 %d\n",
                              fp, obj_ty->named.name, obj.buf, gep_fidx);
                         if (s->assign.op == ASSIGN_EQ) {
+                            /* struct/array rhs from EXPR_IDENT/EXPR_STRUCT_LIT/EXPR_ARRAY_LIT
+                               comes back as a ptr to the aggregate (the same
+                               convention the xs[i]=/p.*=/p.^= assign targets
+                               already account for) — load it before storing,
+                               or "obj.field = Foo{...}" stores the literal's
+                               alloca pointer itself instead of the struct's
+                               bytes, the same class of bug as the resolved
+                               "p.* = <literal>" one but for this lvalue shape. */
+                            int rhs_is_aggregate_ptr =
+                                (vty && vty->kind == TY_NAMED && !find_enum(cg, vty->named.name)
+                                    && (s->assign.val->kind == EXPR_IDENT || s->assign.val->kind == EXPR_STRUCT_LIT
+                                        || s->assign.val->kind == EXPR_FIELD || s->assign.val->kind == EXPR_INDEX))
+                                || (vty && vty->kind == TY_ARRAY
+                                    && (s->assign.val->kind == EXPR_IDENT || s->assign.val->kind == EXPR_ARRAY_LIT
+                                        || s->assign.val->kind == EXPR_FIELD || s->assign.val->kind == EXPR_INDEX));
+                            if (rhs_is_aggregate_ptr) {
+                                int loaded = new_tmp(cg);
+                                emit(cg, "  %%t%d = load %s, ptr %s\n", loaded, llt, rhs.buf);
+                                rhs = val_tmp(loaded);
+                            }
                             emit(cg, "  store %s %s, ptr %%t%d\n", llt, rhs.buf, fp);
                         } else {
                             /* compound assignment: load, operate, store */
@@ -4612,9 +4708,11 @@ static void cg_stmt(CG *cg, Stmt *s) {
                        alloca pointer itself instead of the struct's bytes. */
                     int rhs_is_aggregate_ptr =
                         (vty && vty->kind == TY_NAMED && !find_enum(cg, vty->named.name)
-                            && (s->assign.val->kind == EXPR_IDENT || s->assign.val->kind == EXPR_STRUCT_LIT))
+                            && (s->assign.val->kind == EXPR_IDENT || s->assign.val->kind == EXPR_STRUCT_LIT
+                                || s->assign.val->kind == EXPR_FIELD || s->assign.val->kind == EXPR_INDEX))
                         || (vty && vty->kind == TY_ARRAY
-                            && (s->assign.val->kind == EXPR_IDENT || s->assign.val->kind == EXPR_ARRAY_LIT));
+                            && (s->assign.val->kind == EXPR_IDENT || s->assign.val->kind == EXPR_ARRAY_LIT
+                                || s->assign.val->kind == EXPR_FIELD || s->assign.val->kind == EXPR_INDEX));
                     if (rhs_is_aggregate_ptr) {
                         int loaded = new_tmp(cg);
                         emit(cg, "  %%t%d = load %s, ptr %s\n", loaded, elem_llt, rhs.buf);
@@ -4656,9 +4754,11 @@ static void cg_stmt(CG *cg, Stmt *s) {
                    literal's alloca pointer itself instead of the struct's bytes. */
                 int rhs_is_aggregate_ptr =
                     (vty && vty->kind == TY_NAMED && !find_enum(cg, vty->named.name)
-                        && (s->assign.val->kind == EXPR_IDENT || s->assign.val->kind == EXPR_STRUCT_LIT))
+                        && (s->assign.val->kind == EXPR_IDENT || s->assign.val->kind == EXPR_STRUCT_LIT
+                            || s->assign.val->kind == EXPR_FIELD || s->assign.val->kind == EXPR_INDEX))
                     || (vty && vty->kind == TY_ARRAY
-                        && (s->assign.val->kind == EXPR_IDENT || s->assign.val->kind == EXPR_ARRAY_LIT));
+                        && (s->assign.val->kind == EXPR_IDENT || s->assign.val->kind == EXPR_ARRAY_LIT
+                            || s->assign.val->kind == EXPR_FIELD || s->assign.val->kind == EXPR_INDEX));
                 if (rhs_is_aggregate_ptr) {
                     int loaded = new_tmp(cg);
                     emit(cg, "  %%t%d = load %s, ptr %s\n", loaded, llvm_type(vty), rhs.buf);
@@ -4723,7 +4823,9 @@ static void cg_stmt(CG *cg, Stmt *s) {
                 int rhs_is_ptr = vty && vty->kind == TY_NAMED && find_struct(cg, vty->named.name)
                     && (s->assign.val->kind == EXPR_IDENT
                         || s->assign.val->kind == EXPR_STRUCT_LIT
-                        || s->assign.val->kind == EXPR_SMARTDEREF);
+                        || s->assign.val->kind == EXPR_SMARTDEREF
+                        || s->assign.val->kind == EXPR_FIELD
+                        || s->assign.val->kind == EXPR_INDEX);
                 if (rhs_is_ptr) {
                     int loaded = new_tmp(cg);
                     emit(cg, "  %%t%d = load %s, ptr %s\n", loaded, llt, rhs.buf);
@@ -4756,7 +4858,10 @@ static void cg_stmt(CG *cg, Stmt *s) {
                 /* load struct from alloca when returning named struct by value */
                 if (rt && rt->kind == TY_NAMED && !find_enum(cg, rt->named.name)
                         && (s->ret.val->kind == EXPR_IDENT
-                            || s->ret.val->kind == EXPR_STRUCT_LIT)) {
+                            || s->ret.val->kind == EXPR_STRUCT_LIT
+                            || s->ret.val->kind == EXPR_FIELD
+                            || s->ret.val->kind == EXPR_INDEX
+                            || s->ret.val->kind == EXPR_SMARTDEREF)) {
                     int loaded = new_tmp(cg);
                     emit(cg, "  %%t%d = load %s, ptr %s\n",
                          loaded, llvm_type(rt), rv.buf);
@@ -5909,13 +6014,47 @@ static void emit_const_init(CG *cg, Expr *e, Type *ty) {
     switch (e->kind) {
         case EXPR_INT:   emit(cg, "%" PRIu64, e->ival); return;
         case EXPR_FLOAT: {
-            union { double d; uint64_t u; } bits; bits.d = e->fval;
+            /* Same rounding rule as cg_expr's EXPR_FLOAT case: LLVM IR's
+               hex float constant must be exactly representable at the
+               declared type, so an f32 (or f16) global has to be rounded
+               through that narrower type first — the raw double bit
+               pattern of e.g. 3.6 isn't exactly any float32 value, and
+               LLVM rejects it outright ("floating point constant invalid
+               for type") rather than rounding it for you. */
+            if (ty && ty->kind == TY_F16) {
+                emit(cg, "0xH%04X", (unsigned)double_to_half_bits(e->fval));
+                return;
+            }
+            union { double d; uint64_t u; } bits;
+            bits.d = (ty && ty->kind == TY_F32) ? (double)(float)e->fval : e->fval;
             emit(cg, "0x%016" PRIX64, bits.u);
             return;
         }
         case EXPR_BOOL:  emit(cg, "%d", e->bval); return;
         case EXPR_NULL:  emit(cg, "null"); return;
         case EXPR_UNDEF: emit(cg, "undef"); return;
+        case EXPR_UNOP: {
+            /* a negative literal (-12) parses as UNOP_NEG over a positive
+               EXPR_INT/EXPR_FLOAT, not a single literal node — fold that
+               one level here so e.g. `X: i32 = -12` is recognized as the
+               compile-time constant it plainly is. */
+            if (e->unop.op == UNOP_NEG && e->unop.operand->kind == EXPR_INT) {
+                emit(cg, "-%" PRIu64, e->unop.operand->ival);
+                return;
+            }
+            if (e->unop.op == UNOP_NEG && e->unop.operand->kind == EXPR_FLOAT) {
+                double negf = -e->unop.operand->fval;
+                if (ty && ty->kind == TY_F16) {
+                    emit(cg, "0xH%04X", (unsigned)double_to_half_bits(negf));
+                    return;
+                }
+                union { double d; uint64_t u; } bits;
+                bits.d = (ty && ty->kind == TY_F32) ? (double)(float)negf : negf;
+                emit(cg, "0x%016" PRIX64, bits.u);
+                return;
+            }
+            break;
+        }
         case EXPR_IDENT: {
             Symbol *sym = lookup(cg, e->ident.name);
             if (sym && sym->is_fn_ref) { emit(cg, "%s", sym->llvm_name); return; }
