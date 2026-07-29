@@ -34,6 +34,7 @@ extern fn snd_pcm_set_params(pcm: *u8, format: i32, access: i32, channels: u32, 
 extern fn snd_pcm_writei(pcm: *u8, buffer: *u8, size: u64) -> i64
 extern fn snd_pcm_drain(pcm: *u8) -> i32
 extern fn snd_pcm_recover(pcm: *u8, err: i32, silent: i32) -> i32
+extern fn snd_pcm_avail_update(pcm: *u8) -> i64
 
 import(os = "std/os")
 
@@ -157,13 +158,23 @@ fn open_output(device: str, rate: i32, channels: i32) -> !AudioOutput {
 
 # write_frames: non-blocking write of `n_frames` interleaved sample
 # frames — never stalls the caller (see open_output's SND_PCM_NONBLOCK
-# comment). Returns the number of frames actually written, 0 if the
-# buffer had no room at all (EAGAIN — not an error, just "try again
-# later" or, for one-shot SFX, "skip it"), or a negative ALSA error code
-# for anything else. A single automatic xrun-recovery retry covers the
-# common buffer-underrun case; a caller that wants more control can
-# inspect the negative return itself.
+# comment). Checks snd_pcm_avail_update first and skips the write
+# entirely (no snd_pcm_writei call at all) when there's plainly not
+# enough room, rather than relying only on the write itself returning
+# -EAGAIN promptly: some ALSA PCM plugins (notably PulseAudio's/
+# PipeWire's ALSA-compat shim, common on desktop Linux) don't handle
+# SND_PCM_NONBLOCK as cheaply as raw hardware ALSA does, so avoiding the
+# write call altogether when it would fail anyway is a real margin, not
+# just belt-and-suspenders. Returns the number of frames actually
+# written, 0 if there was no room (checked up front, or EAGAIN from the
+# write itself — either way "try again later" or, for one-shot SFX,
+# "skip it"), or a negative ALSA error code for anything else. A single
+# automatic xrun-recovery retry covers the common buffer-underrun case; a
+# caller that wants more control can inspect the negative return itself.
 fn write_frames(out: AudioOutput, pcm: *u8, n_frames: usize) -> i64 {
+    avail: i64 = snd_pcm_avail_update(out.pcm)
+    if avail >= 0 && avail < @i64(n_frames) { ret 0 }
+
     r: i64 = snd_pcm_writei(out.pcm, pcm, @u64(n_frames))
     if r == EAGAIN { ret 0 }
     if r < 0 {
