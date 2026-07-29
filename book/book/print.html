@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-638b242c.js";
+            window.path_to_searchindex_js = "searchindex-560c646d.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-4e58bc13.js"></script>
@@ -251,6 +251,7 @@ comment
 <li><code>examples/dsa/</code> — data structures: linked list, binary search tree, stack/queue, sorting</li>
 <li><code>examples/use_cases/</code> — small complete programs: a calculator, a to-do list, a word counter, a password-gated encrypted note (<code>std/crypto</code>)</li>
 <li><code>examples/graphics/</code> — windowing and 2D drawing via <code>std/graphics</code> (needs a real or virtual X display — see <a href="#graphics--design-sketch-layers-1-2-implemented-gdev-2d-core-in-progress">Graphics</a>)</li>
+<li><code>examples/games/</code> — complete small games exercising the 2D stack end-to-end: <code>astro_blaster</code>, an Asteroids-style shooter using <code>std/graphics</code>, <code>std/image</code>, <code>std/gdev</code>, and <code>std/audio</code> together (same X display requirement as <code>examples/graphics/</code>)</li>
 </ul>
 <p>The <a href="#standard-library">Standard Library</a> reference page also has a runnable code snippet for every module.</p>
 <div style="break-before: page; page-break-before: always;"></div>
@@ -2963,6 +2964,15 @@ r: f64 = m.sqrt(2.0)
 </li>
 <li>
 <p><strong>A negative literal in a global’s initializer failed to compile</strong> — <code>X: i32 = -12</code> reported “global initializer must be a compile-time constant”, even though it plainly is one. <code>-12</code> parses as <code>UNOP_NEG</code> over a positive <code>EXPR_INT</code>, not a single literal node, and the constant emitter that walks a global’s initializer expression only recognized bare literals, struct/array literals, and function references — a unary negation of one of those wasn’t among them. Found writing <code>std/audio</code>’s libmpg123 status-code constants (<code>MPG123_DONE = -12</code>, <code>MPG123_NEW_FORMAT = -11</code>), which are negative by definition. Fixed by folding one level of <code>UNOP_NEG</code> over an <code>EXPR_INT</code>/<code>EXPR_FLOAT</code> operand into the equivalent negative constant. Covered by <code>tests/run/global_negative_const.przp</code>.</p>
+</li>
+<li>
+<p><strong>An <code>f32</code> (or <code>f16</code>) global initialized with a literal not exactly representable at that width failed to compile</strong> — <code>X: f32 = 3.6</code> reported “floating point constant invalid for type”. LLVM IR’s hex-float constant syntax requires the encoded bit pattern to be exactly representable at the constant’s declared type; the global-initializer constant emitter always encoded a float literal using its raw <code>f64</code> bit pattern regardless of the declared type, while the equivalent non-global expression path (<code>cg_expr</code>) already rounded through the target type first for exactly this reason. Found writing <code>examples/games/astro_blaster</code>’s <code>SHIP_ROT_SPEED: f32 = 3.6</code>. Fixed by applying the same <code>f32</code>/<code>f16</code> rounding to the global-initializer path (and to this same session’s <code>UNOP_NEG</code> literal-folding above, which had the identical gap). Covered by <code>tests/run/global_f32_const.przp</code>.</p>
+</li>
+<li>
+<p><strong><code>obj.field = &lt;struct or array literal&gt;</code> stored the literal’s pointer instead of its bytes, when <code>field</code> is itself a struct/array</strong> — every other lvalue shape that can receive a struct/array literal RHS (<code>p.* =</code>, <code>p.^ =</code>, <code>arr[i] =</code>) already loads the aggregate through its returned alloca pointer before storing it (see the earlier “<code>p.* = &lt;struct or array literal&gt;</code>” entry), but the plain <code>x.field = ...</code> shape was missed, so it stored the pointer value itself where a <code>%Struct</code> value was expected — a hard type-mismatch at the LLVM IR level rather than a silent miscompile, since the two never happen to have the same bit width. Found writing <code>examples/games/astro_blaster</code>’s <code>asteroids[i].pos = gfx.Vector2{...}</code>. Fixed by adding the same load-before-store guard to this lvalue shape. Covered by <code>tests/run/field_assign_struct_lit.przp</code>.</p>
+</li>
+<li>
+<p><strong>Float-width coercion (<code>f64</code> ↔ <code>f32</code>) was missing from every scalar-store path except <code>let</code>’s</strong> — assigning an <code>f64</code>-typed value (most commonly a bare literal that defaults to <code>f64</code>, e.g. <code>dt = 1.0 / 60.0</code> or a struct-literal field <code>Ship{.angle=-1.5707963}</code>) into an <code>f32</code>-typed target failed to compile with a raw LLVM type-mismatch, because the integer-width (<code>trunc</code>/<code>sext</code>/<code>zext</code>) coercion these scalar-store sites already had was never given a matching <code>fptrunc</code>/<code>fpext</code> case — except <code>STMT_LET</code>’s own scalar store, which had had it from the start. Found writing <code>examples/games/astro_blaster</code> (a struct-literal field assignment and a plain identifier reassignment, both real, unremarkable lines of game code). Fixed by adding the same float-width case struct-literal field-store and both plain/compound identifier-assignment paths already had a template for in <code>STMT_LET</code>. Covered by <code>tests/run/float_width_coerce.przp</code>.</p>
 </li>
 </ul>
 <h2 id="documentation-rule"><a class="header" href="#documentation-rule">Documentation Rule</a></h2>

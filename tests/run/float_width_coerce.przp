@@ -1,0 +1,34 @@
+# regression: two related float-width coercion gaps, both found writing
+# examples/games/astro_blaster — every scalar-store path that already had
+# integer-width coercion (trunc/sext/zext between i8/i16/i32/i64) turned
+# out to have no matching float-width case (fptrunc double->float /
+# fpext float->double), except STMT_LET's own scalar store, which had it
+# from the start. Each gap surfaced as a genuine compile error rather
+# than silently storing the wrong bits, since LLVM IR requires an
+# instruction's operand type and its store's pointee type to match
+# exactly.
+#
+# 1. `obj.field = <f64-typed expr>` where `field` is f32 (or f64 field,
+#    f32-typed expr) — e.g. a struct literal like `Ship{.angle=-1.5707963}`
+#    (the literal is f64 by default; `-` is UNOP_NEG, which
+#    adopt_float_lit's literal-widening doesn't see through, so the
+#    struct-literal codegen's field-store never got a chance to store
+#    the already-narrowed value either way).
+# 2. `x = <f64-typed expr>` (plain identifier assignment, not a `let`)
+#    where `x` is f32 — e.g. `dt = 1.0 / 60.0` into an `f32 dt`.
+
+struct Ship { angle: f32 }
+
+fn main() -> i32 {
+    s: Ship = Ship{.angle=-1.5707963}
+    @pf("{s.angle}\n")
+
+    dt: f32 = 0.0
+    dt = 1.0 / 60.0
+    @pf("{dt}\n")
+
+    dt += 2.0 / 3.0
+    @pf("{dt}\n")
+
+    ret 0
+}
