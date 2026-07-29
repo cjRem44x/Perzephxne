@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-560c646d.js";
+            window.path_to_searchindex_js = "searchindex-5a1a40a1.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-4e58bc13.js"></script>
@@ -2973,6 +2973,9 @@ r: f64 = m.sqrt(2.0)
 </li>
 <li>
 <p><strong>Float-width coercion (<code>f64</code> ↔ <code>f32</code>) was missing from every scalar-store path except <code>let</code>’s</strong> — assigning an <code>f64</code>-typed value (most commonly a bare literal that defaults to <code>f64</code>, e.g. <code>dt = 1.0 / 60.0</code> or a struct-literal field <code>Ship{.angle=-1.5707963}</code>) into an <code>f32</code>-typed target failed to compile with a raw LLVM type-mismatch, because the integer-width (<code>trunc</code>/<code>sext</code>/<code>zext</code>) coercion these scalar-store sites already had was never given a matching <code>fptrunc</code>/<code>fpext</code> case — except <code>STMT_LET</code>’s own scalar store, which had had it from the start. Found writing <code>examples/games/astro_blaster</code> (a struct-literal field assignment and a plain identifier reassignment, both real, unremarkable lines of game code). Fixed by adding the same float-width case struct-literal field-store and both plain/compound identifier-assignment paths already had a template for in <code>STMT_LET</code>. Covered by <code>tests/run/float_width_coerce.przp</code>.</p>
+</li>
+<li>
+<p><strong><code>EXPR_FIELD</code> (a struct/array-typed field access, e.g. <code>holder.point</code>) was missing from every “does this expression return a pointer to the aggregate” allowlist across codegen</strong> — <code>EXPR_FIELD</code>’s own <code>cg_expr</code> case returns the field’s pointer (not a loaded value) for aggregate field types, explicitly “so chained access works,” the same convention <code>EXPR_IDENT</code>/<code>EXPR_STRUCT_LIT</code>/<code>EXPR_INDEX</code>/<code>EXPR_SMARTDEREF</code> already follow — but every site built to recognize that convention (<code>STMT_LET</code>’s scalar init, <code>@ok</code>/<code>@new</code>‘s argument handling, three <code>STMT_ASSIGN</code> target shapes’ RHS handling, and <code>STMT_RET</code>) had an allowlist of expression kinds that simply never included it (and a couple were separately missing <code>EXPR_INDEX</code> too). Found writing <code>examples/games/astro_blaster</code>’s asteroid-splitting mechanic: <code>hit_pos: gfx.Vector2 = asteroids[ai].pos</code> failed to compile with the same class of raw LLVM type-mismatch as the earlier, narrower <code>obj.field = &lt;literal&gt;</code> bug above. Fixed by adding <code>EXPR_FIELD</code> (and <code>EXPR_INDEX</code> where absent) to all eight sites in one sweep rather than re-discovering each one individually. Covered by <code>tests/run/field_aggregate_ptr_convention.przp</code>.</p>
 </li>
 </ul>
 <h2 id="documentation-rule"><a class="header" href="#documentation-rule">Documentation Rule</a></h2>

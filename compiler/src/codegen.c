@@ -1520,7 +1520,8 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                    must be stored directly instead. */
                 int val_is_struct_ptr = vty && vty->kind == TY_NAMED && find_struct(cg, vty->named.name)
                     && (arg0->kind == EXPR_IDENT || arg0->kind == EXPR_STRUCT_LIT
-                        || arg0->kind == EXPR_SMARTDEREF);
+                        || arg0->kind == EXPR_SMARTDEREF
+                        || arg0->kind == EXPR_FIELD || arg0->kind == EXPR_INDEX);
                 if (val_is_struct_ptr) {
                     int loaded = new_tmp(cg);
                     emit(cg, "  %%t%d = load %s, ptr %s\n", loaded, inner_llt, val.buf);
@@ -2361,7 +2362,8 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                 ExprKind vk = e->builtin.args.data[0]->kind;
                 if (vty && ((vty->kind == TY_NAMED && !find_enum(cg, vty->named.name))
                             || vty->kind == TY_ARRAY)
-                        && (vk == EXPR_IDENT || vk == EXPR_STRUCT_LIT || vk == EXPR_ARRAY_LIT)) {
+                        && (vk == EXPR_IDENT || vk == EXPR_STRUCT_LIT || vk == EXPR_ARRAY_LIT
+                            || vk == EXPR_FIELD || vk == EXPR_INDEX)) {
                     int loaded = new_tmp(cg);
                     emit(cg, "  %%t%d = load %s, ptr %s\n", loaded, llvm_type(vty), val.buf);
                     val = val_tmp(loaded);
@@ -4250,12 +4252,15 @@ static void cg_stmt(CG *cg, Stmt *s) {
                        EXPR_SMARTDEREF on a ^Struct also returns a ptr (past the RC header) —
                        see the "struct value = ptr convention" comment in its EXPR_SMARTDEREF case.
                        EXPR_INDEX on an array/slice of structs is the same: a GEP to the
-                       element, not a loaded value ("t: Task = tasks[i]"). */
+                       element, not a loaded value ("t: Task = tasks[i]"). EXPR_FIELD on a
+                       struct-typed field is the same again — see EXPR_FIELD's own cg_expr
+                       case ("return the field ptr so chained access works"). */
                     int init_is_ptr = is_struct &&
                                       (s->let.init->kind == EXPR_IDENT
                                        || s->let.init->kind == EXPR_STRUCT_LIT
                                        || s->let.init->kind == EXPR_SMARTDEREF
-                                       || s->let.init->kind == EXPR_INDEX);
+                                       || s->let.init->kind == EXPR_INDEX
+                                       || s->let.init->kind == EXPR_FIELD);
                     /* ^T copy: auto-increment RC when source is an identifier */
                     int is_rc_copy = init_ty && init_ty->kind == TY_SMART_PTR
                                      && s->let.init->kind == EXPR_IDENT;
@@ -4599,9 +4604,11 @@ static void cg_stmt(CG *cg, Stmt *s) {
                                "p.* = <literal>" one but for this lvalue shape. */
                             int rhs_is_aggregate_ptr =
                                 (vty && vty->kind == TY_NAMED && !find_enum(cg, vty->named.name)
-                                    && (s->assign.val->kind == EXPR_IDENT || s->assign.val->kind == EXPR_STRUCT_LIT))
+                                    && (s->assign.val->kind == EXPR_IDENT || s->assign.val->kind == EXPR_STRUCT_LIT
+                                        || s->assign.val->kind == EXPR_FIELD || s->assign.val->kind == EXPR_INDEX))
                                 || (vty && vty->kind == TY_ARRAY
-                                    && (s->assign.val->kind == EXPR_IDENT || s->assign.val->kind == EXPR_ARRAY_LIT));
+                                    && (s->assign.val->kind == EXPR_IDENT || s->assign.val->kind == EXPR_ARRAY_LIT
+                                        || s->assign.val->kind == EXPR_FIELD || s->assign.val->kind == EXPR_INDEX));
                             if (rhs_is_aggregate_ptr) {
                                 int loaded = new_tmp(cg);
                                 emit(cg, "  %%t%d = load %s, ptr %s\n", loaded, llt, rhs.buf);
@@ -4701,9 +4708,11 @@ static void cg_stmt(CG *cg, Stmt *s) {
                        alloca pointer itself instead of the struct's bytes. */
                     int rhs_is_aggregate_ptr =
                         (vty && vty->kind == TY_NAMED && !find_enum(cg, vty->named.name)
-                            && (s->assign.val->kind == EXPR_IDENT || s->assign.val->kind == EXPR_STRUCT_LIT))
+                            && (s->assign.val->kind == EXPR_IDENT || s->assign.val->kind == EXPR_STRUCT_LIT
+                                || s->assign.val->kind == EXPR_FIELD || s->assign.val->kind == EXPR_INDEX))
                         || (vty && vty->kind == TY_ARRAY
-                            && (s->assign.val->kind == EXPR_IDENT || s->assign.val->kind == EXPR_ARRAY_LIT));
+                            && (s->assign.val->kind == EXPR_IDENT || s->assign.val->kind == EXPR_ARRAY_LIT
+                                || s->assign.val->kind == EXPR_FIELD || s->assign.val->kind == EXPR_INDEX));
                     if (rhs_is_aggregate_ptr) {
                         int loaded = new_tmp(cg);
                         emit(cg, "  %%t%d = load %s, ptr %s\n", loaded, elem_llt, rhs.buf);
@@ -4745,9 +4754,11 @@ static void cg_stmt(CG *cg, Stmt *s) {
                    literal's alloca pointer itself instead of the struct's bytes. */
                 int rhs_is_aggregate_ptr =
                     (vty && vty->kind == TY_NAMED && !find_enum(cg, vty->named.name)
-                        && (s->assign.val->kind == EXPR_IDENT || s->assign.val->kind == EXPR_STRUCT_LIT))
+                        && (s->assign.val->kind == EXPR_IDENT || s->assign.val->kind == EXPR_STRUCT_LIT
+                            || s->assign.val->kind == EXPR_FIELD || s->assign.val->kind == EXPR_INDEX))
                     || (vty && vty->kind == TY_ARRAY
-                        && (s->assign.val->kind == EXPR_IDENT || s->assign.val->kind == EXPR_ARRAY_LIT));
+                        && (s->assign.val->kind == EXPR_IDENT || s->assign.val->kind == EXPR_ARRAY_LIT
+                            || s->assign.val->kind == EXPR_FIELD || s->assign.val->kind == EXPR_INDEX));
                 if (rhs_is_aggregate_ptr) {
                     int loaded = new_tmp(cg);
                     emit(cg, "  %%t%d = load %s, ptr %s\n", loaded, llvm_type(vty), rhs.buf);
@@ -4812,7 +4823,9 @@ static void cg_stmt(CG *cg, Stmt *s) {
                 int rhs_is_ptr = vty && vty->kind == TY_NAMED && find_struct(cg, vty->named.name)
                     && (s->assign.val->kind == EXPR_IDENT
                         || s->assign.val->kind == EXPR_STRUCT_LIT
-                        || s->assign.val->kind == EXPR_SMARTDEREF);
+                        || s->assign.val->kind == EXPR_SMARTDEREF
+                        || s->assign.val->kind == EXPR_FIELD
+                        || s->assign.val->kind == EXPR_INDEX);
                 if (rhs_is_ptr) {
                     int loaded = new_tmp(cg);
                     emit(cg, "  %%t%d = load %s, ptr %s\n", loaded, llt, rhs.buf);
@@ -4845,7 +4858,10 @@ static void cg_stmt(CG *cg, Stmt *s) {
                 /* load struct from alloca when returning named struct by value */
                 if (rt && rt->kind == TY_NAMED && !find_enum(cg, rt->named.name)
                         && (s->ret.val->kind == EXPR_IDENT
-                            || s->ret.val->kind == EXPR_STRUCT_LIT)) {
+                            || s->ret.val->kind == EXPR_STRUCT_LIT
+                            || s->ret.val->kind == EXPR_FIELD
+                            || s->ret.val->kind == EXPR_INDEX
+                            || s->ret.val->kind == EXPR_SMARTDEREF)) {
                     int loaded = new_tmp(cg);
                     emit(cg, "  %%t%d = load %s, ptr %s\n",
                          loaded, llvm_type(rt), rv.buf);
