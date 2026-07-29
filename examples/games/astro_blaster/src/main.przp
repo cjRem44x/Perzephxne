@@ -159,6 +159,12 @@ fn spawn_fragment(asteroids: []Asteroid, idx: i32, pos: gfx.Vector2, base_ang: f
 
 fn main() -> i32 {
     win: gfx.Window = gfx.Window.open("Astro Blaster", WIN_W, WIN_H)
+    # Resizing stretches the same 640x480 logical playfield to fill the
+    # window (poll_events re-runs the ortho projection on every resize) —
+    # fine within a reasonable range, not at the extremes, so bound it
+    # rather than leave it (X11's own default) unconstrained.
+    win.set_min_size(WIN_W / 2, WIN_H / 2)
+    win.set_max_size(WIN_W * 2, WIN_H * 2)
 
     ast_tex_big, big_err: !gfx.Texture = gfx.Texture.load("src/assets/asteroid_big.png")
     ast_tex_med, med_err: !gfx.Texture = gfx.Texture.load("src/assets/asteroid_med.png")

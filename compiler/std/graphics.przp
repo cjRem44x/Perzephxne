@@ -71,15 +71,20 @@ struct GfxState {
     mouse_x: f32,
     mouse_y: f32,
     mouse_down: [3]bool,
+    resizable: bool,   # see set_resizable/apply_size_hints
+    min_w: i32, min_h: i32,   # 0 = no minimum set
+    max_w: i32, max_h: i32,   # 0 = no maximum set
 }
 
 # Zero-initialized: null display, 0 window/wm_delete, false should_close,
-# 0 width/height, all-false key/mouse-button state, 0.0 mouse position —
-# every field's zero value is exactly the "nothing open yet" state. A
-# struct literal needs at least one `.field=` to parse as one at all
-# (an empty `{}` doesn't), so `display` is named explicitly and every
-# other field defaults to zero.
-STATE: GfxState = GfxState{.display=null}
+# 0 width/height, all-false key/mouse-button state, 0.0 mouse position,
+# no min/max size set — every field's zero value is exactly the "nothing
+# open yet" state, except `resizable`, which needs to default true (no
+# size hints applied — a plain X11 window resizes freely) rather than
+# bool's own false zero-value, so it's named explicitly alongside
+# `display`. A struct literal needs at least one `.field=` to parse as
+# one at all (an empty `{}` doesn't); every other field defaults to zero.
+STATE: GfxState = GfxState{.display=null, .resizable=true}
 
 # keysym_to_key: map an X11 KeySym (see std/graphics/window's
 # XKeycodeToKeysym) to a Key index, or -1 if it's a key std/graphics
@@ -151,6 +156,36 @@ fn poll_events() {
     }
 }
 
+# apply_size_hints: pushes STATE's resizable/min/max settings to the
+# window manager as one XSizeHints (X11 hints are replace-whole-struct,
+# not incremental, hence recomputing all of it from STATE on every call
+# rather than patching just the field that changed).
+#
+# A non-resizable window is a fixed size, full stop — matching raylib
+# (SetWindowMinSize/MaxSize are documented as only applying under
+# FLAG_WINDOW_RESIZABLE), locking min and max to the window's current
+# size overrides any independently configured min/max while !resizable,
+# without forgetting them: they're never written to STATE.min_w etc.,
+# so toggling back to resizable(true) reapplies whatever was set before.
+fn apply_size_hints() {
+    hints: [80]u8 = undef   # win.SIZE_HINTS_SIZE
+    min_w: i32 = STATE.min_w
+    min_h: i32 = STATE.min_h
+    max_w: i32 = STATE.max_w
+    max_h: i32 = STATE.max_h
+    if !STATE.resizable {
+        min_w = STATE.width
+        min_h = STATE.height
+        max_w = STATE.width
+        max_h = STATE.height
+    }
+    flags: i64 = 0
+    if min_w > 0 || min_h > 0 { flags = flags | win.PMinSize }
+    if max_w > 0 || max_h > 0 { flags = flags | win.PMaxSize }
+    win.fill_size_hints(&hints[0], flags, min_w, min_h, max_w, max_h)
+    win.XSetWMNormalHints(STATE.display, STATE.window, &hints[0])
+}
+
 impl Window {
     fn open(title: str, w: i32, h: i32) -> Window {
         display: *u8 = win.XOpenDisplay(null)
@@ -183,6 +218,31 @@ impl Window {
     }
 
     fn should_close(self) -> bool { ret STATE.should_close }
+
+    # set_resizable: true (the default — a freshly opened window is
+    # resizable with no bounds) lets the window manager resize it freely,
+    # subject to set_min_size/set_max_size if either was called; false
+    # locks it to its current size, ignoring any min/max already set
+    # (they're remembered, not cleared — see apply_size_hints).
+    fn set_resizable(self, resizable: bool) {
+        STATE.resizable = resizable
+        apply_size_hints()
+    }
+
+    # set_min_size / set_max_size: like raylib's SetWindowMinSize/
+    # SetWindowMaxSize — only take effect while the window is resizable.
+    # Either dimension can be 0 to leave that bound unset.
+    fn set_min_size(self, w: i32, h: i32) {
+        STATE.min_w = w
+        STATE.min_h = h
+        apply_size_hints()
+    }
+
+    fn set_max_size(self, w: i32, h: i32) {
+        STATE.max_w = w
+        STATE.max_h = h
+        apply_size_hints()
+    }
 
     fn close(self) {
         gl.GL_BACKEND.shutdown(STATE.backend_ctx)

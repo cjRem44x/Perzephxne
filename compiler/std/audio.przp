@@ -35,9 +35,17 @@ extern fn snd_pcm_writei(pcm: *u8, buffer: *u8, size: u64) -> i64
 extern fn snd_pcm_drain(pcm: *u8) -> i32
 extern fn snd_pcm_recover(pcm: *u8, err: i32, silent: i32) -> i32
 
+import(os = "std/os")
+
 SND_PCM_STREAM_PLAYBACK:      i32 = 0
 SND_PCM_FORMAT_S16_LE:        i32 = 2
 SND_PCM_ACCESS_RW_INTERLEAVED: i32 = 3
+SND_PCM_NONBLOCK:             i32 = 1
+
+# -EAGAIN: ALSA's "no room in the buffer right now" return, only possible
+# in non-blocking mode (SND_PCM_NONBLOCK) — the mode open_output uses
+# specifically so a full buffer never blocks the caller (see write_frames).
+EAGAIN: i64 = -11
 
 # Sound: fully decoded PCM, signed 16-bit little-endian, interleaved
 # channels — the format both mpg123_format() forces on decode and ALSA's
@@ -127,7 +135,16 @@ struct AudioOutput {
 
 fn open_output(device: str, rate: i32, channels: i32) -> !AudioOutput {
     pcm: *u8 = null
-    if snd_pcm_open(&pcm, device.data, SND_PCM_STREAM_PLAYBACK, 0) < 0 {
+    # SND_PCM_NONBLOCK: a blocking snd_pcm_writei stalls the calling
+    # thread until the ALSA ring buffer has room — for a game's single-
+    # threaded main loop calling play_sound() synchronously (e.g. once
+    # per shot fired), that stall is a real frame-time hitch, not just a
+    # theoretical one: it was reported as visible frame lag on every shot
+    # in examples/games/astro_blaster. Non-blocking mode makes a full
+    # buffer return -EAGAIN immediately instead — write_frames drops that
+    # write (skips the sound rather than freezing the game) since a
+    # missed frame of a short SFX clip is imperceptible either way.
+    if snd_pcm_open(&pcm, device.data, SND_PCM_STREAM_PLAYBACK, SND_PCM_NONBLOCK) < 0 {
         ret @err(1)
     }
     if snd_pcm_set_params(pcm, SND_PCM_FORMAT_S16_LE, SND_PCM_ACCESS_RW_INTERLEAVED,
@@ -138,16 +155,21 @@ fn open_output(device: str, rate: i32, channels: i32) -> !AudioOutput {
     ret AudioOutput{.pcm=pcm, .channels=channels}
 }
 
-# write_frames: blocking write of `n_frames` interleaved sample frames.
-# Returns the number of frames actually written, or a negative ALSA error
-# code. A single automatic xrun-recovery retry covers the common
-# buffer-underrun case; a caller that wants more control can inspect the
-# negative return itself.
+# write_frames: non-blocking write of `n_frames` interleaved sample
+# frames — never stalls the caller (see open_output's SND_PCM_NONBLOCK
+# comment). Returns the number of frames actually written, 0 if the
+# buffer had no room at all (EAGAIN — not an error, just "try again
+# later" or, for one-shot SFX, "skip it"), or a negative ALSA error code
+# for anything else. A single automatic xrun-recovery retry covers the
+# common buffer-underrun case; a caller that wants more control can
+# inspect the negative return itself.
 fn write_frames(out: AudioOutput, pcm: *u8, n_frames: usize) -> i64 {
     r: i64 = snd_pcm_writei(out.pcm, pcm, @u64(n_frames))
+    if r == EAGAIN { ret 0 }
     if r < 0 {
         if snd_pcm_recover(out.pcm, @i32(r), 1) == 0 {
             r = snd_pcm_writei(out.pcm, pcm, @u64(n_frames))
+            if r == EAGAIN { ret 0 }
         }
     }
     ret r
@@ -157,7 +179,19 @@ fn play_sound(out: AudioOutput, s: Sound) -> i64 {
     ret write_frames(out, s.pcm, s.n_frames)
 }
 
+# close_output: drains whatever's still queued before closing so a sound
+# playing right at shutdown isn't cut off. snd_pcm_drain also honors
+# SND_PCM_NONBLOCK — it can return -EAGAIN meaning "not finished yet,
+# call again" rather than blocking — so this polls it to completion
+# instead of trusting one call, the one place in this module a short
+# wait is actually the desired behavior.
 fn close_output(out: AudioOutput) {
-    snd_pcm_drain(out.pcm)
+    r: i32 = snd_pcm_drain(out.pcm)
+    tries: i32 = 0
+    while r == @i32(EAGAIN) && tries < 200 {
+        os.sleep_ms(10)
+        r = snd_pcm_drain(out.pcm)
+        tries += 1
+    }
     snd_pcm_close(out.pcm)
 }

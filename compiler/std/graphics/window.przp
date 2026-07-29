@@ -32,6 +32,8 @@ extern fn XNextEvent(display: *u8, event_out: *u8) -> i32
 extern fn XPending(display: *u8) -> i32
 extern fn XFlush(display: *u8) -> i32
 extern fn XSendEvent(display: *u8, window: u64, propagate: i32, mask: i64, event: *u8) -> i32
+extern fn XSetWMNormalHints(display: *u8, window: u64, hints: *u8) -> i32
+extern fn memset(dst: *u8, val: i32, n: usize) -> *u8
 
 # KeySym for a given (Display, KeyCode, index). index 0 is the plain
 # (unshifted) symbol, which is all the Key mapping in std/graphics needs
@@ -131,4 +133,41 @@ fn event_width(buf: *u8) -> i32 {
 fn event_height(buf: *u8) -> i32 {
     p: *i32 = buf + 60
     ret p.*
+}
+
+# XSizeHints is 76 bytes on x86-64 Linux (checked against a real compile
+# of <X11/Xutil.h>, offsetof each field), padded to 80 for the struct's
+# own 8-byte alignment (long flags at offset 0). SIZE_HINTS_SIZE is that
+# padded size — enough room for XSetWMNormalHints to read the whole
+# struct without running past a caller's buffer.
+SIZE_HINTS_SIZE: usize = 80
+
+# PMinSize/PMaxSize: the two XSizeHints.flags bits fill_size_hints sets —
+# "min_width/min_height are meaningful" and "max_width/max_height are
+# meaningful" respectively. Every other XSizeHints field (position, resize
+# increment, aspect ratio, ...) is left zeroed and untouched by any flag,
+# so the window manager ignores it, exactly like the "ignore fields whose
+# flag bit isn't set" convention XSizeHints is designed around.
+PMinSize: i64 = 16
+PMaxSize: i64 = 32
+
+# fill_size_hints: builds a fresh, fully-zeroed XSizeHints image in `buf`
+# (must be >= SIZE_HINTS_SIZE bytes) with just `flags`, min_width/
+# min_height (offsets 24/28), and max_width/max_height (offsets 32/36)
+# set — the only fields std/graphics's resizable/min-size/max-size window
+# controls need. Zeroing first (rather than trusting an `undef` buffer's
+# unset bytes to be harmless) means every field XSetWMNormalHints reads
+# has a defined value even though only min/max are ever populated.
+fn fill_size_hints(buf: *u8, flags: i64, min_w: i32, min_h: i32, max_w: i32, max_h: i32) {
+    memset(buf, 0, SIZE_HINTS_SIZE)
+    fp: *i64 = buf
+    fp.* = flags
+    minw: *i32 = buf + 24
+    minw.* = min_w
+    minh: *i32 = buf + 28
+    minh.* = min_h
+    maxw: *i32 = buf + 32
+    maxw.* = max_w
+    maxh: *i32 = buf + 36
+    maxh.* = max_h
 }
