@@ -24,6 +24,7 @@ import(gfx   = "std/graphics")
 import(gdev  = "std/gdev")
 import(audio = "std/audio")
 import(math  = "std/math")
+import(os    = "std/os")
 
 WIN_W: i32 = 640
 WIN_H: i32 = 480
@@ -193,7 +194,11 @@ fn main() -> i32 {
     boom_snd, boom_err: !audio.Sound = audio.decode_mp3("src/assets/explosion.mp3")
     out: audio.AudioOutput = undef
     audio_ok: bool = false
-    if fire_err == 0 && boom_err == 0 {
+    # NO_AUDIO=1: temporary diagnostic toggle for isolating a reported
+    # frame stutter from audio entirely — set it to skip open_output and
+    # run exactly the "no sound hardware" code path below on purpose.
+    no_audio: bool = os.getenv_str("NO_AUDIO").len > 0
+    if fire_err == 0 && boom_err == 0 && !no_audio {
         o, out_err: !audio.AudioOutput = audio.open_output("default", fire_snd.rate, fire_snd.channels)
         if out_err == 0 {
             out = o
