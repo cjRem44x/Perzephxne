@@ -244,6 +244,18 @@ fn main() -> i32 {
     while frame < MAX_FRAMES && !win.should_close() && !game_over {
         gdev.begin_drawing()
         dt: f32 = gdev.get_frame_time()
+        # Temporary diagnostic: chasing a reported stutter that gets worse
+        # holding fire down. Audio (moved to a background thread) and
+        # stdout/terminal backpressure have both been ruled out by testing
+        # — this logs exactly which frame spikes and what was active at
+        # that moment, to pin down the real cause instead of guessing again.
+        if dt > 0.033 {
+            n_bullets: i32 = 0
+            for bi => 0..MAX_BULLETS { if bullets[bi].active { n_bullets += 1 } }
+            n_asteroids: i32 = 0
+            for ai => 0..MAX_ASTEROIDS { if asteroids[ai].active { n_asteroids += 1 } }
+            @pf("[STALL] frame={frame} dt={dt}s bullets={n_bullets} asteroids={n_asteroids}\n")
+        }
         if dt <= 0.0 { dt = 1.0 / 60.0 }
 
         if gfx.is_key_down(gfx.Key.Left)  { ship.angle -= SHIP_ROT_SPEED * dt }
