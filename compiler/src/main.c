@@ -223,6 +223,15 @@ static int names_generic_match(const char *name, const char *orig_name) {
     return !strncmp(name, orig_name, olen) && name[olen] == '_' && name[olen + 1] == '_';
 }
 
+/* Forward declaration: rw_type's TY_ARRAY case needs to rewrite an array
+   size expression the same way a function body's own EXPR_IDENT
+   references do (see that case below); rw_ident_expr's own definition
+   sits later in this file, alongside the rest of the identifier-rewrite
+   family it's part of. */
+struct LocalNames;
+static void rw_ident_expr(Expr *e, const char **orig, size_t n_orig,
+                          const char *alias, Arena *a, const struct LocalNames *ln);
+
 /* Rewrite TY_NAMED references that match any of orig_names → alias__name */
 static void rw_type(Type *ty, const char **orig, size_t n, const char *alias, Arena *a) {
     if (!ty) return;
@@ -241,11 +250,31 @@ static void rw_type(Type *ty, const char **orig, size_t n, const char *alias, Ar
             rw_type(ty->ptr.inner, orig, n, alias, a);
             break;
         case TY_ARRAY:
-            /* was missing entirely — a struct field typed "[N]Task" never
-               got its element type rewritten to "alias__Task" at all,
-               leaving array-typed fields pointing at a type that was never
-               actually defined under that name once the module got mangled */
+            /* Element-type rewrite was missing entirely at one point — a
+               struct field typed "[N]Task" never got its element type
+               rewritten to "alias__Task", leaving array-typed fields
+               pointing at a type that was never actually defined under
+               that name once the module got mangled.
+               array.size needs the identical treatment when it's a named
+               `::` constant (or arithmetic on one) declared in this same
+               module: mangle_items prefixes the constant's own item name
+               to "alias__NAME" (so sema's pass-1.7 pre-registration and
+               eval_const_int's later lookup both key off the mangled
+               name), but a bare EXPR_IDENT reference to it sitting inside
+               a TY_ARRAY's size — unlike one inside a function body or a
+               global's own initializer, both already covered by
+               rw_ident_stmts/rw_ident_expr elsewhere in mangle_items —
+               was never walked by anything, so it stayed pointed at the
+               pre-mangling name. eval_const_int's lookup then missed by
+               name and sema reported "array size must be a compile-time
+               constant" for a name that plainly was one, standalone —
+               only once the module was actually imported. Passing NULL
+               for LocalNames is correct here: a type's own array-size
+               expression can't reference a function-local/parameter the
+               way a body statement can, so there's no shadowing to
+               respect. */
             rw_type(ty->array.inner, orig, n, alias, a);
+            rw_ident_expr(ty->array.size, orig, n, alias, a, NULL);
             break;
         case TY_FN:
             for (size_t i = 0; i < ty->fn.params.len; i++)
@@ -301,7 +330,7 @@ static void rw_types_in_stmts(StmtList sl, const char **orig, size_t n, const ch
    all — see the "entry_name" bug this was found from (a top-level
    function in one file colliding with an unrelated local variable three
    import-levels deep in a completely different file). */
-typedef struct {
+typedef struct LocalNames {
     const char **names;
     size_t       n;
     size_t       cap;

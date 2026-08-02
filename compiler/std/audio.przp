@@ -128,15 +128,6 @@ fn decode_mp3(path: str) -> !Sound {
 # buffer; a request that finds the queue full just drops that one shot's
 # sound rather than ever making the caller wait, the same fixed-capacity
 # tradeoff MAX_BULLETS makes in examples/games/astro_blaster.
-#
-# Must match AudioCtrl.queue's literal array size below: a named `::`
-# constant folds fine here in ordinary expressions, but not as an array
-# size when this module is imported (i.e. always, for any real caller) —
-# sema's array-size constant-folding only runs for the root compiled
-# file's own top-level consts, not an imported module's, so the same
-# `[AUDIO_QUEUE_CAP]AudioRequest` that compiles standalone fails to fold
-# once std/audio.przp is `import()`-ed. Tracked as a compiler limitation;
-# a literal sidesteps it here.
 AUDIO_QUEUE_CAP: usize : 16
 
 struct AudioRequest {
@@ -154,7 +145,7 @@ struct AudioCtrl {
     pcm:             *u8,
     bytes_per_frame: usize,
     thread:          u64,
-    queue:           [16]AudioRequest,   # keep in sync with AUDIO_QUEUE_CAP above
+    queue:           [AUDIO_QUEUE_CAP]AudioRequest,
     head:            usize,
     count:           usize,
     running:         bool,

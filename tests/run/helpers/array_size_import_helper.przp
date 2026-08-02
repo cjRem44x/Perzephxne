@@ -1,0 +1,28 @@
+# regression: a struct declared in this module sizes one of its own array
+# fields with a named `::` constant also declared in this module — folds
+# fine when this file is compiled standalone (see array_size_const.przp),
+# but failed once this file was imported by anything: mangle_items
+# prefixes CAP's own item name to "helper__CAP" so sema's array-size
+# constant folding (eval_const_int, keyed off the mangled name) can find
+# it, but the bug was that the array-size expression itself — unlike an
+# identical reference inside a function body or a global's own
+# initializer — was never walked by mangle_items's identifier-rewrite
+# pass at all, so it stayed pointed at the pre-mangling name "CAP" and
+# the lookup missed by name. Also covers arithmetic on a constant
+# (`BASE * 2`), the same shape array_size_const.przp already covers for
+# the non-imported case.
+
+CAP:  usize : 6
+BASE: usize : 3
+
+struct Thing {
+    data:  [CAP]i32,
+    more:  [BASE * 2]u8,
+    count: usize,
+}
+
+fn make() -> Thing {
+    t: Thing = @zeroed(Thing)
+    t.count = 999
+    ret t
+}
