@@ -168,13 +168,14 @@ struct AudioCtrl {
 # system resolves "default" to actually services a write. Some ALSA PCM
 # plugins — PulseAudio's/PipeWire's ALSA-compat shim especially, common
 # on desktop Linux — have historically not honored SND_PCM_NONBLOCK
-# cheaply (or at all) on every write, which made even a "non-blocking"
-# main-thread write a real, visible frame-time hitch, worst on sustained
-# fire (reported against examples/games/astro_blaster: rapid-fire holding
-# the trigger made it much worse, exactly what repeated slow writes on
-# the frame-critical thread would look like). Moving the writes to a
-# thread the render loop never waits on removes that dependency entirely
-# regardless of which backend "default" turns out to be.
+# cheaply (or at all) on every write, which was the working theory
+# behind this rewrite (a stutter reported against
+# examples/games/astro_blaster, worse holding fire down). It turned out
+# not to be the cause — the same stutter reproduces with audio skipped
+# entirely (`przp run --no-audio`) — but moving playback off the render
+# thread is still the right design regardless of what "default"
+# resolves to, so it stays; the actual stutter is still open, see
+# astro_blaster's main.przp for the frame-stall diagnostic tracking it.
 fn audio_worker(arg: *u8) -> *u8 {
     ctrl: *AudioCtrl = arg
     while true {

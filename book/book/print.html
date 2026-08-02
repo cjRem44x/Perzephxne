@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-416dacbf.js";
+            window.path_to_searchindex_js = "searchindex-c23e0ea7.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-4e58bc13.js"></script>
@@ -2947,6 +2947,8 @@ r: f64 = m.sqrt(2.0)
 <tr><td>Package dependencies</td><td><code>[deps]</code> is reserved. There is no external resolver yet; Core/Stdlib ships with the language. <code>[build].link</code> (see <a href="#build-system-przp">Build System</a>) covers linking against system libraries the OS already ships (e.g. <code>link = ["X11", "GL"]</code>) — this is not a package resolver, just linker flags.</td></tr>
 <tr><td>Release UX</td><td>A future version command should be <code>przp version</code>, but versioning is intentionally deferred while beta work is moving quickly.</td></tr>
 <tr><td><code>any</code> type</td><td>Reserved keyword. Runtime-tagged values (boxing, type IDs, <code>when</code> dispatch on types) are designed but not implemented; removed from the reference until they exist.</td></tr>
+<tr><td>Array-size constant folding across imports</td><td>An array type’s named <code>::</code> constant size folds correctly for the root compiled file but not for an imported module’s own struct referencing its own module-local constant (repro’d standalone, unrelated to any specific module) — see the literal-size workaround and comment on <code>AudioCtrl.queue</code> in <code>std/audio.przp</code>. Needs a real fix in <code>sema.c</code>’s array-size folding path (<code>check_type</code>/<code>eval_const_int</code>), not another workaround.</td></tr>
+<tr><td>astro_blaster reported stutter, still open</td><td>A stutter reported during rapid fire in <code>examples/games/astro_blaster</code> survived three rounds of fixes to <code>std/audio</code> (non-blocking writes, an <code>snd_pcm_avail_update</code> pre-check, then a full background-thread rewrite) and reproduces with audio skipped entirely (<code>przp run --no-audio</code>) — so it isn’t audio. <code>std/gdev</code>’s own frame timer (<code>get_frame_time</code>, real wall-clock via <code>os.monotonic_ms</code>) never recorded a frame over 33ms during a session where the stutter was reported, which is the actually strange part: whatever’s happening either isn’t visible on that clock at all (input-latency-shaped, not render-loop-shaped) or is smaller than the 33ms threshold currently logged. The diagnostic (<code>[STALL]</code> logging in <code>main.przp</code>) is still in place for whoever picks this back up.</td></tr>
 </tbody>
 </table>
 </div>
