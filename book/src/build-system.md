@@ -12,6 +12,7 @@
 | `przp build --release` | Optimized release build |
 | `przp run` | Build (if needed) and run — see [Incremental `run`](#incremental-run) |
 | `przp run --release` | Build (if needed) and run with optimizations |
+| `przp run <args>` | Any argument other than `--release` is passed straight through to the program's own `argv` (see `@args` in [Globals](./globals.md)) — e.g. `przp run --no-audio` |
 | `przp test [<file>] [<name>]` | Run `test "..." { }` blocks — see [Testing](./testing.md) |
 | `przp sac <files> -o=Name` | Stand-Alone Compiler — compile one or more files without a project |
 | `przp sac <files> --release -o=Name` | Stand-alone optimized build |
@@ -93,6 +94,8 @@ Stand-alone compilation defaults to `./out` unless `-o=Name` is provided.
 - deleting the binary forces a rebuild
 
 This tracking lives in a `<binary>.d` sidecar file written next to the binary after each successful build (a plain list of the files that build depended on) — safe to delete at any time, since its absence just means the next `run` rebuilds unconditionally. `przp build` always compiles unconditionally; the skip-if-fresh behavior is `run`-only, matching its "get me a running program" purpose rather than `build`'s "give me a fresh binary" one.
+
+`przp run` execs the built binary directly (`fork`+`execv`, no shell in between) rather than shelling out through `system()`, so any pass-through arguments reach the program's `argv` exactly as typed — no shell re-parsing of spaces, quotes, or glob characters along the way.
 
 ## Quick Start
 

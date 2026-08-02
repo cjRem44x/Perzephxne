@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-0504c7a7.js";
+            window.path_to_searchindex_js = "searchindex-416dacbf.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-4e58bc13.js"></script>
@@ -270,6 +270,7 @@ comment
 <tr><td><code>przp build --release</code></td><td>Optimized release build</td></tr>
 <tr><td><code>przp run</code></td><td>Build (if needed) and run — see <a href="#incremental-run">Incremental <code>run</code></a></td></tr>
 <tr><td><code>przp run --release</code></td><td>Build (if needed) and run with optimizations</td></tr>
+<tr><td><code>przp run &lt;args&gt;</code></td><td>Any argument other than <code>--release</code> is passed straight through to the program’s own <code>argv</code> (see <code>@args</code> in <a href="#global-variables">Globals</a>) — e.g. <code>przp run --no-audio</code></td></tr>
 <tr><td><code>przp test [&lt;file&gt;] [&lt;name&gt;]</code></td><td>Run <code>test "..." { }</code> blocks — see <a href="#testing">Testing</a></td></tr>
 <tr><td><code>przp sac &lt;files&gt; -o=Name</code></td><td>Stand-Alone Compiler — compile one or more files without a project</td></tr>
 <tr><td><code>przp sac &lt;files&gt; --release -o=Name</code></td><td>Stand-alone optimized build</td></tr>
@@ -336,6 +337,7 @@ przp run            # builds ./MyProject, then runs it
 <li>deleting the binary forces a rebuild</li>
 </ul>
 <p>This tracking lives in a <code>&lt;binary&gt;.d</code> sidecar file written next to the binary after each successful build (a plain list of the files that build depended on) — safe to delete at any time, since its absence just means the next <code>run</code> rebuilds unconditionally. <code>przp build</code> always compiles unconditionally; the skip-if-fresh behavior is <code>run</code>-only, matching its “get me a running program” purpose rather than <code>build</code>’s “give me a fresh binary” one.</p>
+<p><code>przp run</code> execs the built binary directly (<code>fork</code>+<code>execv</code>, no shell in between) rather than shelling out through <code>system()</code>, so any pass-through arguments reach the program’s <code>argv</code> exactly as typed — no shell re-parsing of spaces, quotes, or glob characters along the way.</p>
 <h2 id="quick-start"><a class="header" href="#quick-start">Quick Start</a></h2>
 <pre><code class="language-sh">przp init myproject
 cd myproject

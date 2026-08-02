@@ -1708,10 +1708,19 @@ static void cmd_build(int argc, char **argv) {
     exit(rc);
 }
 
+/* Any `przp run` argument other than `--release` is a run-time argument
+   for the program itself (e.g. `przp run --no-audio`), not a build
+   option — collected here and handed to the executed binary's own argv
+   (visible to the running program via `@args`), never consulted at
+   compile time. */
 static void cmd_run(int argc, char **argv) {
     int release = 0;
-    for (int i = 0; i < argc; i++)
-        if (!strcmp(argv[i], "--release")) release = 1;
+    char *pass_argv[64];
+    int n_pass = 0;
+    for (int i = 0; i < argc; i++) {
+        if (!strcmp(argv[i], "--release")) { release = 1; continue; }
+        if (n_pass < (int)(sizeof(pass_argv) / sizeof(pass_argv[0]))) pass_argv[n_pass++] = argv[i];
+    }
 
     Manifest manifest;
     int mf = read_manifest(&manifest);
@@ -1732,10 +1741,28 @@ static void cmd_run(int argc, char **argv) {
         if (compile_file(manifest.entry, out_buf, release, link_argv, manifest.n_link_libs, 0, NULL) != 0) exit(1);
     }
 
-    char run_cmd[512];
-    snprintf(run_cmd, sizeof(run_cmd), "./%s", out_buf);
-    int rc = system(run_cmd);
-    exit(WEXITSTATUS(rc));
+    char run_path[300];
+    snprintf(run_path, sizeof(run_path), "./%s", out_buf);
+
+    /* execv, not system(): pass-through args go straight into the child's
+       argv with no shell re-parsing, so nothing in them (spaces, quotes,
+       globs) gets reinterpreted. */
+    char *exec_argv[66];
+    int ai = 0;
+    exec_argv[ai++] = run_path;
+    for (int i = 0; i < n_pass && ai < 65; i++) exec_argv[ai++] = pass_argv[i];
+    exec_argv[ai] = NULL;
+
+    pid_t pid = fork();
+    if (pid < 0) { perror("przp run: fork"); exit(1); }
+    if (pid == 0) {
+        execv(run_path, exec_argv);
+        perror("przp run: execv");
+        _exit(127);
+    }
+    int status = 0;
+    waitpid(pid, &status, 0);
+    exit(WIFEXITED(status) ? WEXITSTATUS(status) : 1);
 }
 
 static const char *path_basename(const char *path) {
