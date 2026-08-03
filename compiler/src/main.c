@@ -1,3 +1,9 @@
+/* popen/pclose (used by cmd_add to capture `git rev-parse`'s output) are
+   POSIX.2, gated behind this under -std=c11's strict-ANSI mode — must be
+   defined before any header (including the local ones below, in case
+   they transitively pull in <stdio.h>) sees its first use. */
+#define _POSIX_C_SOURCE 200809L
+
 #include "arena.h"
 #include "error.h"
 #include "parser.h"
@@ -59,6 +65,14 @@ static char *read_file_or_null(const char *path, char *err, size_t errsz) {
 
 /* stdlib root — resolved once at startup */
 static char g_stdlib_root[1024] = "";
+
+/* Where fetched dependencies live — always project-local (unlike
+   g_stdlib_root, which is toolchain-relative), so a plain fixed relative
+   path is enough; no env-var override or fallback search needed the way
+   stdlib_root_init has, since ensure_deps/cmd_add always fetch into
+   exactly this same path relative to the project directory `przp
+   build`/`run`/`test` already run from. */
+static const char *g_deps_root = ".przp/deps";
 
 /* Every source file (entry + transitively imported) touched by the current
    compile_file() call — recorded so `przp run` can later check whether all
@@ -1089,6 +1103,37 @@ static int load_imports(Module *mod, const char *src_path, const char *src,
             } else if (!strncmp(imp_path, "std/", 4) && g_stdlib_root[0]) {
                 /* stdlib path: resolve against stdlib root */
                 full_n = snprintf(full, sizeof(full), "%s/%s.przp", g_stdlib_root, imp_path + 4);
+            } else if (!strncmp(imp_path, "dep/", 4)) {
+                /* dependency path: resolve against .przp/deps/, one
+                   directory level deeper than std/'s own flat layout —
+                   ensure_deps/cmd_add clone each dependency's whole repo
+                   into its own .przp/deps/<name>/ (git needs a directory
+                   per clone; std/ has no such per-module wrapper since
+                   it's all one shared tree), so a dependency's *root*
+                   module is <name>/<name>.przp within that clone (named
+                   after itself, same convention std/audio.przp follows
+                   one level up) rather than living at .przp/deps/<name>.przp
+                   directly. "dep/foo" reaches that root module;
+                   "dep/foo/sub" reaches a submodule inside the same
+                   clone (.przp/deps/foo/sub.przp), the same way
+                   "std/graphics/gl" reaches a std submodule. A
+                   dependency's own files importing each other use
+                   ordinary relative imports among themselves (the `else`
+                   branch below, relative to *that file's* own
+                   directory) — this branch only matters for an
+                   importing project reaching into a dependency from the
+                   outside. The explicit "dep/" sigil (rather than trying
+                   "foo" bare against [deps] first) keeps this
+                   unambiguous with an ordinary project-relative import
+                   of a same-named local file or directory. */
+                const char *rest = imp_path + 4;
+                const char *slash = strchr(rest, '/');
+                if (slash) {
+                    full_n = snprintf(full, sizeof(full), "%s/%.*s/%s.przp",
+                                      g_deps_root, (int)(slash - rest), rest, slash + 1);
+                } else {
+                    full_n = snprintf(full, sizeof(full), "%s/%s/%s.przp", g_deps_root, rest, rest);
+                }
             } else {
                 full_n = snprintf(full, sizeof(full), "%s/%s.przp", src_dir, imp_path);
             }
@@ -1561,11 +1606,40 @@ static void cmd_init(int argc, char **argv) {
         exit(1);
     }
 
+    /* .gitignore — .przp/deps/ is where cmd_add/ensure_deps clone
+       dependencies' repos to; only przp.toml + przp.lock (committed
+       normally, no different from any other source file) are meant to
+       travel with the project, the same way node_modules/target/vendor
+       aren't committed elsewhere — a project's own dependents re-fetch
+       from przp.lock's pinned commits on their own first `przp build`. */
+    char gitignore_path[256];
+    path_join(gitignore_path, sizeof(gitignore_path), dir, ".gitignore");
+    f = fopen(gitignore_path, "w");
+    if (f) {
+        fprintf(f, ".przp/\n");
+        fclose(f);
+    } else {
+        fprintf(stderr, "przp init: cannot write '%s': %s\n", gitignore_path, strerror(errno));
+        exit(1);
+    }
+
     printf("Created project '%s'\n", name);
     exit(0);
 }
 
 #define MANIFEST_MAX_LINK_LIBS 16
+#define MANIFEST_MAX_DEPS 32
+
+/* One [deps] entry: `name` doubles as both the przp_dep_<name> GitHub repo
+   suffix (see DEPS_ORG/deps_url below) and the "dep/<name>" import path
+   segment (see load_imports), so it's validated as a plain identifier, not
+   an arbitrary TOML key. `ref` is a git tag, branch, or commit — whatever
+   `przp add` was pointed at — not a semver range; przp.lock is what pins
+   it to one exact commit. */
+typedef struct {
+    char name[64];
+    char ref[128];
+} ManifestDep;
 
 typedef struct {
     char package_name[256];
@@ -1573,6 +1647,8 @@ typedef struct {
     char entry[256];
     char link_libs[MANIFEST_MAX_LINK_LIBS][64];
     int  n_link_libs;
+    ManifestDep deps[MANIFEST_MAX_DEPS];
+    int  n_deps;
 } Manifest;
 
 static char *trim_ws(char *s) {
@@ -1621,6 +1697,46 @@ static int parse_string_array_value(const char *s, char out[][64], int max) {
         p = end + 1;
     }
     return n;
+}
+
+/* A [deps] key must be a plain identifier: it becomes both a
+   przp_dep_<name> GitHub repo suffix and a "dep/<name>" import path
+   segment (see load_imports), neither of which tolerates arbitrary TOML
+   key characters (dots, dashes, quotes, ...). */
+static int is_valid_dep_name(const char *s) {
+    if (!*s) return 0;
+    if (!isalpha((unsigned char)*s) && *s != '_') return 0;
+    for (const char *p = s + 1; *p; p++)
+        if (!isalnum((unsigned char)*p) && *p != '_') return 0;
+    return 1;
+}
+
+/* Conservative allowlist for a git ref (tag/branch/commit) that's about
+   to be interpolated into a system()-invoked shell command for `git
+   clone`/`checkout`/etc: alnum plus `. _ - /`, nothing a shell would ever
+   treat specially. Real git ref names are actually a little more
+   permissive than this, but this covers every realistic tag/branch/
+   commit-sha in practice while completely ruling out shell
+   metacharacters. This matters because a ref doesn't only come from a
+   local `przp add name@ref` argument — ensure_deps reads one straight out
+   of przp.toml/przp.lock on every `przp build`/`run`/`test`, and those
+   files can arrive from someone else's cloned project, so an
+   unvalidated ref there is a real command-injection path, not just
+   input hygiene. A leading '-' is rejected outright even though it's
+   otherwise in the allowlist (git itself permits it in a ref name) —
+   passed positionally to `git checkout <ref>`, a ref starting with '-'
+   would be parsed as an option instead, an argument-injection path
+   distinct from (and not fixed by) the shell-metacharacter filtering
+   below. */
+static int is_safe_git_ref(const char *s) {
+    if (!*s) return 0;
+    if (*s == '-') return 0;
+    for (const char *p = s; *p; p++) {
+        if (isalnum((unsigned char)*p)) continue;
+        if (*p == '.' || *p == '_' || *p == '-' || *p == '/') continue;
+        return 0;
+    }
+    return 1;
 }
 
 static int read_manifest(Manifest *m) {
@@ -1687,6 +1803,37 @@ static int read_manifest(Manifest *m) {
                 return -1;
             }
             m->n_link_libs = n;
+        } else if (section == SEC_DEPS) {
+            if (!is_valid_dep_name(key)) {
+                fprintf(stderr, "przp.toml:%d: error: [deps] key '%s' must be a plain "
+                                "identifier (letters, digits, underscore, not starting "
+                                "with a digit) — it names both the przp_dep_%s repo and "
+                                "the \"dep/%s\" import path\n", line_no, key, key, key);
+                fclose(f);
+                return -1;
+            }
+            if (m->n_deps >= MANIFEST_MAX_DEPS) {
+                fprintf(stderr, "przp.toml:%d: error: too many [deps] entries (max %d)\n",
+                        line_no, MANIFEST_MAX_DEPS);
+                fclose(f);
+                return -1;
+            }
+            ManifestDep *dep = &m->deps[m->n_deps];
+            snprintf(dep->name, sizeof(dep->name), "%s", key);
+            if (!parse_quoted_value(val, dep->ref, sizeof(dep->ref))) {
+                fprintf(stderr, "przp.toml:%d: error: [deps].%s must be a quoted string "
+                                "(a git tag, branch, or commit)\n", line_no, key);
+                fclose(f);
+                return -1;
+            }
+            if (!is_safe_git_ref(dep->ref)) {
+                fprintf(stderr, "przp.toml:%d: error: [deps].%s = \"%s\" is not a valid git "
+                                "ref (letters, digits, '.', '_', '-', '/' only)\n",
+                        line_no, key, dep->ref);
+                fclose(f);
+                return -1;
+            }
+            m->n_deps++;
         } else if (section == SEC_NONE) {
             fprintf(stderr, "przp.toml:%d: error: key '%s' must be inside [package], [build], or [deps]\n", line_no, key);
             fclose(f);
@@ -1706,6 +1853,241 @@ static int read_manifest(Manifest *m) {
     return 1;
 }
 
+/* read_lockfile: parse przp.lock's own [deps] section — the same
+   `name = "value"` shape read_manifest already parses, just without
+   [package]/[build] or any of read_manifest's validation, since przp.lock
+   is generated by cmd_add/ensure_deps, never hand-written. Missing file
+   is not an error (a project with no deps yet has no lockfile) — returns
+   0 with *n set to 0; a malformed file (present but unreadable/corrupt)
+   returns -1. `ref` here holds the pinned *commit*, not the tag/branch
+   przp.toml's own [deps] entry names. */
+static int read_lockfile(const char *path, ManifestDep *out, int max, int *n) {
+    *n = 0;
+    FILE *f = fopen(path, "r");
+    if (!f) return 0;
+
+    int in_deps = 0;
+    char line[512];
+    while (fgets(line, sizeof(line), f)) {
+        char *hash = strchr(line, '#');
+        if (hash) *hash = '\0';
+        char *s = trim_ws(line);
+        if (!*s) continue;
+        if (!strcmp(s, "[deps]")) { in_deps = 1; continue; }
+        if (*s == '[') { in_deps = 0; continue; }
+        if (!in_deps) continue;
+
+        char *eq = strchr(s, '=');
+        if (!eq) { fclose(f); return -1; }
+        *eq = '\0';
+        char *key = trim_ws(s);
+        char *val = trim_ws(eq + 1);
+        if (*n >= max) { fclose(f); return -1; }
+        if (!is_valid_dep_name(key)) { fclose(f); return -1; }
+        snprintf(out[*n].name, sizeof(out[*n].name), "%s", key);
+        if (!parse_quoted_value(val, out[*n].ref, sizeof(out[*n].ref))) { fclose(f); return -1; }
+        if (!is_safe_git_ref(out[*n].ref)) { fclose(f); return -1; }
+        (*n)++;
+    }
+    fclose(f);
+    return 0;
+}
+
+/* toml_upsert_dep: set `name = "value"` under `[deps]` in the TOML file at
+   `path`, creating the section if it doesn't exist yet, and leaving
+   every other line untouched — used for both przp.toml (preserving its
+   [package]/[build] sections verbatim) and przp.lock (which has nothing
+   else to preserve, but is simplest handled the same way). Whole-file
+   read-modify-rewrite rather than in-place seeking, matching the rest of
+   this manifest handling's "small hand-written config file" scale — a
+   real project's przp.toml/przp.lock is never going to approach
+   MAX_LINES. Returns 1 on success, 0 on I/O error. */
+#define TOML_UPSERT_MAX_LINES 512
+static int toml_upsert_dep(const char *path, const char *name, const char *value) {
+    char lines[TOML_UPSERT_MAX_LINES][256];
+    int n_lines = 0;
+
+    FILE *f = fopen(path, "r");
+    if (f) {
+        while (n_lines < TOML_UPSERT_MAX_LINES && fgets(lines[n_lines], sizeof(lines[n_lines]), f)) {
+            size_t len = strlen(lines[n_lines]);
+            while (len > 0 && (lines[n_lines][len-1] == '\n' || lines[n_lines][len-1] == '\r'))
+                lines[n_lines][--len] = '\0';
+            n_lines++;
+        }
+        fclose(f);
+    }
+
+    char new_entry[320];
+    snprintf(new_entry, sizeof(new_entry), "%s = \"%s\"", name, value);
+
+    int deps_start = -1, deps_end = -1; /* [deps_start, deps_end) = lines belonging to [deps] */
+    for (int i = 0; i < n_lines; i++) {
+        char buf[256];
+        snprintf(buf, sizeof(buf), "%s", lines[i]);
+        char *s = trim_ws(buf);
+        if (!strcmp(s, "[deps]")) {
+            deps_start = i + 1;
+            deps_end = n_lines;
+            for (int j = i + 1; j < n_lines; j++) {
+                char buf2[256];
+                snprintf(buf2, sizeof(buf2), "%s", lines[j]);
+                char *s2 = trim_ws(buf2);
+                if (*s2 == '[') { deps_end = j; break; }
+            }
+            break;
+        }
+    }
+
+    int replaced = 0;
+    if (deps_start >= 0) {
+        size_t nlen = strlen(name);
+        for (int i = deps_start; i < deps_end; i++) {
+            char buf[256];
+            snprintf(buf, sizeof(buf), "%s", lines[i]);
+            char *s = trim_ws(buf);
+            if (!strncmp(s, name, nlen) && (s[nlen] == ' ' || s[nlen] == '=' || s[nlen] == '\t')) {
+                snprintf(lines[i], sizeof(lines[i]), "%s", new_entry);
+                replaced = 1;
+                break;
+            }
+        }
+        if (!replaced) {
+            if (n_lines >= TOML_UPSERT_MAX_LINES) return 0;
+            for (int i = n_lines; i > deps_end; i--)
+                snprintf(lines[i], sizeof(lines[i]), "%s", lines[i-1]);
+            snprintf(lines[deps_end], sizeof(lines[deps_end]), "%s", new_entry);
+            n_lines++;
+        }
+    } else {
+        if (n_lines + 2 > TOML_UPSERT_MAX_LINES) return 0;
+        if (n_lines > 0) snprintf(lines[n_lines++], sizeof(lines[0]), "%s", "");
+        snprintf(lines[n_lines++], sizeof(lines[0]), "%s", "[deps]");
+        snprintf(lines[n_lines++], sizeof(lines[0]), "%s", new_entry);
+    }
+
+    FILE *out = fopen(path, "w");
+    if (!out) return 0;
+    for (int i = 0; i < n_lines; i++)
+        fprintf(out, "%s\n", lines[i]);
+    fclose(out);
+    return 1;
+}
+
+/* Default GitHub org dependencies resolve against — github.com/cjRem44x
+   for a real fetch. PRZP_DEPS_GIT_BASE overrides the whole
+   "https://github.com/<org>" prefix, not just the org name, so a test can
+   point it at a local `file:///...` path instead of touching the network
+   (the same idea PRZP_STDLIB already uses to override where std/ resolves
+   from) — a URL of "<base>/przp_dep_<name>.git" either way. */
+#define DEFAULT_DEPS_GIT_BASE "https://github.com/cjRem44x"
+
+static const char *deps_git_base(void) {
+    const char *env = getenv("PRZP_DEPS_GIT_BASE");
+    return (env && env[0]) ? env : DEFAULT_DEPS_GIT_BASE;
+}
+
+/* Capture the first line of `cmd`'s stdout into `out`, trimmed of its
+   trailing newline. Returns 1 on success (the subprocess exited 0 and
+   printed something), 0 otherwise. Nothing else in this codebase captures
+   subprocess output (compile_file/cmd_sac only ever check an exit code),
+   but it's the same "just shell out" style rather than linking libgit2 —
+   needed here to read back the commit `git rev-parse HEAD` resolves to. */
+static int capture_cmd_line(const char *cmd, char *out, size_t outsz) {
+    FILE *p = popen(cmd, "r");
+    if (!p) return 0;
+    int got = fgets(out, (int)outsz, p) != NULL;
+    int status = pclose(p);
+    if (!got || !WIFEXITED(status) || WEXITSTATUS(status) != 0) return 0;
+    size_t len = strlen(out);
+    while (len > 0 && (out[len-1] == '\n' || out[len-1] == '\r')) out[--len] = '\0';
+    return len > 0;
+}
+
+/* ensure_deps: called right after a successful read_manifest from
+   cmd_build/cmd_run/cmd_test, before anything else touches the network
+   or filesystem for the build itself — makes sure every [deps] entry's
+   pinned commit (przp.lock) is actually checked out under
+   .przp/deps/<name>, fetching if it's missing or stale. This is what
+   makes a fresh clone of *someone else's* project (which commits
+   przp.toml + przp.lock but not its own .przp/deps/, per the .gitignore
+   `przp init` writes) just work on the first `przp build`, the same as
+   `cargo build` fetching from Cargo.lock without a separate `cargo
+   fetch` step. A dep declared in przp.toml with no matching przp.lock
+   entry is a hard error (not a silent re-resolve) — an exact commit is
+   the whole point of the split between the two files; if you want a
+   newer one, `przp add` again. Returns 1 if every dep ends up present
+   and pinned correctly, 0 on the first failure (with an error already
+   printed). */
+static int ensure_deps(const Manifest *m) {
+    if (m->n_deps == 0) return 1;
+
+    ManifestDep locked[MANIFEST_MAX_DEPS];
+    int n_locked = 0;
+    if (read_lockfile("przp.lock", locked, MANIFEST_MAX_DEPS, &n_locked) < 0) {
+        fprintf(stderr, "przp: przp.lock is malformed — delete it and re-run `przp add` "
+                        "for each dependency\n");
+        return 0;
+    }
+
+    for (int i = 0; i < m->n_deps; i++) {
+        const char *name = m->deps[i].name;
+        const char *want_sha = NULL;
+        for (int j = 0; j < n_locked; j++) {
+            if (!strcmp(locked[j].name, name)) { want_sha = locked[j].ref; break; }
+        }
+        if (!want_sha) {
+            fprintf(stderr, "przp: przp.lock has no entry for dep '%s' — run `przp add %s`\n",
+                    name, name);
+            return 0;
+        }
+
+        char dest[300];
+        snprintf(dest, sizeof(dest), ".przp/deps/%s", name);
+
+        if (!dir_exists(dest)) {
+            if (mkdir(".przp", 0755) != 0 && errno != EEXIST) {
+                fprintf(stderr, "przp: cannot create .przp: %s\n", strerror(errno));
+                return 0;
+            }
+            if (mkdir(".przp/deps", 0755) != 0 && errno != EEXIST) {
+                fprintf(stderr, "przp: cannot create .przp/deps: %s\n", strerror(errno));
+                return 0;
+            }
+            char url[400];
+            snprintf(url, sizeof(url), "%s/przp_dep_%s.git", deps_git_base(), name);
+            char clone_cmd[800];
+            snprintf(clone_cmd, sizeof(clone_cmd), "git clone --quiet -- %s %s", url, dest);
+            if (system(clone_cmd) != 0) {
+                fprintf(stderr, "przp: failed to fetch dependency '%s' from %s\n", name, url);
+                return 0;
+            }
+        }
+
+        char cur_sha[128];
+        char rev_cmd[350];
+        snprintf(rev_cmd, sizeof(rev_cmd), "git -C %s rev-parse HEAD", dest);
+        if (!capture_cmd_line(rev_cmd, cur_sha, sizeof(cur_sha)) || strcmp(cur_sha, want_sha) != 0) {
+            /* best-effort: a stale local clone may not have want_sha yet
+               (e.g. przp.lock was updated by a newer `przp add` on
+               another machine) — fetch, then let the checkout below
+               report a real failure if it still can't find it. */
+            char fetch_cmd[350];
+            snprintf(fetch_cmd, sizeof(fetch_cmd), "git -C %s fetch --quiet", dest);
+            system(fetch_cmd);
+
+            char co_cmd[400];
+            snprintf(co_cmd, sizeof(co_cmd), "git -C %s checkout --quiet %s", dest, want_sha);
+            if (system(co_cmd) != 0) {
+                fprintf(stderr, "przp: failed to check out dependency '%s' at pinned "
+                                "commit %s\n", name, want_sha);
+                return 0;
+            }
+        }
+    }
+    return 1;
+}
+
 static void cmd_build(int argc, char **argv) {
     int release = 0;
     const char *out_name = NULL;
@@ -1718,6 +2100,7 @@ static void cmd_build(int argc, char **argv) {
     int mf = read_manifest(&manifest);
     if (mf == 0) { fprintf(stderr, "przp build: no przp.toml found\n"); exit(1); }
     if (mf < 0) exit(1);
+    if (!ensure_deps(&manifest)) exit(1);
 
     char out_buf[256] = "out";
     if (out_name) {
@@ -1755,6 +2138,7 @@ static void cmd_run(int argc, char **argv) {
     int mf = read_manifest(&manifest);
     if (mf == 0) { fprintf(stderr, "przp run: no przp.toml found\n"); exit(1); }
     if (mf < 0) exit(1);
+    if (!ensure_deps(&manifest)) exit(1);
 
     char out_buf[256];
     snprintf(out_buf, sizeof(out_buf), "%s", manifest.package_name);
@@ -1792,6 +2176,132 @@ static void cmd_run(int argc, char **argv) {
     int status = 0;
     waitpid(pid, &status, 0);
     exit(WIFEXITED(status) ? WEXITSTATUS(status) : 1);
+}
+
+/* przp add <name>[@ref]: fetch github.com/<org>/przp_dep_<name> (or
+   PRZP_DEPS_GIT_BASE's override) into .przp/deps/<name>, resolve exactly
+   which commit that ref checked out to, and record both the
+   human-facing ref (przp.toml) and the exact pinned commit (przp.lock) —
+   see toml_upsert_dep. `ensure_deps` (used by build/run/test) is what
+   actually re-fetches a missing/stale checkout later using przp.lock's
+   pinned commit; this command's own job is only the first fetch plus
+   updating both files. */
+static void cmd_add(int argc, char **argv) {
+    if (argc < 1 || !argv[0][0]) {
+        fprintf(stderr, "Usage: przp add <name>[@ref]\n");
+        exit(1);
+    }
+
+    char name[64];
+    char ref[128];
+    ref[0] = '\0';
+    const char *at = strchr(argv[0], '@');
+    if (at) {
+        size_t nlen = (size_t)(at - argv[0]);
+        if (nlen >= sizeof(name)) { fprintf(stderr, "przp add: name too long\n"); exit(1); }
+        memcpy(name, argv[0], nlen);
+        name[nlen] = '\0';
+        snprintf(ref, sizeof(ref), "%s", at + 1);
+    } else {
+        snprintf(name, sizeof(name), "%s", argv[0]);
+    }
+
+    if (!is_valid_dep_name(name)) {
+        fprintf(stderr, "przp add: '%s' is not a valid dependency name (letters, digits, "
+                        "underscore, not starting with a digit)\n", name);
+        exit(1);
+    }
+    if (ref[0] && !is_safe_git_ref(ref)) {
+        fprintf(stderr, "przp add: '%s' is not a valid git ref (letters, digits, '.', '_', "
+                        "'-', '/' only)\n", ref);
+        exit(1);
+    }
+
+    Manifest manifest;
+    int mf = read_manifest(&manifest);
+    if (mf == 0) { fprintf(stderr, "przp add: no przp.toml found\n"); exit(1); }
+    if (mf < 0) exit(1);
+    (void)manifest;
+
+    if (mkdir(".przp", 0755) != 0 && errno != EEXIST) {
+        fprintf(stderr, "przp add: cannot create .przp: %s\n", strerror(errno));
+        exit(1);
+    }
+    if (mkdir(".przp/deps", 0755) != 0 && errno != EEXIST) {
+        fprintf(stderr, "przp add: cannot create .przp/deps: %s\n", strerror(errno));
+        exit(1);
+    }
+
+    char dest[300];
+    snprintf(dest, sizeof(dest), ".przp/deps/%s", name);
+
+    /* Start clean: a re-`przp add` (e.g. switching @ref) shouldn't have
+       to reconcile with whatever a previous checkout left behind. name
+       is validated (identifier-only) above, so this rm -rf's target is
+       never attacker-influenced. */
+    char rm_cmd[350];
+    snprintf(rm_cmd, sizeof(rm_cmd), "rm -rf -- %s", dest);
+    system(rm_cmd);
+
+    char url[400];
+    snprintf(url, sizeof(url), "%s/przp_dep_%s.git", deps_git_base(), name);
+
+    char clone_cmd[800];
+    snprintf(clone_cmd, sizeof(clone_cmd), "git clone --quiet -- %s %s", url, dest);
+    if (system(clone_cmd) != 0) {
+        fprintf(stderr, "przp add: failed to clone %s\n", url);
+        exit(1);
+    }
+
+    if (ref[0]) {
+        /* No `--` before ref here: for `git checkout`, everything after
+           `--` is a pathspec, not a revision — `checkout --quiet -- v1.0`
+           means "restore the path v1.0 from the index", not "check out
+           the tag v1.0", and silently fails to find any such path. ref
+           is safe to pass positionally as-is (not path-adjacent) since
+           is_safe_git_ref already rejects a leading '-', the only way a
+           bare positional arg could be mistaken for an option. */
+        char co_cmd[400];
+        snprintf(co_cmd, sizeof(co_cmd), "git -C %s checkout --quiet %s", dest, ref);
+        if (system(co_cmd) != 0) {
+            fprintf(stderr, "przp add: failed to checkout ref '%s'\n", ref);
+            exit(1);
+        }
+    }
+
+    char sha[128];
+    char sha_cmd[350];
+    snprintf(sha_cmd, sizeof(sha_cmd), "git -C %s rev-parse HEAD", dest);
+    if (!capture_cmd_line(sha_cmd, sha, sizeof(sha))) {
+        fprintf(stderr, "przp add: failed to resolve a commit for '%s'\n", name);
+        exit(1);
+    }
+
+    /* przp.toml records the human-facing ref: whatever @ref asked for,
+       or else the default branch's own name, so a later plain
+       `przp add name` (no @ref) re-resolves against that branch again
+       instead of re-pinning to whatever HEAD happened to be this time. */
+    char toml_ref[128];
+    if (ref[0]) {
+        snprintf(toml_ref, sizeof(toml_ref), "%s", ref);
+    } else {
+        char branch_cmd[350];
+        snprintf(branch_cmd, sizeof(branch_cmd), "git -C %s rev-parse --abbrev-ref HEAD", dest);
+        if (!capture_cmd_line(branch_cmd, toml_ref, sizeof(toml_ref)) || !is_safe_git_ref(toml_ref))
+            snprintf(toml_ref, sizeof(toml_ref), "%s", sha);
+    }
+
+    if (!toml_upsert_dep("przp.toml", name, toml_ref)) {
+        fprintf(stderr, "przp add: failed to update przp.toml\n");
+        exit(1);
+    }
+    if (!toml_upsert_dep("przp.lock", name, sha)) {
+        fprintf(stderr, "przp add: failed to update przp.lock\n");
+        exit(1);
+    }
+
+    printf("Added %s (%s) @ %s\n", name, toml_ref, sha);
+    exit(0);
 }
 
 static const char *path_basename(const char *path) {
@@ -1885,6 +2395,7 @@ static void cmd_test(int argc, char **argv) {
     int mf = read_manifest(&manifest);
     if (mf == 0) { fprintf(stderr, "przp test: no przp.toml found\n"); exit(1); }
     if (mf < 0) exit(1);
+    if (!ensure_deps(&manifest)) exit(1);
 
     const char *tests_dir = "tests";
     if (mkdir(tests_dir, 0755) != 0 && errno != EEXIST) {
@@ -1971,6 +2482,8 @@ static void usage(void) {
         "  test  [<file>] [<name>] [--release]\n"
         "                        Run test \"...\" { } blocks: all, one file,\n"
         "                        or one named test within one file\n"
+        "  add <name>[@ref]      Fetch a przp_dep_<name> dependency and record it\n"
+        "                        in przp.toml/przp.lock\n"
         "  sac <files> [-o=Out]  Compile individual files\n"
     );
     exit(1);
@@ -1988,6 +2501,7 @@ int main(int argc, char **argv) {
     if (!strcmp(cmd, "build")) cmd_build(argc, argv);
     if (!strcmp(cmd, "run"))   cmd_run(argc, argv);
     if (!strcmp(cmd, "test"))  cmd_test(argc, argv);
+    if (!strcmp(cmd, "add"))   cmd_add(argc, argv);
     if (!strcmp(cmd, "sac"))   cmd_sac(argc, argv);
 
     fprintf(stderr, "przp: unknown command '%s'\n", cmd);

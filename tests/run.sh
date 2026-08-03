@@ -203,6 +203,104 @@ run_project_fail_case() {
     fi
 }
 
+# End-to-end `przp add` + ensure_deps auto-fetch + `dep/` import resolution
+# (see book/src/build-system.md#dependencies). Needs `git`, gated (skipped,
+# not failed) like the GL/audio tests are for their own runtime deps —
+# unlike those, there's no way to test this against a real, hardware-free
+# "null device" equivalent, so instead a whole fake przp_dep_greeter repo
+# is built as a local bare repo under $TMP and PRZP_DEPS_GIT_BASE points at
+# it with a file:// URL — real git clone/fetch/checkout behavior, but no
+# actual network access, the same reasoning std_audio.przp uses ALSA's
+# "null" device for.
+run_deps_case() {
+    if ! command -v git >/dev/null 2>&1; then
+        printf 'skip  deps: git not installed\n'
+        return
+    fi
+    printf 'deps  add_and_autofetch\n'
+
+    local base="$TMP/deps_fixture"
+    rm -rf "$base"
+    mkdir -p "$base/org" "$base/srcstage" "$base/proj/src"
+
+    if ! (
+        cd "$base/srcstage" &&
+        git init --quiet &&
+        git config user.email test@test.com &&
+        git config user.name test &&
+        printf 'fn greet() -> i32 { ret 7 }\n' > greeter.przp &&
+        git add greeter.przp &&
+        git commit --quiet -m init &&
+        git branch -M main
+    ); then
+        printf 'FAIL  deps: could not build fixture source repo\n' >&2
+        failures=$((failures + 1))
+        return
+    fi
+
+    git init --quiet --bare "$base/org/przp_dep_greeter.git"
+    if ! (cd "$base/srcstage" && git remote add origin "$base/org/przp_dep_greeter.git" && git push --quiet origin main); then
+        printf 'FAIL  deps: could not push fixture source repo to bare remote\n' >&2
+        failures=$((failures + 1))
+        return
+    fi
+    git --git-dir="$base/org/przp_dep_greeter.git" symbolic-ref HEAD refs/heads/main
+
+    cat > "$base/proj/przp.toml" <<'EOF'
+[package]
+name = "depsfixtureproj"
+
+[build]
+entry = "src/main.przp"
+EOF
+    cat > "$base/proj/src/main.przp" <<'EOF'
+import(g = "dep/greeter")
+
+fn main() -> i32 {
+    r: i32 = g.greet()
+    @pf("r={r}\n")
+    ret 0
+}
+EOF
+
+    local add_out="$TMP/out/deps_add.stdout"
+    local add_err="$TMP/err/deps_add.stderr"
+    if ! (cd "$base/proj" && PRZP_STDLIB="$STDLIB" PRZP_DEPS_GIT_BASE="file://$base/org" "$PRZP" add greeter >"$add_out" 2>"$add_err"); then
+        printf 'FAIL  deps: przp add failed\n' >&2
+        sed -n '1,80p' "$add_err" >&2
+        failures=$((failures + 1))
+        return
+    fi
+    if ! grep -q '^\[deps\]' "$base/proj/przp.toml" || ! grep -q '^greeter = ' "$base/proj/przp.toml"; then
+        printf 'FAIL  deps: przp.toml missing greeter entry after add\n' >&2
+        failures=$((failures + 1))
+        return
+    fi
+    if ! grep -q '^greeter = ' "$base/proj/przp.lock"; then
+        printf 'FAIL  deps: przp.lock missing greeter entry after add\n' >&2
+        failures=$((failures + 1))
+        return
+    fi
+
+    # Delete the fetched checkout so przp run has to exercise ensure_deps's
+    # auto-fetch path (missing .przp/deps/) rather than an already-warm one.
+    rm -rf "$base/proj/.przp"
+
+    local run_out="$TMP/out/deps_run.stdout"
+    local run_err="$TMP/err/deps_run.stderr"
+    if ! (cd "$base/proj" && PRZP_STDLIB="$STDLIB" PRZP_DEPS_GIT_BASE="file://$base/org" "$PRZP" run >"$run_out" 2>"$run_err"); then
+        printf 'FAIL  deps: przp run (auto-fetch) failed\n' >&2
+        sed -n '1,80p' "$run_err" >&2
+        failures=$((failures + 1))
+        return
+    fi
+    if ! grep -q '^r=7$' "$run_out"; then
+        printf 'FAIL  deps: unexpected przp run output\n' >&2
+        cat "$run_out" >&2
+        failures=$((failures + 1))
+    fi
+}
+
 run_multifile_case() {
     local src_dir="$1"
     local name
@@ -955,6 +1053,8 @@ for dir in "$ROOT"/tests/project-fail/*; do
     [ -d "$dir" ] || continue
     run_project_fail_case "$dir"
 done
+
+run_deps_case
 
 for dir in "$ROOT"/tests/multifile/*; do
     [ -d "$dir" ] || continue
