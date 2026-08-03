@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-c7a161d8.js";
+            window.path_to_searchindex_js = "searchindex-c8db56d2.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-4e58bc13.js"></script>
@@ -469,7 +469,7 @@ fn main() -&gt; i32 {
     ret 0
 }
 </code></pre>
-<p>Sound (<code>gdev_load_sound</code>/<code>gdev_play_sound</code>-style playback) isn’t implemented yet — audio is deferred until an audio-output backend exists (see the <a href="./status-next.html">Status &amp; Next Work</a> direction on media codecs).</p>
+<p>Sound playback (<code>std/audio</code>’s <code>decode_mp3</code>/<code>open_output</code>/<code>play_sound</code>) is implemented — see this section’s own <code>std/audio</code> entry above — but it’s a standalone module <code>gdev</code> doesn’t wrap or re-export; a game imports it directly alongside <code>gdev</code>/<code>gfx</code>, the same way <code>examples/games/astro_blaster</code> does for its fire/explosion sound effects.</p>
 <p>Writing this exposed a real compiler bug, since it’s exactly the shape <code>gdev</code> needs (a program importing both <code>gdev</code> and <code>std/graphics</code> directly, sharing <code>Rectangle</code>/<code>Vector2</code>/<code>Texture</code> between them): a “diamond” import — the same file reached both directly and transitively through a second file — used to produce two incompatible types for what was actually one struct. Fixed at the compiler level; see <a href="./status-next.html">Status &amp; Next Work</a>’s bug list and <code>tests/run/diamond_import.przp</code>.</p>
 <h3 id="layer-3b--guix-native-gui-widgets"><a class="header" href="#layer-3b--guix-native-gui-widgets">Layer 3b — <code>guix</code>, native GUI widgets</a></h3>
 <p>This is the piece aimed squarely at native apps, not games — immediate-mode, raygui-style widgets, plus the concerns a game doesn’t have to think about: DPI scaling, text editing, focus/tab order, and clipboard. No retained widget tree, no event callbacks — each widget function draws itself and returns whether it was interacted with <em>this frame</em>, decided entirely from the current mouse/keyboard state:</p>

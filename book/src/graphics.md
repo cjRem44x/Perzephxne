@@ -368,7 +368,7 @@ fn main() -> i32 {
 }
 ```
 
-Sound (`gdev_load_sound`/`gdev_play_sound`-style playback) isn't implemented yet — audio is deferred until an audio-output backend exists (see the [Status & Next Work](./status-next.md) direction on media codecs).
+Sound playback (`std/audio`'s `decode_mp3`/`open_output`/`play_sound`) is implemented — see this section's own `std/audio` entry above — but it's a standalone module `gdev` doesn't wrap or re-export; a game imports it directly alongside `gdev`/`gfx`, the same way `examples/games/astro_blaster` does for its fire/explosion sound effects.
 
 Writing this exposed a real compiler bug, since it's exactly the shape `gdev` needs (a program importing both `gdev` and `std/graphics` directly, sharing `Rectangle`/`Vector2`/`Texture` between them): a "diamond" import — the same file reached both directly and transitively through a second file — used to produce two incompatible types for what was actually one struct. Fixed at the compiler level; see [Status & Next Work](./status-next.md)'s bug list and `tests/run/diamond_import.przp`.
 
