@@ -1,0 +1,44 @@
+# regression: Window.set_resizable/set_min_size/set_max_size push an
+# XSizeHints to the window manager via XSetWMNormalHints. Verified by
+# reading the hints straight back with XGetWMNormalHints (the only way
+# to check this at all — there's no pixel to read back, unlike the rest
+# of tests/gl) and confirming: set_min_size/set_max_size take effect,
+# set_resizable(false) locks min/max to the window's current size
+# regardless of what was set before, and set_resizable(true) restores
+# the previously configured min/max rather than losing them (the fixed-
+# size lock overrides STATE.min_w/etc. while inactive, never overwrites
+# them — see apply_size_hints in compiler/std/graphics.przp).
+import(gfx = "std/graphics")
+
+extern fn XGetWMNormalHints(display: *u8, window: u64, hints_out: *u8, supplied_out: *i64) -> i32
+
+fn read_hints(buf: *u8) -> (i32, i32, i32, i32) {
+    supplied: i64 = 0
+    XGetWMNormalHints(gfx.STATE.display, gfx.STATE.window, buf, &supplied)
+    minw: *i32 = buf + 24
+    minh: *i32 = buf + 28
+    maxw: *i32 = buf + 32
+    maxh: *i32 = buf + 36
+    ret (minw.*, minh.*, maxw.*, maxh.*)
+}
+
+fn main() -> i32 {
+    win: gfx.Window = gfx.Window.open("size hints test", 640, 480)
+    buf: [80]u8 = undef
+
+    win.set_min_size(320, 240)
+    win.set_max_size(800, 600)
+    a: (i32, i32, i32, i32) = read_hints(&buf[0])
+    @pf("configured:  min={a.0}x{a.1} max={a.2}x{a.3}\n")
+
+    win.set_resizable(false)
+    b: (i32, i32, i32, i32) = read_hints(&buf[0])
+    @pf("locked:      min={b.0}x{b.1} max={b.2}x{b.3}\n")
+
+    win.set_resizable(true)
+    c: (i32, i32, i32, i32) = read_hints(&buf[0])
+    @pf("unlocked:    min={c.0}x{c.1} max={c.2}x{c.3}\n")
+
+    win.close()
+    ret 0
+}

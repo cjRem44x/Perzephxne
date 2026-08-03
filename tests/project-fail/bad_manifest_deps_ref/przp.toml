@@ -1,0 +1,8 @@
+[package]
+name = "bad_manifest_deps_ref"
+
+[build]
+entry = "src/main.przp"
+
+[deps]
+foo = "1.0.0; rm -rf /"

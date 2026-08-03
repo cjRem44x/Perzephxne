@@ -1,0 +1,8 @@
+[package]
+name = "deps_no_lock"
+
+[build]
+entry = "src/main.przp"
+
+[deps]
+foo = "1.0.0"

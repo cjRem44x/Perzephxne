@@ -24,6 +24,7 @@ import(gfx   = "std/graphics")
 import(gdev  = "std/gdev")
 import(audio = "std/audio")
 import(math  = "std/math")
+import(str   = "std/str")
 
 WIN_W: i32 = 640
 WIN_H: i32 = 480
@@ -159,6 +160,12 @@ fn spawn_fragment(asteroids: []Asteroid, idx: i32, pos: gfx.Vector2, base_ang: f
 
 fn main() -> i32 {
     win: gfx.Window = gfx.Window.open("Astro Blaster", WIN_W, WIN_H)
+    # Resizing stretches the same 640x480 logical playfield to fill the
+    # window (poll_events re-runs the ortho projection on every resize) —
+    # fine within a reasonable range, not at the extremes, so bound it
+    # rather than leave it (X11's own default) unconstrained.
+    win.set_min_size(WIN_W / 2, WIN_H / 2)
+    win.set_max_size(WIN_W * 2, WIN_H * 2)
 
     ast_tex_big, big_err: !gfx.Texture = gfx.Texture.load("src/assets/asteroid_big.png")
     ast_tex_med, med_err: !gfx.Texture = gfx.Texture.load("src/assets/asteroid_med.png")
@@ -187,7 +194,17 @@ fn main() -> i32 {
     boom_snd, boom_err: !audio.Sound = audio.decode_mp3("src/assets/explosion.mp3")
     out: audio.AudioOutput = undef
     audio_ok: bool = false
-    if fire_err == 0 && boom_err == 0 {
+    # --no-audio: temporary diagnostic toggle for isolating a reported
+    # frame stutter from audio entirely — skips open_output and runs
+    # exactly the "no sound hardware" code path below on purpose. An
+    # actual argv flag (not an env var) so it works the same way
+    # regardless of shell/launcher — run with `przp run --no-audio`.
+    args: []str = @args
+    no_audio: bool = false
+    for i => 0..args.len {
+        if str.eq(args[i], "--no-audio") { no_audio = true }
+    }
+    if fire_err == 0 && boom_err == 0 && !no_audio {
         o, out_err: !audio.AudioOutput = audio.open_output("default", fire_snd.rate, fire_snd.channels)
         if out_err == 0 {
             out = o
@@ -238,6 +255,18 @@ fn main() -> i32 {
     while frame < MAX_FRAMES && !win.should_close() && !game_over {
         gdev.begin_drawing()
         dt: f32 = gdev.get_frame_time()
+        # Temporary diagnostic: chasing a reported stutter that gets worse
+        # holding fire down. Audio (moved to a background thread) and
+        # stdout/terminal backpressure have both been ruled out by testing
+        # — this logs exactly which frame spikes and what was active at
+        # that moment, to pin down the real cause instead of guessing again.
+        if dt > 0.033 {
+            n_bullets: i32 = 0
+            for bi => 0..MAX_BULLETS { if bullets[bi].active { n_bullets += 1 } }
+            n_asteroids: i32 = 0
+            for ai => 0..MAX_ASTEROIDS { if asteroids[ai].active { n_asteroids += 1 } }
+            @pf("[STALL] frame={frame} dt={dt}s bullets={n_bullets} asteroids={n_asteroids}\n")
+        }
         if dt <= 0.0 { dt = 1.0 / 60.0 }
 
         if gfx.is_key_down(gfx.Key.Left)  { ship.angle -= SHIP_ROT_SPEED * dt }

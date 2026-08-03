@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-5a1a40a1.js";
+            window.path_to_searchindex_js = "searchindex-c7a161d8.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-4e58bc13.js"></script>
@@ -192,7 +192,9 @@
 <tr><td><code>przp build --release</code></td><td>Optimized release build</td></tr>
 <tr><td><code>przp run</code></td><td>Build (if needed) and run — see <a href="#incremental-run">Incremental <code>run</code></a></td></tr>
 <tr><td><code>przp run --release</code></td><td>Build (if needed) and run with optimizations</td></tr>
+<tr><td><code>przp run &lt;args&gt;</code></td><td>Any argument other than <code>--release</code> is passed straight through to the program’s own <code>argv</code> (see <code>@args</code> in <a href="./globals.html">Globals</a>) — e.g. <code>przp run --no-audio</code></td></tr>
 <tr><td><code>przp test [&lt;file&gt;] [&lt;name&gt;]</code></td><td>Run <code>test "..." { }</code> blocks — see <a href="./testing.html">Testing</a></td></tr>
+<tr><td><code>przp add &lt;name&gt;[@ref]</code></td><td>Fetch a dependency and record it in <code>przp.toml</code>/<code>przp.lock</code> — see <a href="#dependencies">Dependencies</a></td></tr>
 <tr><td><code>przp sac &lt;files&gt; -o=Name</code></td><td>Stand-Alone Compiler — compile one or more files without a project</td></tr>
 <tr><td><code>przp sac &lt;files&gt; --release -o=Name</code></td><td>Stand-alone optimized build</td></tr>
 </tbody>
@@ -225,7 +227,7 @@ entry = "src/main.przp"
 link  = ["X11", "GL"]
 
 [deps]
-# reserved for future package dependencies
+foo = "1.2.0"
 </code></pre>
 <p>Supported fields:</p>
 <div class="table-wrapper">
@@ -238,11 +240,28 @@ link  = ["X11", "GL"]
 <tr><td><code>[package].version</code></td><td style="text-align: right">no</td><td>Package version metadata.</td></tr>
 <tr><td><code>[build].entry</code></td><td style="text-align: right">no</td><td>Entry source file. Defaults to <code>src/main.przp</code>.</td></tr>
 <tr><td><code>[build].link</code></td><td style="text-align: right">no</td><td>Array of system library names to link against — each entry becomes a <code>-l&lt;name&gt;</code> flag on the final link step (<code>link = ["X11", "GL"]</code> links <code>-lX11 -lGL</code>). For linking against <code>extern fn</code> declarations backed by libraries the OS already ships (no bundled <code>.so</code>/<code>.a</code> of your own).</td></tr>
+<tr><td><code>[deps].&lt;name&gt;</code></td><td style="text-align: right">no</td><td>A git tag, branch, or commit for the dependency named <code>&lt;name&gt;</code> — see <a href="#dependencies">Dependencies</a>.</td></tr>
 </tbody>
 </table>
 </div>
-<p><code>[deps]</code> is accepted as a reserved section, but the current toolchain does not download or resolve packages. Standard library modules are shipped with the compiler and imported with paths such as <code>"std/io"</code>.</p>
-<p>Only <code>[package]</code>, <code>[build]</code>, and <code>[deps]</code> are recognized. Manifest values are quoted strings (or, for <code>[build].link</code>, an array of quoted strings on one line); malformed assignments, unknown sections, and invalid string/array values are reported as <code>przp.toml:line: error: ...</code>.</p>
+<p>Only <code>[package]</code>, <code>[build]</code>, and <code>[deps]</code> are recognized. Manifest values are quoted strings (or, for <code>[build].link</code>, an array of quoted strings on one line); malformed assignments, unknown sections, and invalid string/array values are reported as <code>przp.toml:line: error: ...</code>. A <code>[deps]</code> key must be a plain identifier (letters, digits, underscore, not starting with a digit) and its value a valid git ref (letters, digits, <code>.</code>, <code>_</code>, <code>-</code>, <code>/</code>) — both are checked at parse time, not just by <code>przp add</code>, since <code>przp.toml</code>/<code>przp.lock</code> can arrive from someone else’s project.</p>
+<h2 id="dependencies"><a class="header" href="#dependencies">Dependencies</a></h2>
+<p>Dependencies are plain GitHub repos, not a hosted package index: a dependency named <code>foo</code> is <code>github.com/cjRem44x/przp_dep_foo</code> — a repo whose own root holds <code>foo.przp</code> (its root module, named after itself, the same convention <code>std/audio</code> follows for <code>std/audio.przp</code>). There’s no semver range resolution — <code>[deps]</code>’s value is a git tag, branch, or commit exactly, resolved to one exact commit the moment <code>przp add</code> runs:</p>
+<pre><code class="language-sh">przp add foo           # default branch, pinned to its current HEAD commit
+przp add foo@1.2.0      # a tag (or branch, or commit) instead
+</code></pre>
+<p>This writes two files:</p>
+<ul>
+<li><strong><code>przp.toml</code></strong>’s <code>[deps]</code> gets the human-facing ref you asked for (<code>foo = "1.2.0"</code>, or the default branch’s own name if you didn’t give one) — meant to be read and hand-edited like the rest of the manifest.</li>
+<li><strong><code>przp.lock</code></strong> gets the exact commit that ref resolved to (<code>foo = "9f2a1c7e..."</code>) — generated, never hand-edited; this is what actually gets checked out. Commit it alongside <code>przp.toml</code> so anyone else building the project (including CI) gets the identical dependency code, the same role <code>Cargo.lock</code> plays for a Cargo binary crate.</li>
+</ul>
+<p><code>przp build</code>/<code>run</code>/<code>test</code> all call the same dependency-resolution step before compiling: if a <code>[deps]</code> entry’s pinned commit (from <code>przp.lock</code>) isn’t checked out yet under <code>.przp/deps/&lt;name&gt;/</code> — e.g. right after cloning <em>someone else’s</em> project, which commits <code>przp.toml</code>/<code>przp.lock</code> but not <code>.przp/deps/</code> (see the <code>.gitignore</code> <code>przp init</code> writes) — it’s fetched automatically, the same way <code>cargo build</code> fetches from <code>Cargo.lock</code> without a separate fetch step. A <code>[deps]</code> entry with no matching <code>przp.lock</code> entry is a hard error telling you to run <code>przp add &lt;name&gt;</code>, not a silent re-resolve — pinning to one exact commit is the whole point of the split between the two files.</p>
+<p>Import a dependency with a <code>dep/</code> path, parallel to <code>std/</code>’s own prefix:</p>
+<pre><code class="language-przp">import(foo = "dep/foo")       # foo's own root module
+import(sub = "dep/foo/sub")   # a submodule inside it, the same way "std/graphics/gl" works
+</code></pre>
+<p>The explicit <code>dep/</code> sigil (rather than a bare <code>import(foo = "foo")</code> silently consulting <code>[deps]</code>) keeps a dependency import unambiguous with an ordinary project-relative import of a same-named local file or directory.</p>
+<p>Explicit non-goals for now: no semver ranges/version resolution (an exact ref only), no global cache (each project gets its own <code>.przp/deps/</code>), no authentication (public repos only), and no <code>przp update</code> command yet (re-run <code>przp add &lt;name&gt;</code> to move to a newer commit on the same ref).</p>
 <h2 id="outputs"><a class="header" href="#outputs">Outputs</a></h2>
 <p>Project builds write the binary to the current project directory:</p>
 <pre><code>przp build          # ./MyProject, using [package].name
@@ -258,6 +277,7 @@ przp run            # builds ./MyProject, then runs it
 <li>deleting the binary forces a rebuild</li>
 </ul>
 <p>This tracking lives in a <code>&lt;binary&gt;.d</code> sidecar file written next to the binary after each successful build (a plain list of the files that build depended on) — safe to delete at any time, since its absence just means the next <code>run</code> rebuilds unconditionally. <code>przp build</code> always compiles unconditionally; the skip-if-fresh behavior is <code>run</code>-only, matching its “get me a running program” purpose rather than <code>build</code>’s “give me a fresh binary” one.</p>
+<p><code>przp run</code> execs the built binary directly (<code>fork</code>+<code>execv</code>, no shell in between) rather than shelling out through <code>system()</code>, so any pass-through arguments reach the program’s <code>argv</code> exactly as typed — no shell re-parsing of spaces, quotes, or glob characters along the way.</p>
 <h2 id="quick-start"><a class="header" href="#quick-start">Quick Start</a></h2>
 <pre><code class="language-sh">przp init myproject
 cd myproject

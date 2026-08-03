@@ -1,0 +1,8 @@
+[package]
+name = "bad_manifest_deps_name"
+
+[build]
+entry = "src/main.przp"
+
+[deps]
+bad-name = "1.0.0"
