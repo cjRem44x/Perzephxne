@@ -1,0 +1,9 @@
+n_frames=3 cur_frame=0 playing=1
+call 0: cur_frame=2 want=2 playing=1
+call 1: cur_frame=2 want=2 playing=1
+call 2: cur_frame=2 want=2 playing=1
+call 3: cur_frame=1 want=1 playing=1
+call 4: cur_frame=1 want=1 playing=1
+(1,0): 255,0,0 ok=1
+(0,0): 0,200,0 ok=1
+non-looping: cur_frame=2 playing=0

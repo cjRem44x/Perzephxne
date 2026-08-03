@@ -1,0 +1,56 @@
+# std/audio's playback controls (pause_output/resume_output/stop_output/
+# set_volume) — whole-output, not per-sound (see AudioCtrl's own doc
+# comment in compiler/std/audio.przp: no software mixing, one shared
+# ALSA PCM stream, so there's no way to target "just this one sound").
+# Runs against ALSA's "null" device, same as std_audio.przp.
+#
+# Timing-sensitive by nature (these are concurrency controls over a
+# background thread) but every sleep here is generous relative to what
+# it's waiting on — the assertions themselves (is_paused's return value,
+# a queued frame count, no hang on close) don't depend on exact timing,
+# just "enough time for the worker thread to have acted."
+
+import(audio = "std/audio")
+import(os    = "std/os")
+
+fn main() -> i32 {
+    s, err: !audio.Sound = audio.decode_mp3("tests/run/audio_fixtures/tone.mp3")
+    if err != 0 { @pf("decode failed: {err}\n") ret 1 }
+
+    out, oerr: !audio.AudioOutput = audio.open_output("null", s.rate, s.channels)
+    if oerr != 0 { @pf("open failed: {oerr}\n") ret 1 }
+
+    @pf("is_paused (initial) = {audio.is_paused(out)}\n")
+
+    audio.pause_output(out)
+    @pf("is_paused (after pause) = {audio.is_paused(out)}\n")
+    w1: i64 = audio.play_sound(out, s)
+    @pf("queued while paused: {w1}\n")
+    os.sleep_ms(20)
+
+    audio.resume_output(out)
+    @pf("is_paused (after resume) = {audio.is_paused(out)}\n")
+    os.sleep_ms(50)
+
+    audio.set_volume(out, 0.5)
+    w2: i64 = audio.play_sound(out, s)
+    @pf("queued at half volume: {w2}\n")
+    os.sleep_ms(20)
+
+    audio.stop_output(out)
+    @pf("stopped\n")
+
+    w3: i64 = audio.play_sound(out, s)
+    @pf("queued after stop: {w3}\n")
+    os.sleep_ms(50)
+
+    # Closing while paused must not hang waiting for a resume that's
+    # never coming (audio_worker's exit check requires !paused, and
+    # close_output clears paused itself for exactly this reason).
+    audio.pause_output(out)
+    audio.close_output(out)
+    @pf("closed cleanly while paused\n")
+
+    audio.free_sound(s)
+    ret 0
+}

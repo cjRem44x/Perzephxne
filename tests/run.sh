@@ -1027,7 +1027,7 @@ for src in "$ROOT"/tests/run/*.przp; do
     # std_image_gif needs -lz (std/image's uncompress() extern) — run via
     # run_lz_case below instead of the plain no-extra-links case here.
     case "$(basename "$src")" in
-        std_image_gif.przp|std_audio.przp) continue ;;
+        std_image_gif.przp|std_audio.przp|std_audio_control.przp) continue ;;
     esac
     run_success_case "$src"
 done
@@ -1040,6 +1040,7 @@ fi
 
 if ldconfig -p 2>/dev/null | grep -q "libasound\.so" && ldconfig -p 2>/dev/null | grep -q "libmpg123\.so"; then
     run_audio_case "$ROOT/tests/run/std_audio.przp"
+    run_audio_case "$ROOT/tests/run/std_audio_control.przp"
 else
     printf 'skip  std_audio: libasound/libmpg123 not installed\n'
 fi
