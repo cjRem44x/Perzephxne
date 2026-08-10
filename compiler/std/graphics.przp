@@ -318,9 +318,107 @@ fn draw_texture(t: Texture, x: f32, y: f32) {
 # must stay within the texture's own (t.w, t.h) bounds; nothing here
 # clips or wraps an out-of-range source.
 fn draw_texture_rec(t: Texture, source: Rectangle, pos: Vector2) {
+    draw_texture_rec_tinted(t, source, pos, WHITE)
+}
+
+# draw_texture_rec_tinted: draw_texture_rec, scaled by `tint` (WHITE for
+# the same untinted result draw_texture_rec itself gives) — the building
+# block draw_text uses to color a font atlas's white-on-transparent
+# glyphs, but generally useful anywhere a texture needs recoloring
+# (flash-white-on-hit, a colored UI icon from a white-only atlas, ...).
+fn draw_texture_rec_tinted(t: Texture, source: Rectangle, pos: Vector2, tint: Color) {
     u0: f32 = source.x / @f32(t.w)
     v0: f32 = source.y / @f32(t.h)
     u1: f32 = (source.x + source.w) / @f32(t.w)
     v1: f32 = (source.y + source.h) / @f32(t.h)
-    gl.draw_textured_rect_uv(t.id, pos.x, pos.y, source.w, source.h, u0, v0, u1, v1)
+    gl.draw_textured_rect_uv(t.id, pos.x, pos.y, source.w, source.h, u0, v0, u1, v1,
+        @f32(tint.r) / 255.0, @f32(tint.g) / 255.0, @f32(tint.b) / 255.0, @f32(tint.a) / 255.0)
+}
+
+# ── Bitmap fonts ─────────────────────────────────────────────────────────────
+#
+# There is no bundled default font, deliberately — every asset in this
+# codebase (PNG, GIF, MP3) is always caller-supplied, loaded from a path
+# the caller names, never embedded in the compiler/stdlib itself. A
+# built-in default font would be the first exception to that, and would
+# need real new machinery (exposing the compiler's own stdlib-root
+# resolution to running programs, or embedding binary data directly in
+# a .przp source file) that nothing else here needs. So: `Font.load`
+# your own atlas, the same as `Texture.load`/`decode_mp3` already work.
+#
+# The atlas itself must be a monospace grid: every glyph cell the same
+# fixed (glyph_w, glyph_h) size, laid out left-to-right/top-to-bottom
+# starting at `first_char`'s own code point (typically 32, space) —
+# `cols` is derived from the texture's own width, so the atlas's pixel
+# width must be an exact multiple of glyph_w. For color tinting
+# (draw_text's own `c` parameter) to work correctly via GL's texture-
+# modulate blending, glyphs should be white (or grayscale) on a
+# transparent background — a colored atlas still draws, just always in
+# its own colors, ignoring `c`. tests/gl/draw_text's own fixture
+# (generated via Python/Pillow from a real system font, for testing
+# only — see its CREDITS.md) is exactly this shape and a reasonable
+# template for building your own.
+struct Font {
+    texture:    Texture,
+    glyph_w:    i32,
+    glyph_h:    i32,
+    first_char: i32,
+    cols:       i32,
+}
+
+impl Font {
+    fn load(path: str, glyph_w: i32, glyph_h: i32, first_char: i32) -> !Font {
+        t, err: !Texture = Texture.load(path)
+        if err != 0 { ret @err(err) }
+        cols: i32 = t.w / glyph_w
+        ret @ok(Font{.texture=t, .glyph_w=glyph_w, .glyph_h=glyph_h, .first_char=first_char, .cols=cols})
+    }
+
+    fn unload(self) {
+        self.texture.unload()
+    }
+}
+
+# draw_text: draw `s` starting at (x, y), each glyph cell scaled by
+# `scale` (1.0 = the atlas's own glyph_w/glyph_h size) and tinted by
+# `c`. A byte outside `f`'s covered range (before `first_char`, or past
+# the atlas's last populated cell) draws as a gap — advances the cursor
+# like any other character without drawing anything, rather than
+# wrapping to a garbage cell or erroring. No line wrapping, kerning, or
+# proportional spacing — this is a monospace bitmap font, not text
+# layout (see book/graphics.md's guix section for where real layout is
+# scoped).
+fn draw_text(f: Font, s: str, x: f32, y: f32, scale: f32, c: Color) {
+    # Goes straight to gl.draw_textured_rect_uv rather than through
+    # draw_texture_rec_tinted: that helper always draws at the source
+    # rectangle's own size, but a scaled glyph needs a *destination*
+    # size independent of the atlas cell's actual pixel size — already
+    # exactly how gl.draw_textured_rect_uv's own (w, h) vs (u0,v0,u1,v1)
+    # parameters are split, so no new gl-layer function is needed, just
+    # not routing through the higher-level helper that collapses them.
+    n_cells: i32 = (f.texture.h / f.glyph_h) * f.cols
+    gw: f32 = @f32(f.glyph_w) * scale
+    gh: f32 = @f32(f.glyph_h) * scale
+    tint_r: f32 = @f32(c.r) / 255.0
+    tint_g: f32 = @f32(c.g) / 255.0
+    tint_b: f32 = @f32(c.b) / 255.0
+    tint_a: f32 = @f32(c.a) / 255.0
+    i: usize = 0
+    cx: f32 = x
+    while i < s.len {
+        ch: u8 = (s.data + i).*
+        idx: i32 = @i32(ch) - f.first_char
+        if idx >= 0 && idx < n_cells {
+            col: i32 = idx % f.cols
+            row: i32 = idx / f.cols
+            u0: f32 = @f32(col * f.glyph_w) / @f32(f.texture.w)
+            v0: f32 = @f32(row * f.glyph_h) / @f32(f.texture.h)
+            u1: f32 = @f32(col * f.glyph_w + f.glyph_w) / @f32(f.texture.w)
+            v1: f32 = @f32(row * f.glyph_h + f.glyph_h) / @f32(f.texture.h)
+            gl.draw_textured_rect_uv(f.texture.id, cx, y, gw, gh, u0, v0, u1, v1,
+                tint_r, tint_g, tint_b, tint_a)
+        }
+        cx += gw
+        i += 1
+    }
 }

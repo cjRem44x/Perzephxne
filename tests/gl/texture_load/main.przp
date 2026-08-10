@@ -14,6 +14,17 @@
 # draw_texture draws at the texture's native resolution (no stretching),
 # so sampling at screen (x, window_height-1-y) reads texel (x, y) of
 # whichever texture was drawn at (0, 0) most recently.
+#
+# fixture_rgba's own checks below are its raw decoded pixel formula
+# alpha-blended over whatever was already in the framebuffer at that
+# screen position — fixture.png's own still-visible pixel where the two
+# textures' coordinate ranges overlap (0,0 and 3,2 — fixture.png is
+# 8x6), or the black clear color where they don't (10,5 — past
+# fixture.png's width of 8). Alpha blending (GL_SRC_ALPHA/
+# GL_ONE_MINUS_SRC_ALPHA) is enabled globally in gl.przp's
+# create_context, so this composites rather than overwrites the moment
+# fixture_rgba's own alpha channel (a=200+x-y per its formula) is
+# anything less than fully opaque.
 
 import(gfx = "std/graphics")
 import(gl  = "std/graphics/gl")
@@ -53,9 +64,9 @@ fn main() -> i32 {
 
     gfx.draw_texture(t2, 0.0, 0.0)
 
-    check(0, 0, 0u8, 0u8, 255u8)
-    check(3, 2, 133u8, 11u8, 236u8)
-    check(10, 5, 169u8, 105u8, 195u8)
+    check(0, 0, 0u8, 0u8, 200u8)
+    check(3, 2, 111u8, 13u8, 192u8)
+    check(10, 5, 136u8, 84u8, 157u8)
 
     t1.unload()
     t2.unload()
