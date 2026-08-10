@@ -1,0 +1,33 @@
+# regression: a struct-field expression (e.g. `ship.vel`, EXPR_FIELD) or
+# an index expression (`arr[0]`, EXPR_INDEX) passed as an ordinary
+# (non-self) argument to a method call used to be passed as a raw,
+# unloaded pointer instead of the aggregate's actual value — codegen's
+# method-call argument lowering allowlisted only EXPR_IDENT/
+# EXPR_STRUCT_LIT as "needs loading from the pointer convention," so
+# every other pointer-returning expression kind fell through unloaded.
+# `other.add(ship.vel)` failed to compile with a raw LLVM type mismatch
+# ('ptr' where the struct's value type was expected). Found while wiring
+# up Vector2 arithmetic in std/graphics for std/gdev. Fixed by matching
+# the already-correct plain-function-call argument path a few lines
+# below it in codegen.c, which excludes only EXPR_CALL (already a value)
+# rather than allowlisting specific pointer-returning kinds. Lives here
+# (not tests/run) since importing std/graphics needs libX11/libGL/libz
+# at link time, same as every other tests/gl case.
+
+import(gfx = "std/graphics")
+
+struct Ship { pos: gfx.Vector2, vel: gfx.Vector2 }
+
+fn main() -> i32 {
+    ship: Ship = Ship{.pos=gfx.Vector2{.x=1.0, .y=2.0}, .vel=gfx.Vector2{.x=3.0, .y=4.0}}
+    other: gfx.Vector2 = gfx.Vector2{.x=10.0, .y=20.0}
+
+    r: gfx.Vector2 = other.add(ship.vel)
+    @pf("field arg: {r.x} {r.y}\n")
+
+    arr: [1]gfx.Vector2 = [gfx.Vector2{.x=100.0, .y=200.0}]
+    r2: gfx.Vector2 = other.add(arr[0])
+    @pf("index arg: {r2.x} {r2.y}\n")
+
+    ret 0
+}

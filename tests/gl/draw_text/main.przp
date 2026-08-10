@@ -1,0 +1,60 @@
+# std/graphics's Font/draw_text end to end: load a real monospace bitmap
+# font atlas (see CREDITS.md — generated via Python/Pillow from a real
+# system font, for this test only; std/graphics has no bundled default
+# font, by design), draw a tinted glyph at two different scales, and
+# read back pixels to prove both the *right* glyph is selected and
+# tinting/scaling/transparency-compositing all work correctly — not
+# just that draw_text runs without crashing.
+#
+# font_atlas.png: 16 cols x 6 rows of 10x16 cells, ASCII 32 (space)
+# onward. The letter 'I' sits at atlas cell (col=9, row=2) — verified
+# directly against the PNG while writing this test: offset (5,12)
+# within that 10x16 cell is a fully opaque (alpha=255) white pixel (the
+# vertical stroke), while offset (0,0) is fully transparent (alpha=0,
+# outside any stroke) — the two points these checks key off.
+
+import(gfx = "std/graphics")
+import(gl  = "std/graphics/gl")
+
+WIN_H: i32 = 40
+
+fn check(x: i32, y: i32, want_r: u8, want_g: u8, want_b: u8) {
+    pixel: [4]u8 = undef
+    gl.glReadPixels(x, WIN_H - 1 - y, 1, 1, gl.GL_RGBA, gl.GL_UNSIGNED_BYTE, &pixel[0])
+    ok: bool = pixel[0] == want_r && pixel[1] == want_g && pixel[2] == want_b
+    @pf("({x},{y}): {pixel[0]},{pixel[1]},{pixel[2]} ok={ok}\n")
+}
+
+fn main() -> i32 {
+    win: gfx.Window = gfx.Window.open("draw_text test", 64, 40)
+
+    font, err: !gfx.Font = gfx.Font.load("tests/gl/draw_text/font_atlas.png", 10, 16, 32)
+    if err != 0 { @pf("font load failed: {err}\n") ret 1 }
+    @pf("glyph_w={font.glyph_w} glyph_h={font.glyph_h} cols={font.cols}\n")
+
+    gfx.begin_drawing()
+    gfx.clear_background(gfx.BLUE)
+
+    # scale=1.0, tinted red, drawn at (0,0). RED/BLUE are raylib-style
+    # named colors, not pure primaries — RED{230,41,55}, BLUE{0,121,241}
+    # (compiler/std/graphics.przp) — so those, not (255,0,0)/(0,0,255),
+    # are what a fully-opaque tinted pixel / an untouched background
+    # pixel actually read back as.
+    gfx.draw_text(font, "I", 0.0, 0.0, 1.0, gfx.RED)
+    check(5, 12, 230u8, 41u8, 55u8)     # the 'I' stroke: fully opaque -> pure tint, no blend
+    check(0, 0, 0u8, 121u8, 241u8)      # a transparent corner of the same cell: background (blue) untouched
+
+    # scale=2.0, tinted red, drawn at (20,0) — the same relative offset
+    # within the cell (5/10, 12/16) should land at (20+10, 0+24) on
+    # screen once the whole glyph is doubled in size, GL_NEAREST
+    # sampling the identical source texel either way.
+    gfx.draw_text(font, "I", 20.0, 0.0, 2.0, gfx.RED)
+    check(30, 24, 230u8, 41u8, 55u8)
+    check(20, 0, 0u8, 121u8, 241u8)
+
+    gfx.end_drawing()
+
+    font.unload()
+    win.close()
+    ret 0
+}

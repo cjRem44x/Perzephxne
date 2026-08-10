@@ -89,12 +89,6 @@ struct Star {
     r:   f32,
 }
 
-fn wrapf(v: f32, max: f32) -> f32 {
-    if v < 0.0 { ret v + max }
-    if v >= max { ret v - max }
-    ret v
-}
-
 # spawn_wave: (re)activates the first `n_active` asteroid slots at random
 # screen-edge positions, aimed roughly toward the center with some angular
 # jitter so a wave doesn't fly in as one predictable line; the rest of the
@@ -245,10 +239,12 @@ fn main() -> i32 {
 
     score: i32 = 0
     lives: i32 = START_LIVES
-    fire_cd: f32 = 0.0
-    shake: f32 = 0.0
+    fire_timer: gdev.Timer = gdev.Timer.new(0.0)
     frame: i32 = 0
     game_over: bool = false
+
+    screen_center: gfx.Vector2 = gfx.Vector2{.x=FWIN_W / 2.0, .y=FWIN_H / 2.0}
+    cam: gdev.Camera2D = gdev.Camera2D{.offset=screen_center, .target=screen_center, .zoom=1.0}
 
     gdev.set_target_fps(60)
 
@@ -272,25 +268,26 @@ fn main() -> i32 {
         if gfx.is_key_down(gfx.Key.Left)  { ship.angle -= SHIP_ROT_SPEED * dt }
         if gfx.is_key_down(gfx.Key.Right) { ship.angle += SHIP_ROT_SPEED * dt }
         if gfx.is_key_down(gfx.Key.Up) {
-            ship.vel.x += @f32(math.cos(@f64(ship.angle))) * SHIP_THRUST * dt
-            ship.vel.y += @f32(math.sin(@f64(ship.angle))) * SHIP_THRUST * dt
+            thrust: gfx.Vector2 = gfx.Vector2.from_angle(ship.angle, SHIP_THRUST * dt)
+            ship.vel = ship.vel.add(thrust)
         }
-        drag: f32 = @f32(math.exp(@f64(-SHIP_DRAG * dt)))
-        ship.vel.x *= drag
-        ship.vel.y *= drag
-        ship.pos.x = wrapf(ship.pos.x + ship.vel.x * dt, FWIN_W)
-        ship.pos.y = wrapf(ship.pos.y + ship.vel.y * dt, FWIN_H)
+        drag: f32 = gdev.damp(1.0, SHIP_DRAG, dt)
+        ship.vel = ship.vel.scale(drag)
+        ship_move: gfx.Vector2 = ship.vel.scale(dt)
+        ship_newpos: gfx.Vector2 = ship.pos.add(ship_move)
+        ship.pos = gdev.wrap_vec2(ship_newpos, FWIN_W, FWIN_H)
         if ship.invuln > 0.0 { ship.invuln -= dt }
 
-        fire_cd -= dt
-        if gfx.is_key_down(gfx.Key.Space) && fire_cd <= 0.0 {
+        fire_timer.tick(dt)
+        if gfx.is_key_down(gfx.Key.Space) && fire_timer.ready() {
             for i => 0..MAX_BULLETS {
                 if !bullets[i].active {
-                    fire_cd = FIRE_COOLDOWN
-                    fx: f32 = @f32(math.cos(@f64(ship.angle)))
-                    fy: f32 = @f32(math.sin(@f64(ship.angle)))
-                    bullets[i].pos = gfx.Vector2{.x=ship.pos.x + fx * SHIP_RADIUS, .y=ship.pos.y + fy * SHIP_RADIUS}
-                    bullets[i].vel = gfx.Vector2{.x=fx * BULLET_SPEED + ship.vel.x, .y=fy * BULLET_SPEED + ship.vel.y}
+                    fire_timer.reset(FIRE_COOLDOWN)
+                    dir: gfx.Vector2 = gfx.Vector2.from_angle(ship.angle, 1.0)
+                    nose_off: gfx.Vector2 = dir.scale(SHIP_RADIUS)
+                    bullets[i].pos = ship.pos.add(nose_off)
+                    bullet_dir_vel: gfx.Vector2 = dir.scale(BULLET_SPEED)
+                    bullets[i].vel = bullet_dir_vel.add(ship.vel)
                     bullets[i].life = BULLET_LIFE
                     bullets[i].active = true
                     if audio_ok { audio.play_sound(out, fire_snd) }
@@ -306,14 +303,16 @@ fn main() -> i32 {
                 bullets[i].active = false
                 continue
             }
-            bullets[i].pos.x = wrapf(bullets[i].pos.x + bullets[i].vel.x * dt, FWIN_W)
-            bullets[i].pos.y = wrapf(bullets[i].pos.y + bullets[i].vel.y * dt, FWIN_H)
+            b_move: gfx.Vector2 = bullets[i].vel.scale(dt)
+            b_newpos: gfx.Vector2 = bullets[i].pos.add(b_move)
+            bullets[i].pos = gdev.wrap_vec2(b_newpos, FWIN_W, FWIN_H)
         }
 
         for i => 0..MAX_ASTEROIDS {
             if !asteroids[i].active { continue }
-            asteroids[i].pos.x = wrapf(asteroids[i].pos.x + asteroids[i].vel.x * dt, FWIN_W)
-            asteroids[i].pos.y = wrapf(asteroids[i].pos.y + asteroids[i].vel.y * dt, FWIN_H)
+            a_move: gfx.Vector2 = asteroids[i].vel.scale(dt)
+            a_newpos: gfx.Vector2 = asteroids[i].pos.add(a_move)
+            asteroids[i].pos = gdev.wrap_vec2(a_newpos, FWIN_W, FWIN_H)
         }
 
         for bi => 0..MAX_BULLETS {
@@ -327,7 +326,7 @@ fn main() -> i32 {
                     hit_ang: f64 = math.atan2(@f64(asteroids[ai].vel.y), @f64(asteroids[ai].vel.x))
                     asteroids[ai].active = false
                     score += ASTEROID_SCORE[asize]
-                    shake = 6.0
+                    cam.shake(6.0)
                     if audio_ok { audio.play_sound(out, boom_snd) }
                     @pf("Asteroid destroyed! Score: {score}  Lives: {lives}\n")
                     if asize < 2 {
@@ -344,7 +343,7 @@ fn main() -> i32 {
                 if !asteroids[ai].active { continue }
                 if gdev.check_collision_circles(ship.pos, SHIP_RADIUS, asteroids[ai].pos, ASTEROID_RADIUS[asteroids[ai].size]) {
                     lives -= 1
-                    shake = 10.0
+                    cam.shake(10.0)
                     @pf("Ship hit! Lives remaining: {lives}\n")
                     ship.pos = gfx.Vector2{.x=FWIN_W / 2.0, .y=FWIN_H / 2.0}
                     ship.vel = gfx.Vector2{.x=0.0, .y=0.0}
@@ -365,15 +364,8 @@ fn main() -> i32 {
             @pf("Wave {wave}!\n")
         }
 
-        shake *= @f32(math.exp(@f64(-8.0 * dt)))
-        if shake < 0.05 { shake = 0.0 }
-        jx: f64 = @rng(f64, -1.0, 1.0) * @f64(shake)
-        jy: f64 = @rng(f64, -1.0, 1.0) * @f64(shake)
-        cam: gdev.Camera2D = gdev.Camera2D{
-            .offset=gfx.Vector2{.x=FWIN_W / 2.0, .y=FWIN_H / 2.0},
-            .target=gfx.Vector2{.x=FWIN_W / 2.0 + @f32(jx), .y=FWIN_H / 2.0 + @f32(jy)},
-            .zoom=1.0,
-        }
+        shake_off: gfx.Vector2 = cam.update_shake(dt)
+        cam.target = screen_center.add(shake_off)
 
         gfx.clear_background(gfx.BLACK)
         gdev.begin_mode_2d(cam)
@@ -395,23 +387,23 @@ fn main() -> i32 {
 
         draw_ship: bool = true
         if ship.invuln > 0.0 {
-            draw_ship = @i32(ship.invuln * 10.0) % 2 == 0
+            draw_ship = gdev.blink(ship.invuln, 5.0)
         }
         if draw_ship {
-            nose_x: f32 = ship.pos.x + @f32(math.cos(@f64(ship.angle))) * SHIP_RADIUS
-            nose_y: f32 = ship.pos.y + @f32(math.sin(@f64(ship.angle))) * SHIP_RADIUS
-            bx1: f32 = ship.pos.x + @f32(math.cos(@f64(ship.angle) + 2.5)) * SHIP_RADIUS
-            by1: f32 = ship.pos.y + @f32(math.sin(@f64(ship.angle) + 2.5)) * SHIP_RADIUS
-            bx2: f32 = ship.pos.x + @f32(math.cos(@f64(ship.angle) - 2.5)) * SHIP_RADIUS
-            by2: f32 = ship.pos.y + @f32(math.sin(@f64(ship.angle) - 2.5)) * SHIP_RADIUS
-            gfx.draw_line(nose_x, nose_y, bx1, by1, gfx.GREEN)
-            gfx.draw_line(nose_x, nose_y, bx2, by2, gfx.GREEN)
-            gfx.draw_line(bx1, by1, bx2, by2, gfx.GREEN)
+            nose_dir:  gfx.Vector2 = gfx.Vector2.from_angle(ship.angle, SHIP_RADIUS)
+            wing1_dir: gfx.Vector2 = gfx.Vector2.from_angle(ship.angle + 2.5, SHIP_RADIUS)
+            wing2_dir: gfx.Vector2 = gfx.Vector2.from_angle(ship.angle - 2.5, SHIP_RADIUS)
+            nose:  gfx.Vector2 = ship.pos.add(nose_dir)
+            wing1: gfx.Vector2 = ship.pos.add(wing1_dir)
+            wing2: gfx.Vector2 = ship.pos.add(wing2_dir)
+            gfx.draw_line(nose.x, nose.y, wing1.x, wing1.y, gfx.GREEN)
+            gfx.draw_line(nose.x, nose.y, wing2.x, wing2.y, gfx.GREEN)
+            gfx.draw_line(wing1.x, wing1.y, wing2.x, wing2.y, gfx.GREEN)
             if gfx.is_key_down(gfx.Key.Up) {
-                flame_x: f32 = ship.pos.x - @f32(math.cos(@f64(ship.angle))) * SHIP_RADIUS * 1.4
-                flame_y: f32 = ship.pos.y - @f32(math.sin(@f64(ship.angle))) * SHIP_RADIUS * 1.4
-                gfx.draw_line(bx1, by1, flame_x, flame_y, gfx.YELLOW)
-                gfx.draw_line(bx2, by2, flame_x, flame_y, gfx.YELLOW)
+                flame_dir: gfx.Vector2 = gfx.Vector2.from_angle(ship.angle, SHIP_RADIUS * 1.4)
+                flame: gfx.Vector2 = ship.pos.sub(flame_dir)
+                gfx.draw_line(wing1.x, wing1.y, flame.x, flame.y, gfx.YELLOW)
+                gfx.draw_line(wing2.x, wing2.y, flame.x, flame.y, gfx.YELLOW)
             }
         }
 

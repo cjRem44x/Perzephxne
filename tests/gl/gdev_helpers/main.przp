@@ -1,0 +1,65 @@
+# Exercises the frame-rate-independent gdev helpers added alongside
+# Vector2 arithmetic in std/graphics: Vector2.add/sub/scale/dot/length/
+# normalize/from_angle, gdev.Timer, gdev.wrapf/wrap_vec2, gdev.damp,
+# gdev.blink, and Camera2D.shake/update_shake — all pure computation, no
+# actual drawing, but importing std/gdev still needs libX11/libGL/libz at
+# link time (same as every other tests/gl case), so it lives here rather
+# than tests/run.
+
+import(gfx  = "std/graphics")
+import(gdev = "std/gdev")
+
+fn main() -> i32 {
+    win: gfx.Window = gfx.Window.open("gdev helpers test", 320, 240)
+
+    a: gfx.Vector2 = gfx.Vector2{.x=3.0, .y=4.0}
+    b: gfx.Vector2 = gfx.Vector2{.x=1.0, .y=2.0}
+    s: gfx.Vector2 = a.add(b)
+    d: gfx.Vector2 = a.sub(b)
+    sc: gfx.Vector2 = a.scale(2.0)
+    @pf("add: {s.x} {s.y}\n")
+    @pf("sub: {d.x} {d.y}\n")
+    @pf("scale: {sc.x} {sc.y}\n")
+    @pf("dot: {a.dot(b)}\n")
+    @pf("length: {a.length()}\n")
+    n: gfx.Vector2 = a.normalize()
+    @pf("normalize: {n.x} {n.y}\n")
+    zn: gfx.Vector2 = gfx.Vector2{.x=0.0, .y=0.0}.normalize()
+    @pf("zero normalize: {zn.x} {zn.y}\n")
+    fa: gfx.Vector2 = gfx.Vector2.from_angle(0.0, 5.0)
+    @pf("from_angle(0): {fa.x} {fa.y}\n")
+
+    t: gdev.Timer = gdev.Timer.new(0.5)
+    t.tick(0.2)
+    @pf("timer ready@0.3: {t.ready()}\n")
+    t.tick(0.35)
+    @pf("timer ready@-0.05: {t.ready()}\n")
+    t.reset(1.0)
+    @pf("timer ready after reset: {t.ready()}\n")
+
+    @pf("wrapf: {gdev.wrapf(-5.0, 100.0)} {gdev.wrapf(105.0, 100.0)} {gdev.wrapf(50.0, 100.0)}\n")
+    wv: gfx.Vector2 = gdev.wrap_vec2(gfx.Vector2{.x=-5.0, .y=210.0}, 100.0, 200.0)
+    @pf("wrap_vec2: {wv.x} {wv.y}\n")
+
+    @pf("damp(dt=0): {gdev.damp(10.0, 8.0, 0.0)}\n")
+
+    @rng_seed(42)
+    cam: gdev.Camera2D = gdev.Camera2D{
+        .offset=gfx.Vector2{.x=0.0, .y=0.0},
+        .target=gfx.Vector2{.x=0.0, .y=0.0},
+        .zoom=1.0,
+    }
+    @pf("shake_mag default: {cam.shake_mag}\n")
+    cam.shake(6.0)
+    cam.shake(3.0)
+    @pf("shake_mag after shake(6, then 3 ignored): {cam.shake_mag}\n")
+    off: gfx.Vector2 = cam.update_shake(0.1)
+    @pf("shake_mag after update_shake(0.1): {cam.shake_mag}\n")
+    off_in_range: bool = off.x >= -6.0 && off.x <= 6.0 && off.y >= -6.0 && off.y <= 6.0
+    @pf("shake offset in range: {off_in_range}\n")
+
+    @pf("blink: {gdev.blink(0.0, 5.0)} {gdev.blink(0.1, 5.0)}\n")
+
+    win.close()
+    ret 0
+}

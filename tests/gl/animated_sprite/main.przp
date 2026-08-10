@@ -1,0 +1,73 @@
+# std/gdev's AnimatedSprite (GIF decode -> per-frame GL textures ->
+# timed playback) end to end, against tests/run/gif_fixtures/moving_dot.gif
+# — 8x8, 3 frames, delays 100/200/300ms, a red dot moving one pixel right
+# per frame over a persistent green background (see
+# tests/run/std_image_gif.przp, which verifies the raw decode this
+# builds on against Pillow's own decoder).
+#
+# The cur_frame sequence below (2, 2, 2, 1, 1 after five update(0.5)
+# calls) is exact hand-worked arithmetic, not just "whatever the code
+# happens to print": update accumulates dt into elapsed_ms and repeatedly
+# subtracts the current frame's own delay, advancing (and wrapping) each
+# time elapsed_ms is enough to cover it —
+#   call 1: elapsed=500 -> -100(f0)=400,cur=1 -> -200(f1)=200,cur=2 -> 200<300(f2) stop => cur=2, elapsed=200
+#   call 2: +500=700 -> -300(f2)=400,cur=0 -> -100(f0)=300,cur=1 -> -200(f1)=100,cur=2 -> 100<300 stop => cur=2, elapsed=100
+#   call 3: +500=600 -> -300=300,cur=0 -> -100=200,cur=1 -> -200=0,cur=2 -> 0<300 stop => cur=2, elapsed=0
+#   call 4: +500=500 -> -300=200,cur=0 -> -100=100,cur=1 -> 100<200 stop => cur=1, elapsed=100
+#   call 5: +500=600 -> -200=400,cur=2 -> 400<300? no, 400>=300 -> -300=100,cur=0 -> 100<100? no, >= -100=0,cur=1 -> 0<200 stop => cur=1, elapsed=0
+
+import(gfx  = "std/graphics")
+import(gdev = "std/gdev")
+import(gl   = "std/graphics/gl")
+
+WIN_H: i32 = 8
+
+fn check_pixel(x: i32, y: i32, want_r: u8, want_g: u8, want_b: u8) {
+    pixel: [4]u8 = undef
+    gl.glReadPixels(x, WIN_H - 1 - y, 1, 1, gl.GL_RGBA, gl.GL_UNSIGNED_BYTE, &pixel[0])
+    ok: bool = pixel[0] == want_r && pixel[1] == want_g && pixel[2] == want_b
+    @pf("({x},{y}): {pixel[0]},{pixel[1]},{pixel[2]} ok={ok}\n")
+}
+
+fn main() -> i32 {
+    win: gfx.Window = gfx.Window.open("animated sprite test", 8, 8)
+
+    anim, err: !gdev.AnimatedSprite = gdev.load_animated_sprite("tests/run/gif_fixtures/moving_dot.gif")
+    if err != 0 { @pf("load failed: {err}\n") ret 1 }
+    @pf("n_frames={anim.n_frames} cur_frame={anim.cur_frame} playing={anim.playing}\n")
+
+    want_cur: [5]usize = [2, 2, 2, 1, 1]
+    i: i32 = 0
+    while i < 5 {
+        anim.update(0.5)
+        @pf("call {i}: cur_frame={anim.cur_frame} want={want_cur[i]} playing={anim.playing}\n")
+        i += 1
+    }
+
+    # cur_frame is 1 here (dot at x=1) — draw it and read back both the
+    # dot and the untouched background to prove the *right* texture
+    # actually got bound and drawn, not just that the counters are right.
+    gfx.begin_drawing()
+    gfx.clear_background(gfx.BLACK)
+    anim.draw(gfx.Vector2{.x=0.0, .y=0.0})
+    check_pixel(1, 0, 255u8, 0u8, 0u8)
+    check_pixel(0, 0, 0u8, 200u8, 0u8)
+    gfx.end_drawing()
+
+    anim.unload()
+
+    # Non-looping: exhausts to the last frame and stays there.
+    anim2, err2: !gdev.AnimatedSprite = gdev.load_animated_sprite("tests/run/gif_fixtures/moving_dot.gif")
+    if err2 != 0 { @pf("load 2 failed: {err2}\n") ret 1 }
+    anim2.looping = false
+    j: i32 = 0
+    while j < 6 {
+        anim2.update(0.5)
+        j += 1
+    }
+    @pf("non-looping: cur_frame={anim2.cur_frame} playing={anim2.playing}\n")
+    anim2.unload()
+
+    win.close()
+    ret 0
+}

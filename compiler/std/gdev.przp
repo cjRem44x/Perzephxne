@@ -1,7 +1,8 @@
 # std/gdev — game-dev primitives built on std/graphics's shared 2D
 # foundation (see book/graphics.md's "Layer 3a"): frame timing for a real
-# game loop, sprite drawing from a texture atlas, a scrollable/zoomable
-# 2D camera, and axis-aligned collision checks.
+# game loop, frame-rate-independent motion helpers (damp/wrapf/Timer/
+# blink), sprite drawing from a texture atlas, a scrollable/zoomable
+# 2D camera with screen shake, and axis-aligned collision checks.
 #
 # Import alongside std/graphics, not instead of it — gdev only adds
 # game-specific pieces on top (Sprite, Camera2D, collision, frame
@@ -13,9 +14,11 @@
 # book/graphics.md's suggested build order) — there is nothing 3D here
 # by design, not by omission.
 
-import(gfx = "std/graphics")
-import(gl  = "std/graphics/gl")
-import(os  = "std/os")
+import(gfx   = "std/graphics")
+import(gl    = "std/graphics/gl")
+import(os    = "std/os")
+import(image = "std/image")
+import(math  = "std/math")
 
 # ── Frame timing ─────────────────────────────────────────────────────────────
 
@@ -66,6 +69,63 @@ fn end_drawing() {
     GDEV.last_frame_ms = os.monotonic_ms()
 }
 
+# ── Frame-rate-independent helpers ──────────────────────────────────────────
+
+# damp: exponentially decay `value` toward 0 at `rate` over `dt` seconds —
+# the frame-rate-independent way to write drag/friction/screen-shake decay
+# (`value *= exp(-rate * dt)`) without every caller repeating the same
+# f64-cast-for-exp, f32-cast-back dance. Higher `rate` decays faster.
+fn damp(value: f32, rate: f32, dt: f32) -> f32 {
+    ret value * @f32(math.exp(@f64(-rate * dt)))
+}
+
+# wrapf: wrap `v` into [0, max) — the Asteroids-style "off one edge,
+# on the other" screen wrap, applied independently per axis so a
+# rectangular play area (max differs for x vs y) works the same as a
+# square one.
+fn wrapf(v: f32, max: f32) -> f32 {
+    if v < 0.0 { ret v + max }
+    if v >= max { ret v - max }
+    ret v
+}
+
+# wrap_vec2: wrapf applied to both components of a position at once,
+# against a (w, h) play-area size — the common case of wrapping an
+# entity's whole position in one call instead of two wrapf calls.
+fn wrap_vec2(pos: gfx.Vector2, w: f32, h: f32) -> gfx.Vector2 {
+    ret gfx.Vector2{.x=wrapf(pos.x, w), .y=wrapf(pos.y, h)}
+}
+
+# Timer: a countdown, in seconds — the cooldown/lifetime pattern (fire
+# rate, bullet lifetime, invulnerability windows, ...) shows up in nearly
+# every game as `x -= dt; if x <= 0.0 {...}` repeated at every call site.
+# Timer.tick still leaves resetting to the caller (`reset`, e.g. right
+# after a cooldown-gated action fires) rather than auto-resetting, since
+# not every timer represents a repeating cooldown — a bullet's lifetime
+# counts down to expiry exactly once.
+struct Timer {
+    remaining: f32,
+}
+
+impl Timer {
+    fn new(secs: f32) -> Timer { ret Timer{.remaining=secs} }
+
+    fn tick(self: *Timer, dt: f32) { self.remaining -= dt }
+
+    fn ready(self) -> bool { ret self.remaining <= 0.0 }
+
+    fn reset(self: *Timer, secs: f32) { self.remaining = secs }
+}
+
+# blink: true for roughly half of every 1/hz-second interval as `t`
+# (typically a countdown like a Timer's own `remaining`, or invuln-style
+# elapsed time) advances — the on/off flicker for invulnerability
+# windows, flashing "get ready" text, etc. `hz` is the flicker rate: 5.0
+# flickers 5 times per second.
+fn blink(t: f32, hz: f32) -> bool {
+    ret @i32(t * hz * 2.0) % 2 == 0
+}
+
 # ── Collision ────────────────────────────────────────────────────────────────
 
 fn check_collision_recs(a: gfx.Rectangle, b: gfx.Rectangle) -> bool {
@@ -101,16 +161,161 @@ impl Sprite {
     }
 }
 
+# ── Animated sprite (GIF) ────────────────────────────────────────────────────
+
+# ANIM_MIN_DELAY_MS: some GIF encoders write a 0 (or otherwise tiny) frame
+# delay, conventionally treated by viewers as "as fast as reasonable" rather
+# than literally 0 — without a floor, `update`'s catch-up loop (below)
+# would spin advancing frames every call for such a GIF instead of
+# pacing them. Clamped once at load time so `update` itself never needs
+# to special-case it.
+ANIM_MIN_DELAY_MS: i32 : 20
+
+struct AnimFrame {
+    texture:  gfx.Texture,
+    delay_ms: i32,
+}
+
+# AnimatedSprite: a decoded, GPU-uploaded GIF — each frame gets its own
+# texture (uploaded once, at load time; a typical GIF used as a game
+# asset is small enough in frame count/resolution that this costs far
+# less GPU memory than it saves in per-frame upload traffic during
+# playback) plus the delay that frame's own Graphic Control Extension
+# specified. `frames`/`n_frames` follow the same raw-pointer-plus-count
+# shape std/image's own `Gif`/`GifFrame` use (see load_gif) rather than a
+# `[]T` slice field — no existing struct in this codebase holds a slice,
+# and this stays consistent with the type it's built from.
+struct AnimatedSprite {
+    frames:     *AnimFrame,
+    n_frames:   usize,
+    cur_frame:  usize,
+    elapsed_ms: i64,
+    looping:    bool,
+    playing:    bool,
+}
+
+# load_animated_sprite: decode `path` (std/image.load_gif) and upload every
+# frame as its own GL texture, defaulting to looping playback from frame 0.
+# The decoded CPU-side pixel buffers are freed immediately after upload —
+# once a frame is on the GPU there's no reason to keep its CPU copy
+# around for the sprite's lifetime, the same reasoning `Texture.load`
+# already applies to a PNG's `Image` in std/graphics.
+fn load_animated_sprite(path: str) -> !AnimatedSprite {
+    g, err: !image.Gif = image.load_gif(path)
+    if err != 0 { ret @err(err) }
+
+    frames: *AnimFrame = @alo(AnimFrame, g.n_frames)
+    i: usize = 0
+    while i < g.n_frames {
+        tex_id: u32 = gl.create_texture(g.frames[i].pixels, g.width, g.height, 4)
+        delay: i32 = g.frames[i].delay_ms
+        if delay < ANIM_MIN_DELAY_MS { delay = ANIM_MIN_DELAY_MS }
+        frames[i] = AnimFrame{
+            .texture  = gfx.Texture{.id=tex_id, .w=g.width, .h=g.height},
+            .delay_ms = delay,
+        }
+        i += 1
+    }
+    n: usize = g.n_frames
+    image.free_gif(g)
+
+    ret @ok(AnimatedSprite{
+        .frames=frames, .n_frames=n, .cur_frame=0,
+        .elapsed_ms=0, .looping=true, .playing=true,
+    })
+}
+
+impl AnimatedSprite {
+    # update: advance playback by `dt` seconds (pass gdev.get_frame_time()
+    # or std/graphics/gl equivalent, the same value driving movement/
+    # physics elsewhere) — a catch-up loop, not a single step, so a frame
+    # that took longer than one animation frame's delay (a hitch, or a
+    # very short delay relative to dt) still lands on the right frame
+    # rather than falling behind. No-op once a non-looping animation has
+    # reached its last frame (`playing` goes false) or if decoding
+    # produced zero frames.
+    fn update(self: *AnimatedSprite, dt: f32) {
+        if !self.playing || self.n_frames == 0 { ret }
+        self.elapsed_ms += @i64(dt * 1000.0)
+        while self.elapsed_ms >= @i64(self.frames[self.cur_frame].delay_ms) {
+            self.elapsed_ms -= @i64(self.frames[self.cur_frame].delay_ms)
+            self.cur_frame += 1
+            if self.cur_frame >= self.n_frames {
+                if self.looping {
+                    self.cur_frame = 0
+                } else {
+                    self.cur_frame = self.n_frames - 1
+                    self.playing = false
+                    ret
+                }
+            }
+        }
+    }
+
+    fn draw(self, pos: gfx.Vector2) {
+        if self.n_frames == 0 { ret }
+        gfx.draw_texture(self.frames[self.cur_frame].texture, pos.x, pos.y)
+    }
+
+    # unload: delete every frame's GPU texture, then free the frame array
+    # itself — mirrors std/image's free_gif (per-element cleanup, then
+    # the outer array), just at the GL-texture layer instead of a raw
+    # pixel buffer.
+    fn unload(self) {
+        i: usize = 0
+        while i < self.n_frames {
+            self.frames[i].texture.unload()
+            i += 1
+        }
+        if self.frames != null { @free(self.frames) }
+    }
+}
+
 # ── 2D camera ────────────────────────────────────────────────────────────────
 
 # Camera2D: a scrollable, zoomable view over world space. `target` is the
 # world-space point the camera centers on; `offset` is the screen-space
 # point `target` maps to (usually the screen center); `zoom` is a scale
-# factor (1.0 = no zoom, 2.0 = 2x closer).
+# factor (1.0 = no zoom, 2.0 = 2x closer). `shake_mag` is screen-shake
+# state (see shake/update_shake below) — 0.0 (its zero value) means no
+# shake in progress, so existing `Camera2D{...}` literals that don't
+# mention it are unaffected.
 struct Camera2D {
-    offset: gfx.Vector2,
-    target: gfx.Vector2,
-    zoom:   f32,
+    offset:    gfx.Vector2,
+    target:    gfx.Vector2,
+    zoom:      f32,
+    shake_mag: f32,
+}
+
+impl Camera2D {
+    # shake: kick off (or intensify) a screen shake — `amount` only ever
+    # raises shake_mag, never lowers it, so overlapping hits (a second
+    # explosion before the first has decayed) compound into a stronger
+    # shake instead of one shake call resetting another already in
+    # progress.
+    fn shake(self: *Camera2D, amount: f32) {
+        if amount > self.shake_mag { self.shake_mag = amount }
+    }
+
+    # update_shake: decay the current shake by `dt` seconds (via damp)
+    # and return this frame's jitter offset — add it to whatever
+    # `target` the camera is already tracking (e.g. the player's
+    # position) right before begin_mode_2d, rather than assigning it
+    # directly into `target`, so shake composes with camera-follow logic
+    # instead of overwriting it. Returns a zero offset once shake_mag has
+    # decayed below a small threshold, snapping it to exactly 0.0 so it
+    # stays settled rather than jittering by imperceptible amounts
+    # forever.
+    fn update_shake(self: *Camera2D, dt: f32) -> gfx.Vector2 {
+        if self.shake_mag <= 0.0 { ret gfx.Vector2{.x=0.0, .y=0.0} }
+        off: gfx.Vector2 = gfx.Vector2{
+            .x = @rng(f32, -1.0, 1.0) * self.shake_mag,
+            .y = @rng(f32, -1.0, 1.0) * self.shake_mag,
+        }
+        self.shake_mag = damp(self.shake_mag, 8.0, dt)
+        if self.shake_mag < 0.05 { self.shake_mag = 0.0 }
+        ret off
+    }
 }
 
 # begin_mode_2d/end_mode_2d: every draw_* call between the two is drawn

@@ -84,6 +84,14 @@ typedef struct GlobalConstEntry {
 
 typedef struct {
     Arena            *arena;
+    Module           *mod;       /* the module being checked — needed deep in
+                                     check_expr (generic-call inference) to
+                                     append/register a freshly instantiated
+                                     Item the same way sema_check's own pass-1.5
+                                     loop already does for explicit <T> syntax;
+                                     everything else on this struct is already
+                                     reachable from anywhere holding a Sema*,
+                                     this is just the one more thing */
     Scope            *scope;
     Type             *cur_ret;   /* return type of the function being checked */
     int               errors;
@@ -632,6 +640,11 @@ static Type *builtin_ret_ty(Sema *s, const char *name) {
 /* forward declaration */
 static Type *check_expr(Sema *s, Expr *e);
 static void  check_stmt(Sema *s, Stmt *st);
+static int unify_generic_type(Type *pat, Type *actual, const char **params, size_t n,
+                               Type **concretes, const char **conflict_param,
+                               Type **conflict_a, Type **conflict_b);
+static void instantiate_or_reuse(Sema *s, Module *mod, GenericTemplate *gt,
+                                  const char *mangled, Type **concretes, size_t n_concretes);
 
 static Type *check_expr(Sema *s, Expr *e) {
     if (!e) return NULL;
@@ -989,6 +1002,102 @@ static Type *check_expr(Sema *s, Expr *e) {
                     return check_expr(s, e);
                 }
             }
+            /* Generic-call type inference: `biggest(1.5, 0.7)` with no
+               explicit `<T>` — book/src/generics.md documents this as
+               "inferred from args," but until now nothing ever
+               implemented it (lookup() and s->generics were two
+               entirely disjoint structures; explicit `name<Type>(...)`
+               syntax is the *only* thing that ever populated a GenInst,
+               entirely in the parser, before any argument type was
+               even known). Only fires when the callee is a bare
+               identifier that doesn't already resolve (an explicit
+               `<T>` call's callee is already the mangled ident by the
+               time the parser hands it over — see parser.c:803-822 —
+               so it resolves normally via lookup() below and never
+               reaches this branch at all) and that name matches a
+               known generic *function* template (struct construction
+               — `Box<T>{...}` — goes through EXPR_STRUCT_LIT, a
+               different path, not this one; out of scope here). A name
+               that matches neither a real symbol nor a generic
+               template falls straight through to the unchanged
+               check_expr(callee) call below and its existing "undefined
+               identifier" error — zero behavior change for genuinely
+               undefined names. */
+            if (e->call.callee->kind == EXPR_IDENT && !lookup(s, e->call.callee->ident.name)) {
+                const char *base_name = e->call.callee->ident.name;
+                GenericTemplate *gt = NULL;
+                for (GenericTemplate *g = s->generics; g; g = g->next)
+                    if (!strcmp(g->name, base_name)) { gt = g; break; }
+                if (gt && gt->item->kind == ITEM_FN) {
+                    /* Once a name matches a known generic template, this
+                       call is definitely a generic call, successfully
+                       inferred or not — never fall through to the
+                       generic "undefined identifier" error below on
+                       failure, that would just be a confusing second,
+                       less specific error on top of whichever one of
+                       these already fired. */
+                    size_t ntp = gt->item->fn.n_type_params;
+                    const char **tparams = gt->item->fn.type_params;
+                    if (e->call.args.len != gt->item->fn.params.len) {
+                        sema_error(s, e->span,
+                                   "'%s': expected %zu arguments, got %zu",
+                                   base_name, gt->item->fn.params.len, e->call.args.len);
+                        e->ty = NULL;
+                        break;
+                    }
+                    for (size_t i = 0; i < e->call.args.len; i++)
+                        check_expr(s, e->call.args.data[i]);
+
+                    Type **concretes = ARENA_ALLOC(s->arena, Type *, ntp);
+                    memset(concretes, 0, ntp * sizeof(Type *));
+                    int ok = 1;
+                    for (size_t i = 0; i < e->call.args.len && ok; i++) {
+                        Type *pat = gt->item->fn.params.data[i].ty;
+                        Type *actual = e->call.args.data[i]->ty;
+                        const char *conflict_param = NULL;
+                        Type *conflict_a = NULL, *conflict_b = NULL;
+                        if (!unify_generic_type(pat, actual, tparams, ntp, concretes,
+                                                 &conflict_param, &conflict_a, &conflict_b)) {
+                            if (conflict_param) {
+                                sema_error(s, e->call.args.data[i]->span,
+                                           "cannot infer '%s' for '%s': argument %zu is '%s', "
+                                           "but an earlier argument implies '%s'",
+                                           conflict_param, base_name, i + 1,
+                                           ty_str(conflict_b), ty_str(conflict_a));
+                            } else {
+                                sema_error(s, e->call.args.data[i]->span,
+                                           "argument %zu to '%s' doesn't match its declared shape",
+                                           i + 1, base_name);
+                            }
+                            ok = 0;
+                        }
+                    }
+                    for (size_t i = 0; i < ntp && ok; i++) {
+                        if (!concretes[i]) {
+                            sema_error(s, e->span,
+                                       "cannot infer type parameter '%s' for '%s' from its "
+                                       "arguments — use explicit %s<...>(...) syntax",
+                                       tparams[i], base_name, base_name);
+                            ok = 0;
+                        }
+                    }
+                    if (!ok) { e->ty = NULL; break; }
+
+                    char mangled_buf[512];
+                    int pos = snprintf(mangled_buf, sizeof(mangled_buf), "%s", base_name);
+                    for (size_t i = 0; i < ntp; i++) {
+                        const char *cs = type_to_str(concretes[i], s->arena);
+                        pos += snprintf(mangled_buf + pos, sizeof(mangled_buf) - (size_t)pos,
+                                         "__%s", cs);
+                    }
+                    const char *mangled = arena_strdup(s->arena, mangled_buf);
+                    instantiate_or_reuse(s, s->mod, gt, mangled, concretes, ntp);
+                    e->call.callee->ident.name = mangled;
+                }
+                /* else (no matching template either): fall through, existing
+                   "undefined identifier" error fires exactly as before */
+            }
+
             Type *callee_ty = check_expr(s, e->call.callee);
             for (size_t i = 0; i < e->call.args.len; i++)
                 check_expr(s, e->call.args.data[i]);
@@ -2035,37 +2144,24 @@ static void check_type_alias(Sema *s, Item *item) {
 /* ── Generics: substitution and instantiation ─────────────────────────────── */
 
 /* Produce a mangling-safe string for a type (duplicated from parser.c for sema use) */
-static const char *gen_type_str(Type *ty, Arena *a) {
-    (void)a;
-    if (!ty) return "void";
-    switch (ty->kind) {
-        case TY_I8:    return "i8";
-        case TY_I16:   return "i16";
-        case TY_I32:   return "i32";
-        case TY_I64:   return "i64";
-        case TY_U8:    return "u8";
-        case TY_U16:   return "u16";
-        case TY_U32:   return "u32";
-        case TY_U64:   return "u64";
-        case TY_F16:   return "f16";
-        case TY_F32:   return "f32";
-        case TY_F64:   return "f64";
-        case TY_USIZE: return "usize";
-        case TY_BOOL:  return "bool";
-        case TY_CHAR:  return "char";
-        case TY_STR:   return "str";
-        case TY_VOID:  return "void";
-        case TY_NAMED: case TY_GENERIC: return ty->named.name;
-        default: return "T";
-    }
-}
-
 /* Substitute type-param strings inside a mangled name like "Box__T" → "Box__i32". */
 static const char *subst_mangled(const char *name, const char **params,
                                   Type **concretes, size_t n, Arena *a) {
     const char *result = name;
     for (size_t i = 0; i < n; i++) {
-        const char *concrete_str = gen_type_str(concretes[i], a);
+        /* type_to_str (ast.h/parser.c): this used to be a sema-local
+           gen_type_str with the same purpose, but it only handled
+           scalar kinds and fell back to the literal string "T" for
+           TY_PTR/TY_SMART_PTR/TY_SLICE/TY_ARRAY — a real bug (confirmed
+           live: a generic fn returning e.g. Box<*T> mangled the nested
+           instantiation as "Box__T" instead of "Box__ptr_i32", a type
+           mismatch at the call site). type_to_str already handles all
+           of those correctly and is the same function the parser's own
+           explicit `name<Type>(...)` syntax mangles with, so reusing it
+           here (and at every other former gen_type_str call site) both
+           fixes that bug and guarantees this path can never drift from
+           the explicit path's own mangling scheme again. */
+        const char *concrete_str = type_to_str(concretes[i], a);
         size_t plen = strlen(params[i]);
         /* find "__<param>" in the name */
         char search[256];
@@ -2123,9 +2219,85 @@ static Type *subst_type(Type *ty, const char **params, Type **concretes,
             copy->fn.ret = subst_type(ty->fn.ret, params, concretes, n, a);
             break;
         }
+        case TY_TUPLE: {
+            /* Was missing entirely — a generic fn returning e.g. `(A, B)`
+               never got its tuple element types substituted at all, so
+               every instantiation's return type stayed the literal,
+               unresolved `(A, B)` regardless of what A/B were bound to.
+               Found writing a multi-type-param test for generic-call
+               inference (pair<A, B>(a: A, b: B) -> (A, B)) — same class
+               of gap as TY_PTR/TY_ARRAY/TY_FN just above, just never
+               hit before since no existing generic fn returned a tuple. */
+            if (ty->tuple.elems.len) {
+                Type **ne = ARENA_ALLOC(a, Type *, ty->tuple.elems.len);
+                for (size_t i = 0; i < ty->tuple.elems.len; i++)
+                    ne[i] = subst_type(ty->tuple.elems.data[i], params, concretes, n, a);
+                copy->tuple.elems.data = ne;
+            }
+            break;
+        }
         default: break;
     }
     return copy;
+}
+
+/* unify_generic_type: walk `pat` (one of a generic template's own
+   declared param types — e.g. `T`, `*T`, `[]T` — possibly containing a
+   bare reference to one of `params[0..n)`) against `actual` (a real,
+   already-checked call argument's type), binding each type-param name
+   it finds into the matching slot of `concretes[n]`. The mirror image
+   of subst_type's own recursion (same TY_PTR/TY_SMART_PTR/TY_SLICE/
+   TY_ARRAY -> .ptr.inner/.array.inner cases) but discovering bindings
+   instead of applying already-known ones — this is what lets a call
+   like `biggest(1.5, 0.7)` work out `T = f64` from the arguments alone
+   instead of requiring `biggest<f64>(1.5, 0.7)`. Returns 1 on success;
+   0 on a structural mismatch (`pat`'s shape doesn't match `actual`'s at
+   all — e.g. `pat` is `*T` but `actual` is a plain `i32`) or a
+   conflicting binding (the same param already bound to a different
+   concrete type by an earlier argument) — `*conflict_param` is set
+   (non-NULL) only for the latter, so the caller can tell "these two
+   arguments disagree about what T is" apart from a plain shape
+   mismatch and report each with a clearer message. */
+static int unify_generic_type(Type *pat, Type *actual, const char **params, size_t n,
+                               Type **concretes, const char **conflict_param,
+                               Type **conflict_a, Type **conflict_b) {
+    if (!pat || !actual) return 0;
+    if (pat->kind == TY_NAMED || pat->kind == TY_GENERIC) {
+        for (size_t i = 0; i < n; i++) {
+            if (strcmp(pat->named.name, params[i]) != 0) continue;
+            if (concretes[i] && !ty_eq(concretes[i], actual)) {
+                *conflict_param = params[i];
+                *conflict_a = concretes[i];
+                *conflict_b = actual;
+                return 0;
+            }
+            concretes[i] = actual;
+            return 1;
+        }
+        /* pat names a real (non-type-param) type — nothing to bind,
+           just require actual is that same named type */
+        return actual->kind == TY_NAMED && !strcmp(pat->named.name, actual->named.name);
+    }
+    switch (pat->kind) {
+        case TY_PTR: case TY_SMART_PTR: case TY_SLICE: case TY_FAILABLE:
+            if (actual->kind != pat->kind) return 0;
+            return unify_generic_type(pat->ptr.inner, actual->ptr.inner, params, n,
+                                       concretes, conflict_param, conflict_a, conflict_b);
+        case TY_ARRAY:
+            if (actual->kind != TY_ARRAY) return 0;
+            return unify_generic_type(pat->array.inner, actual->array.inner, params, n,
+                                       concretes, conflict_param, conflict_a, conflict_b);
+        case TY_TUPLE:
+            if (actual->kind != TY_TUPLE || actual->tuple.elems.len != pat->tuple.elems.len)
+                return 0;
+            for (size_t i = 0; i < pat->tuple.elems.len; i++)
+                if (!unify_generic_type(pat->tuple.elems.data[i], actual->tuple.elems.data[i],
+                                         params, n, concretes, conflict_param, conflict_a, conflict_b))
+                    return 0;
+            return 1;
+        default:
+            return actual->kind == pat->kind;
+    }
 }
 
 /* ── Deep-copy helpers for generic instantiation ──────────────────────────── *
@@ -2303,7 +2475,7 @@ static void subst_expr(Expr *e, const char **params, Type **concretes, size_t n,
             int matched = 0;
             for (size_t i = 0; i < n; i++) {
                 if (!strcmp(e->ident.name, params[i])) {
-                    e->ident.name = gen_type_str(concretes[i], a);
+                    e->ident.name = type_to_str(concretes[i], a);
                     e->ty = concretes[i];
                     matched = 1;
                     break;
@@ -2784,7 +2956,7 @@ static void derive_transitive_insts(Sema *s, Module *mod,
         char mang[512];
         int pos = snprintf(mang, sizeof(mang), "%s", dgi.base);
         for (size_t ai = 0; ai < dgi.n_args; ai++) {
-            const char *as = gen_type_str(cargs[ai], s->arena);
+            const char *as = type_to_str(cargs[ai], s->arena);
             pos += snprintf(mang + pos, sizeof(mang) - (size_t)pos, "__%s", as);
         }
         /* skip if already registered or already queued */
@@ -2805,11 +2977,39 @@ static void derive_transitive_insts(Sema *s, Module *mod,
     }
 }
 
+/* instantiate_or_reuse: find (or create) the concrete instantiation of
+   GenericTemplate `gt` named `mangled` for the given concrete type
+   args. This is pass-1.5's own per-GenInst body (look up, instantiate,
+   append, register, derive transitive), factored out so the
+   generic-call-inference path in EXPR_CALL (see check_expr) can reuse
+   it for exactly the same effect once it's worked out `mangled`/
+   `concretes` on its own, rather than duplicating this sequence.
+   No-op (returns immediately) if `gt` is NULL — callers pass NULL when
+   the base name didn't match any known template, same as pass 1.5's
+   own "not a known generic — pass 2 will report the error" comment
+   describes for the explicit-syntax path. */
+static void instantiate_or_reuse(Sema *s, Module *mod, GenericTemplate *gt,
+                                  const char *mangled, Type **concretes, size_t n_concretes) {
+    if (!gt) return;
+    if (lookup(s, mangled)) return;
+    Item *inst = instantiate(gt->item, mangled, concretes, n_concretes, s->arena);
+    append_inst(s, mod, inst);
+    register_item(s, inst);
+    const char **tp = NULL; size_t ntp = 0;
+    if (gt->item->kind == ITEM_FN) {
+        tp = gt->item->fn.type_params; ntp = gt->item->fn.n_type_params;
+    } else if (gt->item->kind == ITEM_STRUCT) {
+        tp = gt->item->struct_.type_params; ntp = gt->item->struct_.n_type_params;
+    }
+    derive_transitive_insts(s, mod, tp, ntp, concretes, n_concretes);
+}
+
 /* ── Entry point ──────────────────────────────────────────────────────────── */
 
 int sema_check(Module *mod) {
     Sema s = {0};
     s.arena = mod->arena;
+    s.mod = mod;
 
     Scope global = {0};
     s.scope = &global;
@@ -2829,25 +3029,11 @@ int sema_check(Module *mod) {
            resolved into concrete entries by derive_transitive_insts below */
         if (gi.deferred) continue;
 
-        if (!lookup(&s, gi.mangled)) {
-            GenericTemplate *gt = NULL;
-            for (GenericTemplate *g = s.generics; g; g = g->next)
-                if (!strcmp(g->name, gi.base)) { gt = g; break; }
-            if (gt) {
-                Item *inst = instantiate(gt->item, gi.mangled, gi.args, gi.n_args, s.arena);
-                append_inst(&s, mod, inst);
-                register_item(&s, inst);
-                /* derive concrete gen_insts for nested generic uses inside this template */
-                const char **tp  = NULL; size_t ntp = 0;
-                if (gt->item->kind == ITEM_FN) {
-                    tp = gt->item->fn.type_params; ntp = gt->item->fn.n_type_params;
-                } else if (gt->item->kind == ITEM_STRUCT) {
-                    tp = gt->item->struct_.type_params; ntp = gt->item->struct_.n_type_params;
-                }
-                derive_transitive_insts(&s, mod, tp, ntp, gi.args, gi.n_args);
-            }
-            /* else: not a known generic — pass 2 will report the error */
-        }
+        GenericTemplate *gt = NULL;
+        for (GenericTemplate *g = s.generics; g; g = g->next)
+            if (!strcmp(g->name, gi.base)) { gt = g; break; }
+        /* gt==NULL: not a known generic — pass 2 will report the error */
+        instantiate_or_reuse(&s, mod, gt, gi.mangled, gi.args, gi.n_args);
         /* also instantiate any matching generic impl block for this concrete type */
         for (GenericImplTemplate *git = s.impl_generics; git; git = git->next) {
             if (strcmp(git->item->impl.ty_name, gi.base)) continue;

@@ -48,6 +48,7 @@ extern fn glVertex2f(x: f32, y: f32)
 extern fn glColor4f(r: f32, g: f32, b: f32, a: f32)
 extern fn glEnable(cap: u32)
 extern fn glDisable(cap: u32)
+extern fn glBlendFunc(sfactor: u32, dfactor: u32)
 
 extern fn glGenTextures(n: i32, textures: *u32)
 extern fn glDeleteTextures(n: i32, textures: *u32)
@@ -76,6 +77,10 @@ GL_TRIANGLE_FAN: u32 = 0x0006
 GL_QUADS:        u32 = 0x0007
 GL_PROJECTION:   u32 = 0x1701
 GL_MODELVIEW:    u32 = 0x1700
+
+GL_BLEND:               u32 = 0x0BE2
+GL_SRC_ALPHA:           u32 = 0x0302
+GL_ONE_MINUS_SRC_ALPHA: u32 = 0x0303
 
 GLX_RGBA: i32 = 4
 GLX_DEPTH_SIZE: i32 = 12
@@ -109,6 +114,17 @@ fn create_context(display: *u8, window: u64, vis: *u8) -> *u8 {
     if ctx == null { ret null }
     ok: i32 = glXMakeCurrent(display, window, ctx)
     if ok == 0 { ret null }
+    # Standard alpha blending, on for the program's whole lifetime rather
+    # than toggled around specific draws: with GL_SRC_ALPHA/
+    # GL_ONE_MINUS_SRC_ALPHA, an opaque source (alpha=1, every existing
+    # draw_rect/draw_circle/draw_texture call) composites identically to
+    # having blending off, so leaving this on doesn't change how anything
+    # already drawn looks — it only starts mattering for a texture with
+    # real alpha<255 pixels (a font atlas's transparent background, or a
+    # PNG/GIF with genuine transparency), which previously always drew as
+    # fully opaque regardless of its own alpha channel.
+    glEnable(GL_BLEND)
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
     ret ctx
 }
 
@@ -205,19 +221,25 @@ fn delete_texture(tex: u32) {
 }
 
 # draw_textured_rect_uv: an axis-aligned rect at (x, y) sized w x h,
-# textured with `tex` at full opacity (glColor4f(1,1,1,1) so the
-# texture's own colors show through unmodified), sampling the
-# arbitrary axis-aligned sub-region of the texture from (u0, v0) to
-# (u1, v1) in normalized [0, 1] texture coordinates — (0,0)-(1,1) for
-# the whole image, or a smaller box for one frame of a spritesheet/atlas.
-# GL_TEXTURE_2D is enabled/disabled around the draw rather than left on
-# globally, so it doesn't leak into draw_rect/draw_circle/draw_line
-# calls elsewhere in a frame.
+# textured with `tex` and tinted by (r, g, b, a) — GL 1.1's default
+# texture environment mode is GL_MODULATE (texture color × vertex
+# color, never changed anywhere in this file), so (1,1,1,1) leaves the
+# texture's own colors showing through unmodified — every existing
+# caller before tinting existed — while any other tint scales them,
+# which is what a colored font-atlas glyph draw needs (see
+# std/graphics's draw_text). Samples the arbitrary axis-aligned
+# sub-region of the texture from (u0, v0) to (u1, v1) in normalized
+# [0, 1] texture coordinates — (0,0)-(1,1) for the whole image, or a
+# smaller box for one frame of a spritesheet/atlas. GL_TEXTURE_2D is
+# enabled/disabled around the draw rather than left on globally, so it
+# doesn't leak into draw_rect/draw_circle/draw_line calls elsewhere in
+# a frame.
 fn draw_textured_rect_uv(tex: u32, x: f32, y: f32, w: f32, h: f32,
-                          u0: f32, v0: f32, u1: f32, v1: f32) {
+                          u0: f32, v0: f32, u1: f32, v1: f32,
+                          r: f32, g: f32, b: f32, a: f32) {
     glEnable(GL_TEXTURE_2D)
     glBindTexture(GL_TEXTURE_2D, tex)
-    glColor4f(1.0, 1.0, 1.0, 1.0)
+    glColor4f(r, g, b, a)
     glBegin(GL_QUADS)
     glTexCoord2f(u0, v0)
     glVertex2f(x, y)
@@ -231,9 +253,9 @@ fn draw_textured_rect_uv(tex: u32, x: f32, y: f32, w: f32, h: f32,
     glDisable(GL_TEXTURE_2D)
 }
 
-# draw_textured_rect: the whole texture, stretched to fill (x, y, w, h).
+# draw_textured_rect: the whole texture, stretched to fill (x, y, w, h), untinted.
 fn draw_textured_rect(tex: u32, x: f32, y: f32, w: f32, h: f32) {
-    draw_textured_rect_uv(tex, x, y, w, h, 0.0, 0.0, 1.0, 1.0)
+    draw_textured_rect_uv(tex, x, y, w, h, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0)
 }
 
 # push_camera_2d/pop_camera_2d: apply (and later undo) a 2D camera's

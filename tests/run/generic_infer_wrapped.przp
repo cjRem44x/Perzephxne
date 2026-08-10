@@ -1,0 +1,17 @@
+# regression: generic-call inference (see generic_infer_basic.przp)
+# where the type parameter appears wrapped in a slice, not as a bare
+# direct reference — exercises unify_generic_type's recursive case
+# (mirroring subst_type's own TY_PTR/TY_SMART_PTR/TY_SLICE/TY_ARRAY
+# recursion, just discovering a binding instead of applying one).
+
+fn first<T>(s: []T) -> T {
+    ret s[0]
+}
+
+fn main() -> i32 {
+    arr: [3]i32 = [10, 20, 30]
+    sl: []i32 = arr[0..3]
+    f: i32 = first(sl)
+    @pf("{f}\n")
+    ret 0
+}

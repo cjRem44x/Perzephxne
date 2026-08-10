@@ -114,7 +114,7 @@ static int eat(Parser *p, TokenKind k) {
 /* ── Generic helpers ──────────────────────────────────────────────────────── */
 
 /* Produce a mangling-safe string for a type (used to form mangled names). */
-static const char *type_to_str(Type *ty, Arena *a) {
+const char *type_to_str(Type *ty, Arena *a) {
     if (!ty) return "void";
     switch (ty->kind) {
         case TY_I8:    return "i8";

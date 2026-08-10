@@ -34,6 +34,8 @@ extern fn snd_pcm_set_params(pcm: *u8, format: i32, access: i32, channels: u32, 
 extern fn snd_pcm_writei(pcm: *u8, buffer: *u8, size: u64) -> i64
 extern fn snd_pcm_drain(pcm: *u8) -> i32
 extern fn snd_pcm_recover(pcm: *u8, err: i32, silent: i32) -> i32
+extern fn snd_pcm_drop(pcm: *u8) -> i32
+extern fn snd_pcm_prepare(pcm: *u8) -> i32
 
 extern fn pthread_create(thread: *u64, attr: *u8, start_routine: fn(*u8) -> *u8, arg: *u8) -> i32
 extern fn pthread_join(thread: u64, retval: *u8) -> i32
@@ -130,6 +132,13 @@ fn decode_mp3(path: str) -> !Sound {
 # tradeoff MAX_BULLETS makes in examples/games/astro_blaster.
 AUDIO_QUEUE_CAP: usize : 16
 
+# AUDIO_SCRATCH_FRAMES: the chunk size audio_worker writes at once, and
+# the size of the scratch buffer it volume-scales into before each write
+# (see apply_volume) — a fixed cap rather than one big per-request
+# buffer sized to the whole sound, so a very long sound doesn't need a
+# proportionally large scratch allocation; just more, smaller writes.
+AUDIO_SCRATCH_FRAMES: usize : 4096
+
 struct AudioRequest {
     pcm:      *u8,
     n_frames: usize,
@@ -140,6 +149,14 @@ struct AudioRequest {
 # AudioOutput.ctrl) so every AudioOutput copy still refers to the same
 # queue, mutex, and PCM handle. `running=false` plus an empty queue is
 # the worker's exit signal (see close_output/audio_worker).
+#
+# paused/stop_requested/volume are whole-output controls, not per-sound:
+# this module has no software mixing (see decode_mp3's own doc comment)
+# and every play_sound request shares the one PCM stream `ctrl.pcm`
+# already is, so there's no way to identify "just this one sound" once
+# it's queued — pausing/stopping/setting volume affects everything
+# currently playing or about to play through this AudioOutput. See
+# pause_output/resume_output/stop_output/set_volume below.
 struct AudioCtrl {
     mu:              sync.Mutex,
     pcm:             *u8,
@@ -149,6 +166,31 @@ struct AudioCtrl {
     head:            usize,
     count:           usize,
     running:         bool,
+    paused:          bool,
+    stop_requested:  bool,
+    volume:          f32,
+    scratch:         *u8,
+}
+
+# apply_volume: copy `n_frames` frames (interleaved 16-bit PCM) from
+# `src` to `dst`, scaling every sample by `vol` and clamping to i16
+# range — vol > 1.0 can clip, same as any other digital gain. A copy
+# rather than an in-place scale since `src` is the caller's own decoded
+# Sound.pcm, reused on every future play_sound call for that Sound;
+# permanently rescaling it here would make one call's volume answer for
+# every later one too.
+fn apply_volume(src: *u8, dst: *u8, n_frames: usize, bytes_per_frame: usize, vol: f32) {
+    n_samples: usize = n_frames * (bytes_per_frame / 2)
+    src16: *i16 = @bitcast(*i16, src)
+    dst16: *i16 = @bitcast(*i16, dst)
+    i: usize = 0
+    while i < n_samples {
+        v: f32 = @f32(src16[i]) * vol
+        if v > 32767.0 { v = 32767.0 }
+        if v < -32768.0 { v = -32768.0 }
+        dst16[i] = @i16(v)
+        i += 1
+    }
 }
 
 # audio_worker: runs on its own thread for the lifetime of an
@@ -171,7 +213,7 @@ fn audio_worker(arg: *u8) -> *u8 {
     ctrl: *AudioCtrl = arg
     while true {
         sync.lock(&ctrl.mu)
-        if ctrl.count == 0 {
+        if ctrl.paused || ctrl.count == 0 {
             still_running: bool = ctrl.running
             sync.unlock(&ctrl.mu)
             if !still_running { ret null }
@@ -181,12 +223,44 @@ fn audio_worker(arg: *u8) -> *u8 {
         req: AudioRequest = ctrl.queue[ctrl.head]
         ctrl.head = (ctrl.head + 1) % AUDIO_QUEUE_CAP
         ctrl.count -= 1
+        # A stop_output before this dequeue only ever meant to affect
+        # whatever was already in flight — clear it now so it can't
+        # wrongly cut off this brand new, unrelated request too.
+        ctrl.stop_requested = false
         sync.unlock(&ctrl.mu)
 
         buf: *u8 = req.pcm
         frames_left: usize = req.n_frames
         while frames_left > 0 {
-            r: i64 = snd_pcm_writei(ctrl.pcm, buf, @u64(frames_left))
+            sync.lock(&ctrl.mu)
+            stop_now: bool = ctrl.stop_requested
+            paused_now: bool = ctrl.paused
+            vol: f32 = ctrl.volume
+            sync.unlock(&ctrl.mu)
+
+            if stop_now {
+                snd_pcm_drop(ctrl.pcm)
+                snd_pcm_prepare(ctrl.pcm)
+                sync.lock(&ctrl.mu)
+                ctrl.stop_requested = false
+                sync.unlock(&ctrl.mu)
+                break
+            }
+            if paused_now {
+                os.sleep_ms(5)
+                continue
+            }
+
+            chunk: usize = frames_left
+            if chunk > AUDIO_SCRATCH_FRAMES { chunk = AUDIO_SCRATCH_FRAMES }
+
+            write_buf: *u8 = buf
+            if vol != 1.0 {
+                apply_volume(buf, ctrl.scratch, chunk, ctrl.bytes_per_frame, vol)
+                write_buf = ctrl.scratch
+            }
+
+            r: i64 = snd_pcm_writei(ctrl.pcm, write_buf, @u64(chunk))
             if r < 0 {
                 if snd_pcm_recover(ctrl.pcm, @i32(r), 1) != 0 { break }
                 continue
@@ -228,9 +302,14 @@ fn open_output(device: str, rate: i32, channels: i32) -> !AudioOutput {
     ctrl.head = 0
     ctrl.count = 0
     ctrl.running = true
+    ctrl.paused = false
+    ctrl.stop_requested = false
+    ctrl.volume = 1.0
+    ctrl.scratch = @alo(u8, AUDIO_SCRATCH_FRAMES * ctrl.bytes_per_frame)
 
     tid: u64 = 0
     if pthread_create(&tid, null, audio_worker, ctrl) != 0 {
+        free(ctrl.scratch)
         sync.mutex_destroy(&ctrl.mu)
         free(ctrl)
         snd_pcm_close(pcm)
@@ -260,20 +339,83 @@ fn play_sound(out: AudioOutput, s: Sound) -> i64 {
     ret @i64(s.n_frames)
 }
 
+# pause_output/resume_output: stop/resume feeding new audio to the ALSA
+# buffer. Not instant silence — whatever's already sitting in the
+# hardware ring buffer (up to open_output's ~500ms latency) keeps
+# playing out, since pausing doesn't touch it, only what the worker
+# writes *next*. That's deliberate: resuming quickly picks up exactly
+# where playback left off, no click or dropped frame at the seam. For
+# an immediate cut instead, see stop_output.
+fn pause_output(out: AudioOutput) {
+    ctrl: *AudioCtrl = out.ctrl
+    sync.lock(&ctrl.mu)
+    ctrl.paused = true
+    sync.unlock(&ctrl.mu)
+}
+
+fn resume_output(out: AudioOutput) {
+    ctrl: *AudioCtrl = out.ctrl
+    sync.lock(&ctrl.mu)
+    ctrl.paused = false
+    sync.unlock(&ctrl.mu)
+}
+
+fn is_paused(out: AudioOutput) -> bool {
+    ctrl: *AudioCtrl = out.ctrl
+    sync.lock(&ctrl.mu)
+    p: bool = ctrl.paused
+    sync.unlock(&ctrl.mu)
+    ret p
+}
+
+# stop_output: drop whatever's queued (not yet started) and cut off
+# whatever's currently mid-write immediately — snd_pcm_drop discards the
+# hardware ring buffer's contents outright (unlike pause, which leaves
+# them to play out), then snd_pcm_prepare puts the stream back in a
+# writable state for whatever plays next.
+fn stop_output(out: AudioOutput) {
+    ctrl: *AudioCtrl = out.ctrl
+    sync.lock(&ctrl.mu)
+    ctrl.count = 0
+    ctrl.head = 0
+    ctrl.stop_requested = true
+    sync.unlock(&ctrl.mu)
+}
+
+# set_volume: scale every sample written from this point on by `vol`
+# (1.0 = unchanged, 0.0 = silent, >1.0 = boost — clamps to i16 range,
+# same as any other digital gain past 1.0 risking clipping). Applies to
+# the whole output, including whatever's already mid-write — there's no
+# per-sound identity to target (see AudioCtrl's own doc comment).
+# Negative values clamp to 0.0 rather than erroring.
+fn set_volume(out: AudioOutput, vol: f32) {
+    v: f32 = vol
+    if v < 0.0 { v = 0.0 }
+    ctrl: *AudioCtrl = out.ctrl
+    sync.lock(&ctrl.mu)
+    ctrl.volume = v
+    sync.unlock(&ctrl.mu)
+}
+
 # close_output: signals the worker to stop once its queue drains, joins
 # it (bounded — the worker only blocks inside ALSA calls that themselves
 # complete), then drains the PCM device and closes it. Joining first
 # guarantees the worker is done touching `pcm` before this thread closes
-# it out from under it.
+# it out from under it. Clears `paused` along with `running`: the worker's
+# exit check requires !paused (see audio_worker) precisely so a paused
+# output can still shut down instead of waiting forever for a
+# resume_output that's never coming.
 fn close_output(out: AudioOutput) {
     ctrl: *AudioCtrl = out.ctrl
     sync.lock(&ctrl.mu)
     ctrl.running = false
+    ctrl.paused = false
     sync.unlock(&ctrl.mu)
 
     pthread_join(ctrl.thread, null)
     snd_pcm_drain(ctrl.pcm)
     snd_pcm_close(ctrl.pcm)
     sync.mutex_destroy(&ctrl.mu)
+    free(ctrl.scratch)
     free(ctrl)
 }
