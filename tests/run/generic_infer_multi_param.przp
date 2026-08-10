@@ -1,0 +1,19 @@
+# regression: generic-call inference (see generic_infer_basic.przp) with
+# multiple independent type parameters, each inferred from a different
+# argument position — also exercises subst_type's TY_TUPLE case, found
+# missing entirely while writing this test (a generic fn returning a
+# tuple never got its element types substituted at all, so every
+# instantiation's return type stayed the literal, unresolved `(A, B)`
+# regardless of what A/B were bound to — same class of gap as the
+# already-handled TY_PTR/TY_ARRAY/TY_FN cases, just never hit before
+# since no existing generic fn returned a tuple).
+
+fn pair<A, B>(a: A, b: B) -> (A, B) {
+    ret (a, b)
+}
+
+fn main() -> i32 {
+    p: (i32, f64) = pair(3, 4.5)
+    @pf("{p.0} {p.1}\n")
+    ret 0
+}

@@ -3440,6 +3440,27 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
             free(arg_vals);
             free(arg_tys);
             if (out_ty) *out_ty = e->ty;
+            /* NOTE: a plain function call returning a struct/array *by
+               value* can't have a field/index chained directly off its
+               result (e.g. `make_point(1,1).x`) — EXPR_FIELD's own GEP
+               always treats its object's cg_expr result as a pointer
+               (the convention every other aggregate-yielding expression
+               kind follows), but a call's raw result here is the bare
+               value, not a pointer. A fix was attempted (spill the
+               result into a fresh alloca and return its pointer instead,
+               mirroring how EXPR_STRUCT_LIT/EXPR_FIELD/etc. already
+               behave) but reverted: it broke 8 existing tests
+               (field_aggregate_ptr_convention, struct_abi, std_audio,
+               std_sync, diamond_import, ...) because plenty of *other*
+               code already consumes a by-value call result expecting
+               the bare value (passing it as a byval argument, storing
+               it into a `let`, returning it directly, ...) — the same
+               "update every consumer consistently" scope the original
+               EXPR_FIELD allowlist fix needed (see status-next.md),
+               just for calls instead of field access. Needs its own
+               dedicated pass auditing every EXPR_CALL consumer, not a
+               local patch here. Tracked in status-next.md rather than
+               fixed in this change. */
             return val_tmp(t);
         }
 

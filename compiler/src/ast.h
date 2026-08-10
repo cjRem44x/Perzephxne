@@ -388,3 +388,14 @@ typedef struct {
     const char **mod_names;
     size_t       n_mod_names;
 } Module;
+
+/* Render a Type as the mangling-safe string a generic instantiation's
+   name is built from (e.g. "f64", "rc_vec2", "sl_i32" — identifier-safe,
+   unlike ty_str's source-syntax "^vec2"/"[]i32" used for diagnostics).
+   Implemented in parser.c (the explicit `name<Type>(...)` call syntax's
+   own mangling needs it there) but declared here, not parser.h, since
+   sema.c's generic-call-inference path needs to build the identical
+   mangled name for a given concrete type — same scheme, not a
+   lookalike, so an inferred call and an equivalent explicit call for the
+   same concrete types resolve to one shared instantiation. */
+const char *type_to_str(Type *ty, Arena *a);
