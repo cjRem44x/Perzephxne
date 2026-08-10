@@ -3229,8 +3229,17 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                     arg_vals[i] = cg_expr(cg, e->call.args.data[i], &arg_tys[i]);
                     if (arg_tys[i] && arg_tys[i]->kind == TY_NAMED
                             && !find_enum(cg, arg_tys[i]->named.name)) {
+                        /* Every expression kind but EXPR_CALL returns a ptr to
+                           the aggregate (the pointer convention); load the
+                           actual value before passing by value. Matches the
+                           plain-function-call path just below, which already
+                           excludes only EXPR_CALL rather than allowlisting
+                           specific pointer-returning kinds — this method-call
+                           path used to allowlist just EXPR_IDENT/EXPR_STRUCT_LIT,
+                           silently passing a raw, unloaded pointer for every
+                           other kind (e.g. EXPR_FIELD: `other.add(ship.vel)`). */
                         ExprKind ak = e->call.args.data[i]->kind;
-                        if (ak == EXPR_IDENT || ak == EXPR_STRUCT_LIT) {
+                        if (ak != EXPR_CALL) {
                             int sv = new_tmp(cg);
                             emit(cg, "  %%t%d = load %s, ptr %s\n",
                                  sv, effective_llvm_type(cg, arg_tys[i]), arg_vals[i].buf);

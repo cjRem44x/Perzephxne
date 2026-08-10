@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-d015056a.js";
+            window.path_to_searchindex_js = "searchindex-e2a57786.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-4e58bc13.js"></script>
@@ -459,13 +459,26 @@ fn set_volume(out: AudioOutput, vol: f32)   # 1.0 = unchanged, 0.0 = silent, &gt
 <p><strong>Playback control</strong> (<code>pause_output</code>/<code>resume_output</code>/<code>is_paused</code>/<code>stop_output</code>/<code>set_volume</code>) is whole-output, not per-sound — the no-mixing design above means every <code>play_sound</code> call shares the one PCM stream an <code>AudioOutput</code> already is, so once something’s queued there’s no per-sound identity left to target; pausing, stopping, or changing volume affects everything currently playing or about to play through that output. <code>pause_output</code> just stops the worker from writing anything <em>new</em> — whatever’s already sitting in the ALSA hardware ring buffer (up to <code>open_output</code>’s ~500ms latency) keeps playing out, so <code>resume_output</code> picks back up with no click or dropped frame at the seam. <code>stop_output</code> is the immediate-cut alternative: it clears the queue and has the worker call <code>snd_pcm_drop</code> (discard the ring buffer outright) followed by <code>snd_pcm_prepare</code> (put the stream back in a writable state), all from the worker thread itself so <code>ctrl.pcm</code> is never touched from two threads at once. <code>set_volume</code> scales samples into a small fixed-size scratch buffer (<code>AUDIO_SCRATCH_FRAMES</code> frames) before each write rather than mutating the caller’s own decoded <code>Sound.pcm</code> — that buffer gets reused on every future <code>play_sound</code> call for the same <code>Sound</code>, so scaling it in place would make one call’s volume answer for every later one too. Closing an <code>AudioOutput</code> while paused doesn’t hang waiting for a <code>resume_output</code> that’s never coming: <code>close_output</code> clears <code>paused</code> along with the worker’s <code>running</code> flag, since the worker’s exit check requires both. <code>tests/run/std_audio_control.przp</code> verifies all of this against the <code>"null"</code> device, including that close-while-paused case explicitly.</p>
 <h3 id="layer-3a--gdev-game-dev-primitives"><a class="header" href="#layer-3a--gdev-game-dev-primitives">Layer 3a — <code>gdev</code>, game-dev primitives</a></h3>
 <p>Built on <code>std/graphics</code>, adding the pieces a 2D game needs that a GUI app doesn’t. Scope, deliberately: <strong>2D only</strong> — <code>Camera3D</code>/<code>draw_cube</code>/3D primitives are a separate, later addition once this 2D surface is solid (see the suggested build order below); there’s nothing 3D in <code>std/gdev</code> by design, not by omission. Import it <em>alongside</em> <code>std/graphics</code>, not instead of it — <code>gdev</code> only adds game-specific pieces on top; <code>Window</code>, <code>Color</code>, <code>Key</code>, <code>is_key_down</code>, <code>draw_rectangle</code>, and the rest of the drawing/input surface still come from <code>std/graphics</code> directly.</p>
-<p><strong>Implemented</strong>: frame timing, sprite drawing from a texture atlas, animated GIF sprites, a 2D camera, and AABB/circle/point collision checks. See <code>compiler/std/gdev.przp</code>:</p>
+<p><strong>Implemented</strong>: frame timing, frame-rate-independent motion helpers, sprite drawing from a texture atlas, animated GIF sprites, a 2D camera (with screen shake), and AABB/circle/point collision checks. See <code>compiler/std/gdev.przp</code>:</p>
 <pre><code>struct GdevState { last_frame_ms: i64, frame_time_s: f32, target_ms: i64 }
 
 fn set_target_fps(fps: i32)     # cap the loop by sleeping out the rest of the frame budget
 fn get_frame_time() -&gt; f32      # seconds elapsed during the previous frame
 fn begin_drawing()              # wraps gfx.begin_drawing with frame-timing bookkeeping
 fn end_drawing()                # wraps gfx.end_drawing likewise
+
+fn damp(value: f32, rate: f32, dt: f32) -&gt; f32       # frame-rate-independent exponential decay
+fn wrapf(v: f32, max: f32) -&gt; f32                    # wrap into [0, max) — screen-wrap on one axis
+fn wrap_vec2(pos: gfx.Vector2, w: f32, h: f32) -&gt; gfx.Vector2   # wrapf on both axes at once
+fn blink(t: f32, hz: f32) -&gt; bool                    # on/off flicker at `hz` times per second
+
+struct Timer { remaining: f32 }
+impl Timer {
+    fn new(secs: f32) -&gt; Timer
+    fn tick(self: *Timer, dt: f32)     # counts down; doesn't auto-reset
+    fn ready(self) -&gt; bool             # true once remaining &lt;= 0.0
+    fn reset(self: *Timer, secs: f32)
+}
 
 fn check_collision_recs(a: gfx.Rectangle, b: gfx.Rectangle) -&gt; bool
 fn check_collision_circles(c1: gfx.Vector2, r1: f32, c2: gfx.Vector2, r2: f32) -&gt; bool
@@ -484,11 +497,17 @@ impl AnimatedSprite {
     fn unload(self)
 }
 
-struct Camera2D { offset: gfx.Vector2, target: gfx.Vector2, zoom: f32 }
+struct Camera2D { offset: gfx.Vector2, target: gfx.Vector2, zoom: f32, shake_mag: f32 }
+impl Camera2D {
+    fn shake(self: *Camera2D, amount: f32)               # kicks off/intensifies a shake
+    fn update_shake(self: *Camera2D, dt: f32) -&gt; gfx.Vector2   # decay + this frame's jitter offset
+}
 fn begin_mode_2d(cam: Camera2D)   # every draw_* call until end_mode_2d is drawn through cam
 fn end_mode_2d()
 </code></pre>
 <p><code>std/graphics</code> itself grew the two pieces <code>Sprite</code>/<code>Camera2D</code> are built on: <code>Vector2</code>/<code>Rectangle</code> structs, and <code>draw_texture_rec(t: Texture, source: Rectangle, pos: Vector2)</code> — draws just <code>source</code>’s pixel-coordinate sub-rectangle of <code>t</code>, the building block for a spritesheet/atlas where one <code>Texture</code> holds many frames. <code>std/graphics/gl</code> correspondingly grew <code>draw_textured_rect_uv</code> (arbitrary normalized-UV sub-rect sampling) and <code>push_camera_2d</code>/<code>pop_camera_2d</code> (2D scroll+zoom via the GL modelview matrix stack, underneath <code>begin_mode_2d</code>/<code>end_mode_2d</code>).</p>
+<p><code>Vector2</code> also grew arithmetic — <code>add</code>/<code>sub</code>/<code>scale</code>/<code>dot</code>/<code>length</code>/<code>normalize</code>, plus the static <code>Vector2.from_angle(angle, len) -&gt; Vector2</code> (the unit vector at <code>angle</code> radians, scaled to <code>len</code>) — added directly to <code>std/graphics</code> alongside the struct itself, once <code>examples/games/astro_blaster</code> turned out to hand-roll the same <code>cos(angle)*len, sin(angle)*len</code> component math at five separate call sites (thrust, bullet velocity, and three points of ship geometry) with no vector type to express it through. <code>Timer</code>, <code>damp</code>, <code>wrapf</code>/<code>wrap_vec2</code>, <code>blink</code>, and <code>Camera2D.shake</code>/<code>update_shake</code> came from the same pass, generalizing astro_blaster’s own hand-rolled fire-cooldown countdown, drag/shake exponential decay, screen-wrap, and invulnerability-flicker logic into reusable pieces — see this chapter’s worked example below, which now uses all of them.</p>
+<p>One caveat worth knowing if you write similar code: a call that returns a struct/array by value can’t be chained directly into another call as its receiver or argument (<code>foo().add(bar())</code> fails to compile) — bind each call’s result to a named local first (<code>a: Vector2 = foo(); b: Vector2 = a.add(bar_result)</code>). This is <code>EXPR_CALL</code>’s own aggregate-return gap noted in <a href="./status-next.html">Status &amp; Next Work</a>’s Product Gaps, not something <code>gdev</code>-specific.</p>
 <p>A full program, in the style the rest of the book uses — note both <code>gdev</code> and <code>gfx</code> are imported, since <code>gdev</code> only adds to <code>std/graphics</code>’s surface rather than re-wrapping all of it:</p>
 <pre><code>import(gdev = "std/gdev")
 import(gfx  = "std/graphics")
@@ -534,14 +553,15 @@ o, out_err: !audio.AudioOutput = audio.open_output("default", fire_snd.rate, fir
 }
 </code></pre>
 <p><code>check_collision_circles</code> takes two center points and two radii — no <code>Sprite</code>/<code>Texture</code> involved at all, since collision in this design is purely a physics/gameplay concept, decoupled from what (if anything) gets drawn at that position. <code>play_sound</code> sits right next to the state changes it’s paired with, not batched or deferred — there’s no reason to, since it can’t stall this thread no matter when it’s called.</p>
-<p><strong>Camera shake, then drawing through it:</strong></p>
-<pre><code>cam: gdev.Camera2D = gdev.Camera2D{
-    .offset=gfx.Vector2{.x=FWIN_W / 2.0, .y=FWIN_H / 2.0},
-    .target=gfx.Vector2{.x=FWIN_W / 2.0 + @f32(jx), .y=FWIN_H / 2.0 + @f32(jy)},
-    .zoom=1.0,
-}
+<p><strong>Camera shake, kicked off by a hit, applied every frame:</strong></p>
+<pre><code>cam: gdev.Camera2D = gdev.Camera2D{.offset=screen_center, .target=screen_center, .zoom=1.0}
+...
+cam.shake(6.0)   # on an asteroid hit; cam.shake(10.0) on a ship hit — see Camera2D.shake's own doc comment for why a second, smaller shake never resets a bigger one already in progress
+...
+shake_off: gfx.Vector2 = cam.update_shake(dt)
+cam.target = screen_center.add(shake_off)
 </code></pre>
-<p><code>jx</code>/<code>jy</code> are a small random jitter, decayed each frame, added to <code>target</code> — the camera’s own <code>offset</code> (screen center) never moves, only what world-space point it’s centered <em>on</em> does, which is what makes the shake read as “the world jolted” rather than “the UI jolted”: everything drawn between <code>begin_mode_2d(cam)</code>/<code>end_mode_2d()</code> (asteroids, bullets, the ship) shakes; the lives indicator, drawn outside that pair in plain screen space, doesn’t.</p>
+<p><code>cam</code> is created once, before the loop, not rebuilt every frame — <code>shake_mag</code> is state that has to persist and decay across frames. <code>update_shake</code> returns this frame’s small random jitter and decays <code>shake_mag</code> by <code>dt</code> (via <code>gdev.damp</code>) as a side effect; adding the returned offset to <code>screen_center</code> (rather than letting <code>update_shake</code> write <code>target</code> itself) is what lets shake compose with camera-follow logic instead of overwriting it, even though this particular camera doesn’t follow anything and could get away with either. The camera’s own <code>offset</code> (screen center) never moves, only what world-space point it’s centered <em>on</em> does, which is what makes the shake read as “the world jolted” rather than “the UI jolted”: everything drawn between <code>begin_mode_2d(cam)</code>/<code>end_mode_2d()</code> (asteroids, bullets, the ship) shakes; the lives indicator, drawn outside that pair in plain screen space, doesn’t.</p>
 <p>That’s every piece from this chapter appearing in one real program: a decoded, GPU-uploaded texture; a <code>Sprite</code> drawing it; <code>std/audio</code> playing a sound effect exactly when a gameplay event happens; a <code>Camera2D</code> reacting to that same event. <code>examples/games/astro_blaster</code> is the thing to actually run and read end to end — <code>przp run</code> from its own directory.</p>
 <h3 id="layer-3b--guix-native-gui-widgets"><a class="header" href="#layer-3b--guix-native-gui-widgets">Layer 3b — <code>guix</code>, native GUI widgets</a></h3>
 <p>This is the piece aimed squarely at native apps, not games — immediate-mode, raygui-style widgets, plus the concerns a game doesn’t have to think about: DPI scaling, text editing, focus/tab order, and clipboard. No retained widget tree, no event callbacks — each widget function draws itself and returns whether it was interacted with <em>this frame</em>, decided entirely from the current mouse/keyboard state:</p>

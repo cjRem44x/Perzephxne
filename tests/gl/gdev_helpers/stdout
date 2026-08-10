@@ -1,0 +1,19 @@
+add: 4.000000 6.000000
+sub: 2.000000 2.000000
+scale: 6.000000 8.000000
+dot: 11.000000
+length: 5.000000
+normalize: 0.600000 0.800000
+zero normalize: 0.000000 0.000000
+from_angle(0): 5.000000 0.000000
+timer ready@0.3: 0
+timer ready@-0.05: 1
+timer ready after reset: 0
+wrapf: 95.000000 5.000000 50.000000
+wrap_vec2: 95.000000 10.000000
+damp(dt=0): 10.000000
+shake_mag default: 0.000000
+shake_mag after shake(6, then 3 ignored): 6.000000
+shake_mag after update_shake(0.1): 2.695974
+shake offset in range: 1
+blink: 1 0

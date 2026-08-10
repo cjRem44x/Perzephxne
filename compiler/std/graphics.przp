@@ -22,14 +22,65 @@
 # used normally for lifecycle. This is a scoped, temporary coupling that
 # goes away once Backend grows a real submit entry point.
 
-import(win = "std/graphics/window")
-import(gl  = "std/graphics/gl")
-import(img = "std/image")
+import(win  = "std/graphics/window")
+import(gl   = "std/graphics/gl")
+import(img  = "std/image")
+import(math = "std/math")
 
 struct Color { r: u8, g: u8, b: u8, a: u8 }
 
 struct Vector2 { x: f32, y: f32 }
 struct Rectangle { x: f32, y: f32, w: f32, h: f32 }
+
+# Vector2 arithmetic — every 2D game ends up needing these; without them,
+# velocity/thrust/aiming code degenerates into repeating the same
+# component-wise `.x`/`.y` math (and, for anything angle-driven, the same
+# `cos(angle)*len, sin(angle)*len` pair) at every call site instead of
+# once here. `from_angle` is the static constructor for exactly that
+# angle-driven case (a thrust vector, a bullet's initial velocity, ...).
+impl Vector2 {
+    fn add(self, other: Vector2) -> Vector2 {
+        ret Vector2{.x=self.x + other.x, .y=self.y + other.y}
+    }
+
+    fn sub(self, other: Vector2) -> Vector2 {
+        ret Vector2{.x=self.x - other.x, .y=self.y - other.y}
+    }
+
+    fn scale(self, s: f32) -> Vector2 {
+        ret Vector2{.x=self.x * s, .y=self.y * s}
+    }
+
+    fn dot(self, other: Vector2) -> f32 {
+        ret self.x * other.x + self.y * other.y
+    }
+
+    fn length(self) -> f32 {
+        ret @f32(math.sqrt(@f64(self.x * self.x + self.y * self.y)))
+    }
+
+    # normalize: the zero vector normalizes to itself (rather than
+    # dividing by zero) — a stationary object's velocity/facing has no
+    # direction to normalize to, and this is the only sane default that
+    # isn't a crash or a NaN.
+    fn normalize(self) -> Vector2 {
+        len: f32 = self.length()
+        if len == 0.0 { ret Vector2{.x=0.0, .y=0.0} }
+        ret self.scale(1.0 / len)
+    }
+
+    # from_angle: the unit vector at `angle` radians (0 = +x, increasing
+    # counter-clockwise, matching cos/sin directly), scaled to `len` —
+    # e.g. `Vector2.from_angle(ship.angle, SHIP_THRUST * dt)` for a
+    # thrust impulse, or `Vector2.from_angle(angle, BULLET_SPEED)` for a
+    # bullet's initial velocity.
+    fn from_angle(angle: f32, len: f32) -> Vector2 {
+        ret Vector2{
+            .x = @f32(math.cos(@f64(angle))) * len,
+            .y = @f32(math.sin(@f64(angle))) * len,
+        }
+    }
+}
 
 # A handful of named colors (raylib's palette values), since typing out
 # four byte literals every draw call gets old fast. Not exhaustive — add
