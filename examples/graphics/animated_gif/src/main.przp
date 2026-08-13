@@ -1,0 +1,52 @@
+# examples/graphics/animated_gif — std/gdev's AnimatedSprite: decode a
+# GIF (src/assets/bounce.gif, a ball bouncing left-right across a
+# 160x120 canvas, 8 frames) via std/image, upload each frame as its own
+# GL texture up front, then drive playback frame-by-frame off the real
+# per-frame delay as the game loop's own dt advances — the same
+# GIF-to-texture pipeline tests/gl/animated_sprite exercises directly
+# against the compiler, shown here as an actual runnable program instead
+# of a test fixture.
+#
+# Runs a fixed number of frames rather than waiting on should_close() /
+# a real close click, so it finishes on its own under both an interactive
+# X session and a virtual display (Xvfb) — see examples/graphics/sprite_move
+# for the same "run to completion" shape this gallery's other graphics
+# examples use.
+# Needs a real (or virtual, e.g. Xvfb) X display to run against.
+# Run it with: przp run   (from this directory)
+
+import(gfx  = "std/graphics")
+import(gdev = "std/gdev")
+
+FRAMES: i32 = 180
+
+fn main() -> i32 {
+    win: gfx.Window = gfx.Window.open("animated_gif", 320, 240)
+
+    ball, err: !gdev.AnimatedSprite = gdev.load_animated_sprite("src/assets/bounce.gif")
+    if err != 0 {
+        @epf("failed to load bounce.gif: {err}\n")
+        ret 1
+    }
+
+    gdev.set_target_fps(60)
+
+    frame: i32 = 0
+    while frame < FRAMES && !win.should_close() {
+        dt: f32 = gdev.get_frame_time()
+        if dt <= 0.0 { dt = 1.0 / 60.0 }
+        ball.update(dt)
+
+        gdev.begin_drawing()
+        gfx.clear_background(gfx.RAYWHITE)
+        ball.draw(gfx.Vector2{.x=80.0, .y=60.0})   # centers the 160x120 GIF in the 320x240 window
+        gdev.end_drawing()
+        frame += 1
+    }
+
+    @pf("ran {frame} frames, ended on GIF frame {ball.cur_frame} of {ball.n_frames}\n")
+
+    ball.unload()
+    win.close()
+    ret 0
+}
