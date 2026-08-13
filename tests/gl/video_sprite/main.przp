@@ -1,0 +1,44 @@
+# std/video's VideoSprite (MP4 decode -> one reused GL texture ->
+# glTexSubImage2D updates as playback advances) end to end, against
+# tests/run/video_fixtures/testsrc.mp4 (see its own CREDITS.md). Draws
+# after a few update() calls and reads back a pixel to prove real
+# decoded video content actually landed on screen, not just that the
+# decode-loop bookkeeping ran — same shape as tests/gl/animated_sprite's
+# own pixel read-back, just against a video decode instead of a GIF.
+#
+# Doesn't assert an exact pixel value (see std_video_decode.przp's own
+# doc comment on why: H.264 decoder buffering legitimately varies by
+# libavcodec version) — only that the pixel actually changed from the
+# background clear color, proving the texture upload path works.
+
+import(gfx   = "std/graphics")
+import(video = "std/video")
+import(gl    = "std/graphics/gl")
+
+fn main() -> i32 {
+    win: gfx.Window = gfx.Window.open("video sprite test", 32, 24)
+
+    vs, err: !video.VideoSprite = video.load_video_sprite("tests/run/video_fixtures/testsrc.mp4")
+    if err != 0 { @pf("load failed: {err}\n") ret 1 }
+    @pf("w={vs.width()} h={vs.height()}\n")
+
+    n: i32 = 0
+    while n < 10 {
+        vs.update(1.0 / 10.0)
+        n += 1
+    }
+
+    gfx.begin_drawing()
+    gfx.clear_background(gfx.BLUE)
+    vs.draw(gfx.Vector2{.x=0.0, .y=0.0})
+
+    pixel: [4]u8 = undef
+    gl.glReadPixels(16, 12, 1, 1, gl.GL_RGBA, gl.GL_UNSIGNED_BYTE, &pixel[0])
+    changed_from_background: bool = !(pixel[0] == 0u8 && pixel[1] == 0u8 && pixel[2] == 121u8)
+    @pf("drew_video_frame={changed_from_background}\n")
+    gfx.end_drawing()
+
+    vs.unload()
+    win.close()
+    ret 0
+}

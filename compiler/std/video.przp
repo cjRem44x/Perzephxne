@@ -1,0 +1,359 @@
+# std/video — MP4 (or any container ffmpeg's libavformat can demux)
+# video decode, via libavformat/libavcodec/libswscale, plus VideoSprite,
+# a thin GL-texture wrapper for actually drawing what gets decoded.
+# Video-only: the embedded audio track, if any, is entirely ignored —
+# decoding it too would mean binding libswresample and wiring into
+# std/audio's ALSA output, a separate, larger addition than this one;
+# see book/graphics.md's `gmed` section for that plan.
+#
+# VideoSprite lives here rather than in std/gdev (where Sprite/
+# AnimatedSprite, its closest siblings, live) deliberately: this
+# compiler doesn't dead-code-eliminate an imported module's unused
+# functions, so gdev.przp importing std/video would force every existing
+# gdev consumer to also link ffmpeg's libraries, whether or not they
+# ever touch video. Keeping video decode+draw as its own standalone
+# module — imported directly, alongside gdev/gfx, only by programs that
+# actually want it — mirrors std/audio's own MP3-decode-plus-ALSA-
+# playback module, which gdev likewise doesn't import or re-export for
+# the same reason.
+#
+# Not hand-written like std/image's PNG decoder: H.264 involves motion
+# compensation and entropy coding, real codec work, not a format worth
+# reimplementing. Binds an existing decoder (ffmpeg) via extern fn
+# instead — the same FFI approach std/graphics/window already uses for
+# libX11, std/audio for libmpg123/ALSA.
+#
+# Every ffmpeg type here is treated as an opaque *u8 handle — this
+# compiler has no C-header importer, so nothing below relies on a
+# hardcoded struct layout except the handful of fields ffmpeg documents
+# as ABI-stable across a major version (AVFormatContext's nb_streams/
+# streams, AVStream's codecpar/time_base/avg_frame_rate,
+# AVCodecParameters' codec_type/codec_id/width/height/format, AVPacket's
+# stream_index, AVFrame's data/linesize/pts) — the same offset-plus-cast
+# approach std/image's PNG chunk parser already uses for a format it
+# doesn't have a struct for either (see its `read_be32`/chunk-field
+# reads). The offsets below aren't guessed: verified via `offsetof` on
+# this system's real installed headers (ffmpeg 6.1 / libavformat 60 /
+# libavcodec 60 / libavutil 58 / libswscale 7) — see
+# tests/run/std_video_decode.przp for the regression that pins them to
+# an actual decoded file, not just the constants in isolation. A
+# different major ffmpeg version could change these; there is no way to
+# detect that at compile time without a header importer, so a linked
+# ffmpeg whose major version doesn't match the one these offsets were
+# taken from is silently unsafe — pin your system's ffmpeg-dev packages
+# to a 6.x release if you depend on this.
+#
+# Building anything that imports std/video needs libavformat/libavcodec/
+# libavutil/libswscale's *development* packages installed (not just the
+# runtime .so — the dev packages provide the unversioned .so symlink the
+# linker looks for), e.g. `apt install libavformat-dev libavcodec-dev
+# libavutil-dev libswscale-dev` on Debian/Ubuntu, and `link =
+# ["avformat", "avcodec", "avutil", "swscale"]` (alongside whatever
+# std/graphics already needs) in the consuming project's przp.toml.
+
+import(gfx = "std/graphics")
+import(gl  = "std/graphics/gl")
+
+extern fn avformat_open_input(ps: **u8, url: *u8, fmt: *u8, options: **u8) -> i32
+extern fn avformat_close_input(ps: **u8)
+extern fn avformat_find_stream_info(ctx: *u8, options: **u8) -> i32
+extern fn avcodec_find_decoder(id: i32) -> *u8
+extern fn avcodec_alloc_context3(codec: *u8) -> *u8
+extern fn avcodec_parameters_to_context(avctx: *u8, par: *u8) -> i32
+extern fn avcodec_open2(avctx: *u8, codec: *u8, options: **u8) -> i32
+extern fn avcodec_free_context(avctx: **u8)
+extern fn avcodec_flush_buffers(avctx: *u8)
+extern fn av_packet_alloc() -> *u8
+extern fn av_packet_free(pkt: **u8)
+extern fn av_packet_unref(pkt: *u8)
+extern fn av_frame_alloc() -> *u8
+extern fn av_frame_free(frame: **u8)
+extern fn av_read_frame(ctx: *u8, pkt: *u8) -> i32
+extern fn av_seek_frame(ctx: *u8, stream_index: i32, timestamp: i64, flags: i32) -> i32
+extern fn avcodec_send_packet(avctx: *u8, pkt: *u8) -> i32
+extern fn avcodec_receive_frame(avctx: *u8, frame: *u8) -> i32
+
+extern fn sws_getContext(src_w: i32, src_h: i32, src_fmt: i32, dst_w: i32, dst_h: i32, dst_fmt: i32,
+                          flags: i32, src_filter: *u8, dst_filter: *u8, param: *f64) -> *u8
+extern fn sws_scale(ctx: *u8, src_slice: **u8, src_stride: *i32, src_slice_y: i32, src_slice_h: i32,
+                     dst: **u8, dst_stride: *i32) -> i32
+extern fn sws_freeContext(ctx: *u8)
+
+AVMEDIA_TYPE_VIDEO: i32 = 0
+AV_PIX_FMT_RGB24:   i32 = 2
+SWS_BILINEAR:       i32 = 2
+AVSEEK_FLAG_BACKWARD: i32 = 1
+AVERROR_EAGAIN: i32 = -11
+
+# Byte offsets into ffmpeg's opaque structs — see module doc comment.
+OFF_FMT_NB_STREAMS:  usize = 44
+OFF_FMT_STREAMS:     usize = 48
+
+OFF_STREAM_CODECPAR: usize = 16
+OFF_STREAM_TIMEBASE: usize = 32   # AVRational: num at +0, den at +4
+OFF_STREAM_AVGFR:    usize = 88   # AVRational: num at +0, den at +4
+
+OFF_CODECPAR_TYPE:   usize = 0
+OFF_CODECPAR_ID:     usize = 4
+OFF_CODECPAR_FORMAT: usize = 28
+OFF_CODECPAR_WIDTH:  usize = 56
+OFF_CODECPAR_HEIGHT: usize = 60
+
+OFF_PACKET_STREAM_INDEX: usize = 36
+
+OFF_FRAME_DATA:     usize = 0     # *u8[8], contiguous — &data == &data[0]
+OFF_FRAME_LINESIZE:  usize = 64   # i32[8]
+OFF_FRAME_PTS:       usize = 136
+
+fn read_i32(base: *u8, off: usize) -> i32 { ret @bitcast(*i32, base + off).* }
+fn read_i64(base: *u8, off: usize) -> i64 { ret @bitcast(*i64, base + off).* }
+fn read_ptr(base: *u8, off: usize) -> *u8 { ret @bitcast(**u8, base + off).* }
+
+# Video: an open, seekable-from-the-start decode session against one
+# file's first video stream. `rgb` is a single width*height*3 buffer
+# reused (overwritten) by every decoded frame — there is no per-frame
+# history and no audio — so draw it (or upload it to a texture) before
+# the next `update`/`decode_next_frame` call if you need that frame's
+# pixels to still be there afterward.
+struct Video {
+    fmt_ctx:    *u8,
+    codec_ctx:  *u8,
+    sws_ctx:    *u8,
+    packet:     *u8,
+    frame:      *u8,
+    stream_idx: i32,
+    width:      i32,
+    height:     i32,
+    frame_dur_s: f64,   # 1 / average fps — see module doc comment on VFR
+    elapsed_s:   f64,
+    rgb:        *u8,
+    pts:        i64,
+    playing:    bool,
+    looping:    bool,
+    eof:        bool,
+}
+
+# open: probes `path`, picks its first video stream (any audio/subtitle
+# streams are never touched), opens a decoder for it, and sets up an
+# RGB24 swscale conversion at the source's native resolution (no
+# resizing here — draw at native size, or scale on the GPU side the same
+# way any other texture already can). `looping` defaults to true,
+# matching AnimatedSprite's own default.
+fn open(path: str) -> !Video {
+    fmt_ctx: *u8 = null
+    rc: i32 = avformat_open_input(&fmt_ctx, path.data, null, null)
+    if rc < 0 { ret @err(1) }
+
+    rc = avformat_find_stream_info(fmt_ctx, null)
+    if rc < 0 { avformat_close_input(&fmt_ctx) ret @err(2) }
+
+    nb_streams: i32 = read_i32(fmt_ctx, OFF_FMT_NB_STREAMS)
+    streams: *u8 = read_ptr(fmt_ctx, OFF_FMT_STREAMS)
+    stream_idx: i32 = -1
+    stream: *u8 = null
+    i: i32 = 0
+    while i < nb_streams {
+        s: *u8 = read_ptr(streams, @usize(i) * 8)
+        codecpar: *u8 = read_ptr(s, OFF_STREAM_CODECPAR)
+        if read_i32(codecpar, OFF_CODECPAR_TYPE) == AVMEDIA_TYPE_VIDEO {
+            stream_idx = i
+            stream = s
+            i = nb_streams
+        }
+        i += 1
+    }
+    if stream_idx < 0 { avformat_close_input(&fmt_ctx) ret @err(3) }
+
+    codecpar: *u8 = read_ptr(stream, OFF_STREAM_CODECPAR)
+    codec_id: i32 = read_i32(codecpar, OFF_CODECPAR_ID)
+    decoder: *u8 = avcodec_find_decoder(codec_id)
+    if decoder == null { avformat_close_input(&fmt_ctx) ret @err(4) }
+
+    codec_ctx: *u8 = avcodec_alloc_context3(decoder)
+    if codec_ctx == null { avformat_close_input(&fmt_ctx) ret @err(5) }
+    if avcodec_parameters_to_context(codec_ctx, codecpar) < 0 {
+        avcodec_free_context(&codec_ctx)
+        avformat_close_input(&fmt_ctx)
+        ret @err(6)
+    }
+    if avcodec_open2(codec_ctx, decoder, null) < 0 {
+        avcodec_free_context(&codec_ctx)
+        avformat_close_input(&fmt_ctx)
+        ret @err(7)
+    }
+
+    w: i32 = read_i32(codecpar, OFF_CODECPAR_WIDTH)
+    h: i32 = read_i32(codecpar, OFF_CODECPAR_HEIGHT)
+    src_fmt: i32 = read_i32(codecpar, OFF_CODECPAR_FORMAT)
+
+    sws: *u8 = sws_getContext(w, h, src_fmt, w, h, AV_PIX_FMT_RGB24, SWS_BILINEAR, null, null, null)
+    if sws == null {
+        avcodec_free_context(&codec_ctx)
+        avformat_close_input(&fmt_ctx)
+        ret @err(8)
+    }
+
+    fr_num: i32 = read_i32(stream, OFF_STREAM_AVGFR)
+    fr_den: i32 = read_i32(stream, OFF_STREAM_AVGFR + 4)
+    frame_dur_s: f64 = 1.0 / 30.0
+    if fr_num > 0 && fr_den > 0 { frame_dur_s = @f64(fr_den) / @f64(fr_num) }
+
+    pkt: *u8 = av_packet_alloc()
+    frm: *u8 = av_frame_alloc()
+    rgb: *u8 = @alo(u8, @usize(w) * @usize(h) * 3)
+
+    ret @ok(Video{
+        .fmt_ctx=fmt_ctx, .codec_ctx=codec_ctx, .sws_ctx=sws,
+        .packet=pkt, .frame=frm, .stream_idx=stream_idx,
+        .width=w, .height=h, .frame_dur_s=frame_dur_s, .elapsed_s=0.0,
+        .rgb=rgb, .pts=0, .playing=true, .looping=true, .eof=false,
+    })
+}
+
+impl Video {
+    # decode_next_frame: pulls exactly one video frame belonging to
+    # this session's own stream into `rgb`, feeding the decoder more
+    # packets (skipping any belonging to other streams — audio, a
+    # second video track, subtitles) until one comes out. Returns false
+    # at end-of-stream (`eof` is then true) without touching `rgb`, so
+    # the last successfully decoded frame is left as-is rather than
+    # cleared.
+    fn decode_next_frame(self: *Video) -> bool {
+        if self.eof { ret false }
+        got: bool = false
+        done: bool = false
+        while !done {
+            rc: i32 = avcodec_receive_frame(self.codec_ctx, self.frame)
+            if rc == 0 {
+                src_data:   **u8 = @bitcast(**u8, self.frame + OFF_FRAME_DATA)
+                src_stride: *i32 = @bitcast(*i32, self.frame + OFF_FRAME_LINESIZE)
+                dst_data:   [4]*u8 = [self.rgb, null, null, null]
+                dst_stride: [4]i32 = [self.width * 3, 0, 0, 0]
+                sws_scale(self.sws_ctx, src_data, src_stride, 0, self.height, &dst_data[0], &dst_stride[0])
+                self.pts = read_i64(self.frame, OFF_FRAME_PTS)
+                got  = true
+                done = true
+            } elif rc != AVERROR_EAGAIN {
+                self.eof = true
+                done = true
+            } else {
+                fed: bool = false
+                while !fed && !done {
+                    prc: i32 = av_read_frame(self.fmt_ctx, self.packet)
+                    if prc < 0 {
+                        self.eof = true
+                        done = true
+                    } else {
+                        if read_i32(self.packet, OFF_PACKET_STREAM_INDEX) == self.stream_idx {
+                            avcodec_send_packet(self.codec_ctx, self.packet)
+                            fed = true
+                        }
+                        av_packet_unref(self.packet)
+                    }
+                }
+            }
+        }
+        ret got
+    }
+
+    # rewind: seeks back to the start and resets decoder state — used by
+    # `update` when `looping` is true and playback has run off the end.
+    fn rewind(self: *Video) {
+        av_seek_frame(self.fmt_ctx, self.stream_idx, 0, AVSEEK_FLAG_BACKWARD)
+        avcodec_flush_buffers(self.codec_ctx)
+        self.eof = false
+        self.elapsed_s = 0.0
+    }
+
+    # update: a catch-up loop over `dt` seconds, the same shape as
+    # AnimatedSprite.update — decodes however many frames a fixed
+    # average-fps cadence says should have elapsed (see `frame_dur_s`;
+    # a variable-frame-rate source will drift against its own real
+    # timestamps under this model, a known, deliberate simplification).
+    # No-op once a non-looping video has reached its end (`playing`
+    # goes false), matching AnimatedSprite's own stop-at-end behavior.
+    fn update(self: *Video, dt: f32) {
+        if !self.playing { ret }
+        self.elapsed_s += @f64(dt)
+        advancing: bool = true
+        while advancing {
+            if self.elapsed_s < self.frame_dur_s { advancing = false } else {
+                if self.decode_next_frame() {
+                    self.elapsed_s -= self.frame_dur_s
+                } else {
+                    if self.looping {
+                        self.rewind()
+                    } else {
+                        self.playing = false
+                    }
+                    advancing = false
+                }
+            }
+        }
+    }
+
+    fn close(self: *Video) {
+        avcodec_free_context(&self.codec_ctx)
+        avformat_close_input(&self.fmt_ctx)
+        sws_freeContext(self.sws_ctx)
+        av_packet_free(&self.packet)
+        av_frame_free(&self.frame)
+        @free(self.rgb)
+    }
+}
+
+# ── Video sprite (GL texture, kept in sync with decode) ─────────────────────
+
+# VideoSprite: a Video drawn as a single GL texture that gets
+# *overwritten in place* (via gl.update_texture) every time playback
+# advances to a new frame — unlike AnimatedSprite (std/gdev), which
+# pre-uploads every GIF frame as its own texture up front, a video can
+# be thousands of frames long, so there is exactly one texture here,
+# reused for the whole video's lifetime.
+struct VideoSprite {
+    video:  Video,
+    tex_id: u32,
+}
+
+# load_video_sprite: opens `path` and decodes its first frame
+# immediately so there's real pixel data to create the GL texture from —
+# a video with no video stream, or one that fails to decode even one
+# frame, fails here rather than handing back a sprite with garbage
+# texture contents.
+fn load_video_sprite(path: str) -> !VideoSprite {
+    v, err: !Video = open(path)
+    if err != 0 { ret @err(err) }
+    if !v.decode_next_frame() {
+        v.close()
+        ret @err(100)
+    }
+    tex: u32 = gl.create_texture(v.rgb, v.width, v.height, 3)
+    ret @ok(VideoSprite{.video=v, .tex_id=tex})
+}
+
+impl VideoSprite {
+    # update: advance playback by `dt` seconds, same as AnimatedSprite's
+    # own `update` — re-uploads the texture only when a new frame was
+    # actually decoded this call (compares `pts` before/after), not on
+    # every call regardless, since most calls with a small `dt` decode
+    # nothing new.
+    fn update(self: *VideoSprite, dt: f32) {
+        before: i64 = self.video.pts
+        self.video.update(dt)
+        if self.video.pts != before {
+            gl.update_texture(self.tex_id, self.video.rgb, self.video.width, self.video.height, 3)
+        }
+    }
+
+    fn draw(self, pos: gfx.Vector2) {
+        gl.draw_textured_rect(self.tex_id, pos.x, pos.y, @f32(self.video.width), @f32(self.video.height))
+    }
+
+    fn width(self) -> i32 { ret self.video.width }
+    fn height(self) -> i32 { ret self.video.height }
+
+    fn unload(self: *VideoSprite) {
+        gl.delete_texture(self.tex_id)
+        self.video.close()
+    }
+}
