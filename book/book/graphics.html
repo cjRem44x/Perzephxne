@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-903cc269.js";
+            window.path_to_searchindex_js = "searchindex-c5835182.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-4e58bc13.js"></script>
@@ -346,6 +346,7 @@ RAYWHITE: Color : Color{.r=245, .g=245, .b=245, .a=255}   # + BLACK, WHITE, RED,
 
 enum Key =&gt; i32 { Space = 0, Enter = 1, Escape = 2, Up = 3, Down = 4, Left = 5, Right = 6, A = 7, /* ...Z = 32 */ }
 enum MouseButton =&gt; i32 { Left = 0, Right = 1, Middle = 2 }
+enum WindowFlag =&gt; u32 { Resizable = 1, Fullscreen = 2 }   # bits for Window.configs
 
 struct Window { w: i32, h: i32 }
 impl Window {
@@ -354,6 +355,9 @@ impl Window {
     fn set_resizable(self, resizable: bool)   # raylib-shaped; false locks the window to its current size
     fn set_min_size(self, w: i32, h: i32)     # only takes effect while resizable
     fn set_max_size(self, w: i32, h: i32)     # only takes effect while resizable
+    fn resize(self, w: i32, h: i32)           # programmatic resize, not just a WM-negotiated constraint
+    fn set_fullscreen(self, enabled: bool)    # covers the screen; restores the pre-fullscreen size on false
+    fn configs(self, flags: u32)              # raylib-shaped: apply several WindowFlag bits in one call
     fn close(self)
 }
 
@@ -369,6 +373,8 @@ fn draw_circle(x: f32, y: f32, radius: f32, c: Color)
 fn draw_line(x1: f32, y1: f32, x2: f32, y2: f32, c: Color)
 </code></pre>
 <p>Single-window model, deliberately (like raylib): <code>Window.open</code> sets one module-level “current window” state; every other function operates on it implicitly, with no handle threaded through every call. A freshly opened window resizes freely (X11’s own default — no size hints are set until one of these is called); <code>set_resizable(false)</code> locks it to whatever size it happened to be at that moment, <code>set_min_size</code>/<code>set_max_size</code> bound it while resizable, and all three go through one <code>apply_size_hints</code> that pushes a fresh <code>XSizeHints</code> (<code>PMinSize</code>/<code>PMaxSize</code>) via <code>XSetWMNormalHints</code> — X11 hints replace the whole struct rather than accumulating, so it’s recomputed from <code>GfxState</code> on every call, not patched in place. Toggling <code>set_resizable(false)</code> then back to <code>(true)</code> restores whatever min/max was configured before, since the fixed-size lock never overwrites <code>STATE.min_w</code>/etc., it just overrides them while inactive. Input is sampled once per frame inside <code>end_drawing</code> (see <code>poll_events</code> in <code>compiler/std/graphics.przp</code>) — key/mouse state read anywhere in a frame reflects exactly what was true when that frame’s events were drained, not a live read racing the event queue. A <code>KeyPress</code>/<code>KeyRelease</code> event’s raw X11 <code>KeySym</code> is mapped to a <code>Key</code> by <code>keysym_to_key</code>, tested directly against hardcoded <code>KeySym</code> constants from <code>X11/keysymdef.h</code> (<code>tests/gl/graphics_layer2</code>) rather than through a real key event, since the actual <code>KeySym</code> a keycode produces depends on the test machine’s keyboard layout.</p>
+<p><code>resize</code>/<code>set_fullscreen</code>/<code>configs</code> are programmatic — distinct from <code>set_min_size</code>/<code>set_max_size</code>, which only <em>constrain</em> what the window manager/user is allowed to resize to, never resize anything themselves. <code>resize(w, h)</code> calls <code>XResizeWindow</code> directly; <code>set_fullscreen(true)</code> covers the screen (<code>XDisplayWidth</code>/<code>XDisplayHeight</code>, then <code>XMoveResizeWindow</code> to <code>(0, 0, screen_w, screen_h)</code>) and remembers the pre-fullscreen size to restore on <code>set_fullscreen(false)</code> — deliberately WM-independent (a direct geometry change) rather than the EWMH <code>_NET_WM_STATE_FULLSCREEN</code> <code>ClientMessage</code> a real desktop compositor would negotiate, since this project’s own Xvfb-based test environment has no window manager running at all to answer that message. <code>configs(flags)</code> is the raylib-shaped bulk form — <code>win.configs(@u32(gfx.WindowFlag.Resizable) | @u32(gfx.WindowFlag.Fullscreen))</code> instead of one call per flag — currently covering only <code>Resizable</code>/<code>Fullscreen</code>, not a placeholder for raylib flags (MSAA hints, VSYNC, …) nothing here backs yet.</p>
+<p>Writing this surfaced a real, previously-unnoticed bug: <code>glViewport</code> was declared (<code>std/graphics/gl.przp</code>) but never actually <em>called</em> anywhere — every resize path, including the pre-existing window-manager-driven one (<code>poll_events</code>’s own <code>EVENT_CONFIGURE_NOTIFY</code> handling), updated the GL projection matrix (<code>set_ortho_2d</code>) but left the GL <em>viewport</em> pinned to whatever size the window had when its context was created, so rendered content stayed stretched/cropped into a stale sub-rectangle instead of actually filling a resized window. Fixed by folding <code>glViewport(0, 0, w, h)</code> into <code>set_ortho_2d</code> itself, the one place every resize path already calls. A second fix, <code>gl.on_resize</code> (re-issuing <code>glXMakeCurrent</code> before <code>set_ortho_2d</code>, standard GLX practice after a bound drawable’s size changes), turned out to be unverifiable end-to-end here: under this project’s own Xvfb + software-GL (llvmpipe/swrast, no GPU) test setup, <code>XResizeWindow</code> on a window with a bound GLX context breaks rendering entirely, confirmed even with zero GL-side handling involved — an environment limitation, not a bug this code can route around. <code>tests/gl/window_resize</code> verifies what <em>is</em> verifiable here (the real X11-level resize, via <code>XGetWindowAttributes</code>, the same technique <code>tests/gl/window_size_hints</code> already uses for WM size hints); a real GPU-backed X server is expected to render correctly across a resize the way any other GLX application does.</p>
 <p>A full loop, in the shape <code>gdev</code>’s own loop (see its section below) will look identical to once it exists:</p>
 <pre><code>import(gfx = "std/graphics")
 

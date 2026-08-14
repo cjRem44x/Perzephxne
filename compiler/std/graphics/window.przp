@@ -33,6 +33,10 @@ extern fn XPending(display: *u8) -> i32
 extern fn XFlush(display: *u8) -> i32
 extern fn XSendEvent(display: *u8, window: u64, propagate: i32, mask: i64, event: *u8) -> i32
 extern fn XSetWMNormalHints(display: *u8, window: u64, hints: *u8) -> i32
+extern fn XResizeWindow(display: *u8, window: u64, w: u32, h: u32) -> i32
+extern fn XMoveResizeWindow(display: *u8, window: u64, x: i32, y: i32, w: u32, h: u32) -> i32
+extern fn XDisplayWidth(display: *u8, screen: i32) -> i32
+extern fn XDisplayHeight(display: *u8, screen: i32) -> i32
 extern fn memset(dst: *u8, val: i32, n: usize) -> *u8
 
 # KeySym for a given (Display, KeyCode, index). index 0 is the plain

@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-903cc269.js";
+            window.path_to_searchindex_js = "searchindex-c5835182.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-4e58bc13.js"></script>
@@ -185,22 +185,40 @@
 <tr><th>Precedence</th><th>Operators</th><th>Associativity</th><th>Notes</th></tr>
 </thead>
 <tbody>
-<tr><td>13</td><td><code>()</code> <code>[]</code> <code>.</code> <code>.*</code></td><td>left</td><td>call, index, field, deref</td></tr>
-<tr><td>12</td><td>unary <code>-</code> <code>!</code> <code>~</code> <code>&amp;</code> <code>*</code></td><td>right</td><td>negate, logical-not, bitwise-not, address-of, deref</td></tr>
-<tr><td>11</td><td><code>*</code> <code>/</code> <code>%</code></td><td>left</td><td>multiplication, division, modulo</td></tr>
-<tr><td>10</td><td><code>+</code> <code>-</code></td><td>left</td><td>addition, subtraction</td></tr>
+<tr><td>14</td><td><code>()</code> <code>[]</code> <code>.</code> <code>.*</code></td><td>left</td><td>call, index, field, deref</td></tr>
+<tr><td>13</td><td>unary <code>-</code> <code>!</code> <code>~</code> <code>&amp;</code> <code>*</code></td><td>right</td><td>negate, logical-not, bitwise-not, address-of, deref</td></tr>
+<tr><td>12</td><td><code>*</code> <code>/</code> <code>%</code></td><td>left</td><td>multiplication, division, modulo</td></tr>
+<tr><td>11</td><td><code>+</code> <code>-</code></td><td>left</td><td>addition, subtraction</td></tr>
+<tr><td>10</td><td><code>..</code> <code>..=</code></td><td>left</td><td>range</td></tr>
 <tr><td>9</td><td><code>&lt;&lt;</code> <code>&gt;&gt;</code></td><td>left</td><td>bit shift</td></tr>
-<tr><td>8</td><td><code>&amp;</code></td><td>left</td><td>bitwise AND</td></tr>
-<tr><td>7</td><td><code>^</code></td><td>left</td><td>bitwise XOR</td></tr>
-<tr><td>6</td><td><code>|</code></td><td>left</td><td>bitwise OR</td></tr>
-<tr><td>5</td><td><code>==</code> <code>!=</code> <code>&lt;</code> <code>&gt;</code> <code>&lt;=</code> <code>&gt;=</code></td><td>left</td><td>comparison</td></tr>
-<tr><td>4</td><td><code>&amp;&amp;</code></td><td>left</td><td>logical AND</td></tr>
-<tr><td>3</td><td><code>||</code></td><td>left</td><td>logical OR</td></tr>
-<tr><td>2</td><td><code>..</code> <code>..=</code></td><td>left</td><td>range</td></tr>
+<tr><td>8</td><td><code>&lt;</code> <code>&gt;</code> <code>&lt;=</code> <code>&gt;=</code></td><td>left</td><td>relational comparison</td></tr>
+<tr><td>7</td><td><code>==</code> <code>!=</code></td><td>left</td><td>equality comparison</td></tr>
+<tr><td>6</td><td><code>&amp;</code></td><td>left</td><td>bitwise AND</td></tr>
+<tr><td>5</td><td><code>^</code></td><td>left</td><td>bitwise XOR</td></tr>
+<tr><td>4</td><td><code>|</code></td><td>left</td><td>bitwise OR</td></tr>
+<tr><td>3</td><td><code>&amp;&amp;</code></td><td>left</td><td>logical AND</td></tr>
+<tr><td>2</td><td><code>||</code></td><td>left</td><td>logical OR</td></tr>
 <tr><td>1</td><td><code>=</code> <code>+=</code> <code>-=</code> <code>*=</code> <code>/=</code> <code>%=</code> <code>&amp;=</code> <code>|=</code> <code>^=</code> <code>&lt;&lt;=</code> <code>&gt;&gt;=</code></td><td>right</td><td>assignment (statement only)</td></tr>
 </tbody>
 </table>
 </div>
+<p>This table is the C family’s own precedence ordering, not a cleaned-up
+one — bitwise <code>&amp;</code>/<code>^</code>/<code>|</code> bind <em>looser</em> than every comparison, and
+relational (<code>&lt;</code> <code>&gt;</code> <code>&lt;=</code> <code>&gt;=</code>) binds tighter than equality (<code>==</code> <code>!=</code>),
+both of which read as backwards on first glance if you’re used to a
+language that fixed this (Python, Rust, Zig all bind bitwise ops
+tighter than comparisons; C, and this table, don’t). Concretely:
+<code>flags &amp; MASK != 0</code> parses as <code>flags &amp; (MASK != 0)</code> — a <code>u32</code>/<code>bool</code>
+type mismatch, not the “did this bit come out nonzero” check it looks
+like — and <code>a &lt; b == c &lt; d</code> parses as <code>(a &lt; b) == (c &lt; d)</code>, not
+left-to-right as four terms in one chain. Always parenthesize a bitwise
+op the moment it sits next to a comparison: <code>(flags &amp; MASK) != 0</code>.</p>
+<p>Range (<code>..</code>/<code>..=</code>) binds far tighter than its position in a mental
+model built from “loosest, right above assignment” would suggest —
+tighter than shift, comparison, bitwise, and logical, only looser than
+arithmetic. <code>0..n + 1</code> is <code>0..(n + 1)</code>, matching the common case
+(a range endpoint computed from an expression) without parens, but
+<code>0..n &amp; mask</code> is <code>(0..n) &amp; mask</code>, not <code>0..(n &amp; mask)</code>.</p>
 <h2 id="notes"><a class="header" href="#notes">Notes</a></h2>
 <ul>
 <li>Assignment operators are <strong>statements</strong> — they do not produce values and cannot appear in expressions.</li>
@@ -218,8 +236,14 @@ y: i32 = a + b * c
 # comparison before logical
 z: bool = a &lt; b &amp;&amp; c &gt; d
 
-# range
-r: range = 0..10
+# bitwise vs. comparison — the C-style gotcha above; parenthesize
+ok:  bool = (flags &amp; MASK) != 0
+# bad: bool = flags &amp; MASK != 0   # flags &amp; (MASK != 0) -- type error
+
+# range binds tighter than +/- would suggest from its "near assignment"
+# position further down this table -- looser than arithmetic, tighter
+# than everything else
+r: []i32 = arr[0..n + 1]
 
 # deref and field
 v: f64 = p.*.x        # deref p, then access field x

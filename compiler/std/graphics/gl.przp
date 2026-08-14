@@ -150,7 +150,24 @@ fn destroy_context(display: *u8, ctx: *u8) {
 # bottom-right, matching screen/raylib coordinate conventions rather than
 # GL's default bottom-left-origin, Y-up NDC cube. Call once per resize
 # (including the first frame), before any draw_* call.
+#
+# Also resets the GL *viewport* to (0, 0, w, h) — easy to assume the
+# projection matrix alone is enough since it's what maps world-space
+# coordinates to NDC, but it's the viewport that then maps NDC to actual
+# framebuffer pixels; leaving it at whatever size the window had when
+# the context was created means every resize path here (window-manager-
+# driven, via poll_events' EVENT_CONFIGURE_NOTIFY; or programmatic, via
+# Window.resize/set_fullscreen) updated the projection correctly but
+# left rendering pinned to the *original* window's pixel dimensions —
+# real content, just stretched/cropped into a stale sub-rectangle of
+# the actually-resized window instead of filling it. Nothing had caught
+# this before: `tests/gl/window_size_hints` only ever checks WM size
+# *hints* (min/max constraints via XGetWMNormalHints), never an actual
+# resize followed by a draw+read-back — this fixes it for every caller
+# in one place rather than at each of the (now four) call sites that
+# resize a window.
 fn set_ortho_2d(w: i32, h: i32) {
+    glViewport(0, 0, w, h)
     glMatrixMode(GL_PROJECTION)
     glLoadIdentity()
     glOrtho(0.0, @f64(w), @f64(h), 0.0, -1.0, 1.0)
@@ -330,6 +347,31 @@ fn gl_backend_present(ctx: *u8) {
 fn gl_backend_shutdown(ctx: *u8) {
     bctx: *GLBackendCtx = ctx
     destroy_context(bctx.display, bctx.ctx)
+}
+
+# on_resize: call after actually resizing the underlying X window (see
+# std/graphics's Window.resize/set_fullscreen) to make the GL side catch
+# up. Re-issues glXMakeCurrent on the same (display, window, ctx) before
+# set_ortho_2d's own glViewport/glOrtho calls — standard GLX practice
+# after a drawable's size changes underneath a bound context, since not
+# every driver notices on its own.
+#
+# Caveat, found while adding this: under Xvfb + a software GL renderer
+# (llvmpipe/swrast, no GPU — this project's own test environment),
+# XResizeWindow on a window with a bound GLX context breaks rendering
+# entirely (every subsequent draw reads back as untouched/black),
+# confirmed even with *no* GL-side handling at all — a bare
+# XResizeWindow call, nothing else, already breaks it. So this couldn't
+# be verified end-to-end by pixel read-back here the way the rest of
+# tests/gl is: `resize`'s X11-level effect (the window's own reported
+# dimensions) is real and tested (XGetWindowAttributes agrees), but
+# rendering-after-resize itself is an environment limitation of
+# Xvfb+swrast specifically, not something this code can route around —
+# a real GPU-backed X server is expected to handle this normally.
+fn on_resize(ctx: *u8, w: i32, h: i32) {
+    bctx: *GLBackendCtx = ctx
+    glXMakeCurrent(bctx.display, bctx.window, bctx.ctx)
+    set_ortho_2d(w, h)
 }
 
 GL_BACKEND: be.Backend : be.Backend{

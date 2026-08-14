@@ -1,0 +1,55 @@
+# regression: Window.resize/set_fullscreen/configs actually resize the
+# real X11 window (XResizeWindow/XMoveResizeWindow), and keep
+# gfx.STATE.width/height in sync. Verified at the X11 protocol level via
+# XGetWindowAttributes (the same technique tests/gl/window_size_hints
+# uses for WM size hints) — not via a pixel read-back after resize the
+# way the rest of tests/gl verifies drawing, since XResizeWindow on a
+# window with a bound GLX context breaks rendering entirely under this
+# project's own Xvfb + software-GL (llvmpipe/swrast) test environment,
+# confirmed even with no GL-side handling at all involved — an
+# environment limitation, not something gfx.Window.resize's own logic
+# can route around; see std/graphics/gl.przp's on_resize doc comment.
+# A real GPU-backed X server is expected to render correctly across a
+# resize the same way any other GLX application does.
+
+import(gfx = "std/graphics")
+
+extern fn XGetWindowAttributes(display: *u8, window: u64, attrs_out: *u8) -> i32
+
+fn dims(buf: *u8) -> (i32, i32) {
+    XGetWindowAttributes(gfx.STATE.display, gfx.STATE.window, buf)
+    w: *i32 = buf + 8
+    h: *i32 = buf + 12
+    ret (w.*, h.*)
+}
+
+fn main() -> i32 {
+    win: gfx.Window = gfx.Window.open("resize test", 100, 100)
+    buf: [160]u8 = undef
+
+    a: (i32, i32) = dims(&buf[0])
+    @pf("initial: {a.0}x{a.1} state={gfx.STATE.width}x{gfx.STATE.height}\n")
+
+    win.resize(200, 150)
+    b: (i32, i32) = dims(&buf[0])
+    @pf("after resize(200,150): {b.0}x{b.1} state={gfx.STATE.width}x{gfx.STATE.height}\n")
+
+    win.set_fullscreen(true)
+    c: (i32, i32) = dims(&buf[0])
+    # not asserting the exact screen size here -- that's Xvfb's own
+    # configured resolution, not something this test should couple to
+    grew_to_screen: bool = c.0 > 200 && c.1 > 150 && c.0 == gfx.STATE.width && c.1 == gfx.STATE.height
+    @pf("after fullscreen(true): grew_to_screen={grew_to_screen} fullscreen={gfx.STATE.fullscreen}\n")
+
+    win.set_fullscreen(false)
+    d: (i32, i32) = dims(&buf[0])
+    @pf("after fullscreen(false): {d.0}x{d.1} state={gfx.STATE.width}x{gfx.STATE.height} fullscreen={gfx.STATE.fullscreen}\n")
+    @pf("restored to pre-fullscreen size: {d.0 == 200 && d.1 == 150}\n")
+
+    win.configs(@u32(gfx.WindowFlag.Fullscreen))
+    e: (i32, i32) = dims(&buf[0])
+    @pf("after configs(Fullscreen): fullscreen={gfx.STATE.fullscreen} grew={e.0 > 200 && e.1 > 150}\n")
+
+    win.close()
+    ret 0
+}

@@ -212,6 +212,7 @@ RAYWHITE: Color : Color{.r=245, .g=245, .b=245, .a=255}   # + BLACK, WHITE, RED,
 
 enum Key => i32 { Space = 0, Enter = 1, Escape = 2, Up = 3, Down = 4, Left = 5, Right = 6, A = 7, /* ...Z = 32 */ }
 enum MouseButton => i32 { Left = 0, Right = 1, Middle = 2 }
+enum WindowFlag => u32 { Resizable = 1, Fullscreen = 2 }   # bits for Window.configs
 
 struct Window { w: i32, h: i32 }
 impl Window {
@@ -220,6 +221,9 @@ impl Window {
     fn set_resizable(self, resizable: bool)   # raylib-shaped; false locks the window to its current size
     fn set_min_size(self, w: i32, h: i32)     # only takes effect while resizable
     fn set_max_size(self, w: i32, h: i32)     # only takes effect while resizable
+    fn resize(self, w: i32, h: i32)           # programmatic resize, not just a WM-negotiated constraint
+    fn set_fullscreen(self, enabled: bool)    # covers the screen; restores the pre-fullscreen size on false
+    fn configs(self, flags: u32)              # raylib-shaped: apply several WindowFlag bits in one call
     fn close(self)
 }
 
@@ -236,6 +240,10 @@ fn draw_line(x1: f32, y1: f32, x2: f32, y2: f32, c: Color)
 ```
 
 Single-window model, deliberately (like raylib): `Window.open` sets one module-level "current window" state; every other function operates on it implicitly, with no handle threaded through every call. A freshly opened window resizes freely (X11's own default — no size hints are set until one of these is called); `set_resizable(false)` locks it to whatever size it happened to be at that moment, `set_min_size`/`set_max_size` bound it while resizable, and all three go through one `apply_size_hints` that pushes a fresh `XSizeHints` (`PMinSize`/`PMaxSize`) via `XSetWMNormalHints` — X11 hints replace the whole struct rather than accumulating, so it's recomputed from `GfxState` on every call, not patched in place. Toggling `set_resizable(false)` then back to `(true)` restores whatever min/max was configured before, since the fixed-size lock never overwrites `STATE.min_w`/etc., it just overrides them while inactive. Input is sampled once per frame inside `end_drawing` (see `poll_events` in `compiler/std/graphics.przp`) — key/mouse state read anywhere in a frame reflects exactly what was true when that frame's events were drained, not a live read racing the event queue. A `KeyPress`/`KeyRelease` event's raw X11 `KeySym` is mapped to a `Key` by `keysym_to_key`, tested directly against hardcoded `KeySym` constants from `X11/keysymdef.h` (`tests/gl/graphics_layer2`) rather than through a real key event, since the actual `KeySym` a keycode produces depends on the test machine's keyboard layout.
+
+`resize`/`set_fullscreen`/`configs` are programmatic — distinct from `set_min_size`/`set_max_size`, which only *constrain* what the window manager/user is allowed to resize to, never resize anything themselves. `resize(w, h)` calls `XResizeWindow` directly; `set_fullscreen(true)` covers the screen (`XDisplayWidth`/`XDisplayHeight`, then `XMoveResizeWindow` to `(0, 0, screen_w, screen_h)`) and remembers the pre-fullscreen size to restore on `set_fullscreen(false)` — deliberately WM-independent (a direct geometry change) rather than the EWMH `_NET_WM_STATE_FULLSCREEN` `ClientMessage` a real desktop compositor would negotiate, since this project's own Xvfb-based test environment has no window manager running at all to answer that message. `configs(flags)` is the raylib-shaped bulk form — `win.configs(@u32(gfx.WindowFlag.Resizable) | @u32(gfx.WindowFlag.Fullscreen))` instead of one call per flag — currently covering only `Resizable`/`Fullscreen`, not a placeholder for raylib flags (MSAA hints, VSYNC, ...) nothing here backs yet.
+
+Writing this surfaced a real, previously-unnoticed bug: `glViewport` was declared (`std/graphics/gl.przp`) but never actually *called* anywhere — every resize path, including the pre-existing window-manager-driven one (`poll_events`'s own `EVENT_CONFIGURE_NOTIFY` handling), updated the GL projection matrix (`set_ortho_2d`) but left the GL *viewport* pinned to whatever size the window had when its context was created, so rendered content stayed stretched/cropped into a stale sub-rectangle instead of actually filling a resized window. Fixed by folding `glViewport(0, 0, w, h)` into `set_ortho_2d` itself, the one place every resize path already calls. A second fix, `gl.on_resize` (re-issuing `glXMakeCurrent` before `set_ortho_2d`, standard GLX practice after a bound drawable's size changes), turned out to be unverifiable end-to-end here: under this project's own Xvfb + software-GL (llvmpipe/swrast, no GPU) test setup, `XResizeWindow` on a window with a bound GLX context breaks rendering entirely, confirmed even with zero GL-side handling involved — an environment limitation, not a bug this code can route around. `tests/gl/window_resize` verifies what *is* verifiable here (the real X11-level resize, via `XGetWindowAttributes`, the same technique `tests/gl/window_size_hints` already uses for WM size hints); a real GPU-backed X server is expected to render correctly across a resize the way any other GLX application does.
 
 A full loop, in the shape `gdev`'s own loop (see its section below) will look identical to once it exists:
 

@@ -108,6 +108,17 @@ enum MouseButton => i32 {
     Left = 0, Right = 1, Middle = 2,
 }
 
+# WindowFlag: bits for Window.configs — raylib-shaped bulk window
+# configuration (`win.configs(@u32(WindowFlag.Resizable) | @u32(WindowFlag.Fullscreen))`)
+# instead of one call per setting. Powers of 2 so any subset ORs
+# together without collision; only covers what Window.configs actually
+# knows how to apply today (resizable, fullscreen) — not a placeholder
+# for raylib flags (MSAA hints, VSYNC, ...) nothing here backs yet.
+enum WindowFlag => u32 {
+    Resizable  = 1,
+    Fullscreen = 2,
+}
+
 struct Window { w: i32, h: i32 }
 
 struct GfxState {
@@ -125,6 +136,8 @@ struct GfxState {
     resizable: bool,   # see set_resizable/apply_size_hints
     min_w: i32, min_h: i32,   # 0 = no minimum set
     max_w: i32, max_h: i32,   # 0 = no maximum set
+    fullscreen: bool,           # see set_fullscreen
+    pre_fs_w: i32, pre_fs_h: i32,   # size to restore on set_fullscreen(false)
 }
 
 # Zero-initialized: null display, 0 window/wm_delete, false should_close,
@@ -201,7 +214,7 @@ fn poll_events() {
             if neww != STATE.width || newh != STATE.height {
                 STATE.width  = neww
                 STATE.height = newh
-                gl.set_ortho_2d(neww, newh)
+                gl.on_resize(STATE.backend_ctx, neww, newh)
             }
         }
     }
@@ -293,6 +306,72 @@ impl Window {
         STATE.max_w = w
         STATE.max_h = h
         apply_size_hints()
+    }
+
+    # resize: programmatically resize the window to exactly (w, h) —
+    # distinct from set_min_size/set_max_size, which only constrain what
+    # the window manager/user is allowed to resize *to*, never resize
+    # anything themselves. Updates STATE and the GL ortho projection
+    # immediately, the same two things poll_events' own
+    # EVENT_CONFIGURE_NOTIFY handler updates when a resize instead comes
+    # from the window manager — so a draw call issued right after
+    # `resize` (before the next `end_drawing`/poll) still sees the new
+    # size, rather than waiting a frame for that event to arrive.
+    fn resize(self, w: i32, h: i32) {
+        win.XResizeWindow(STATE.display, STATE.window, @u32(w), @u32(h))
+        win.XFlush(STATE.display)
+        STATE.width  = w
+        STATE.height = h
+        gl.on_resize(STATE.backend_ctx, w, h)
+    }
+
+    # set_fullscreen: WM-independent — resizes+moves the window to cover
+    # the whole screen directly (XMoveResizeWindow), rather than sending
+    # a `_NET_WM_STATE_FULLSCREEN` EWMH ClientMessage and relying on a
+    # window manager to honor it. That's the "correct" desktop-integrated
+    # way (real border/decoration removal, compositor bypass) but it's
+    # unverifiable here: Xvfb (this test suite's own virtual display) has
+    # no window manager running at all to answer that message, so a test
+    # asserting fullscreen actually took effect would have nothing to
+    # check against. Covering the screen's own pixel dimensions is
+    # WM-independent and exactly what `resize` already does under the
+    # hood, so it composes with `resize` rather than needing new
+    # machinery — restores the pre-fullscreen size on `false` rather
+    # than leaving the window pinned at screen size.
+    fn set_fullscreen(self, enabled: bool) {
+        if enabled == STATE.fullscreen { ret }
+        w: i32 = STATE.width
+        h: i32 = STATE.height
+        if enabled {
+            STATE.pre_fs_w = STATE.width
+            STATE.pre_fs_h = STATE.height
+            w = win.XDisplayWidth(STATE.display, win.XDefaultScreen(STATE.display))
+            h = win.XDisplayHeight(STATE.display, win.XDefaultScreen(STATE.display))
+        } else {
+            w = STATE.pre_fs_w
+            h = STATE.pre_fs_h
+        }
+        # XMoveResizeWindow, not just resize()'s XResizeWindow: fullscreen
+        # must also pin the window back to (0, 0), not just cover the
+        # screen's pixel dimensions wherever the window already sits.
+        win.XMoveResizeWindow(STATE.display, STATE.window, 0, 0, @u32(w), @u32(h))
+        win.XFlush(STATE.display)
+        STATE.width  = w
+        STATE.height = h
+        gl.on_resize(STATE.backend_ctx, w, h)
+        STATE.fullscreen = enabled
+    }
+
+    # configs: raylib-shaped bulk window configuration — apply every
+    # WindowFlag set in `flags` in one call, e.g.
+    # `win.configs(@u32(WindowFlag.Resizable) | @u32(WindowFlag.Fullscreen))`.
+    # Equivalent to calling `set_resizable`/`set_fullscreen` individually;
+    # this is just the batch form for setting several at once, the same
+    # way raylib's own `SetWindowState` takes an OR'd flag mask instead
+    # of one call per flag.
+    fn configs(self, flags: u32) {
+        if (flags & @u32(WindowFlag.Resizable))  != 0 { self.set_resizable(true) }
+        if (flags & @u32(WindowFlag.Fullscreen)) != 0 { self.set_fullscreen(true) }
     }
 
     fn close(self) {
