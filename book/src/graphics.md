@@ -434,6 +434,8 @@ fn load_animated_sprite(path: str) -> !AnimatedSprite
 impl AnimatedSprite {
     fn update(self: *AnimatedSprite, dt: f32)
     fn draw(self, pos: gfx.Vector2)
+    fn width(self) -> i32    # the animation's frame size — every GIF frame shares one canvas size
+    fn height(self) -> i32
     fn unload(self)
 }
 

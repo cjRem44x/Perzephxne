@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-3340afc1.js";
+            window.path_to_searchindex_js = "searchindex-903cc269.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-4e58bc13.js"></script>
@@ -3362,6 +3362,8 @@ fn load_animated_sprite(path: str) -&gt; !AnimatedSprite
 impl AnimatedSprite {
     fn update(self: *AnimatedSprite, dt: f32)
     fn draw(self, pos: gfx.Vector2)
+    fn width(self) -&gt; i32    # the animation's frame size — every GIF frame shares one canvas size
+    fn height(self) -&gt; i32
     fn unload(self)
 }
 
