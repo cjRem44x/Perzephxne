@@ -1,0 +1,108 @@
+# examples/graphics/media_gallery — cycling through different media
+# types in one window: a static PNG image (std/graphics.Texture), an
+# animated GIF (std/gdev.AnimatedSprite), and an MP4 clip
+# (std/video.VideoSprite), one at a time, auto-advancing every few
+# seconds (gdev.Timer) or immediately on Space.
+#
+# There's no polymorphism/interfaces in this language (no "Drawable"
+# trait to hold one of the three in a single slot) — deliberately not
+# something gdev/std/video reach for, see book/src/status-next.md. So
+# this just loads all three up front into their own named slots and
+# picks which one to update/draw with a plain `slide` index and an
+# if/elif chain, rather than reaching for a tagged union (which would
+# work here too, but its `when`-bound payload access didn't seem worth
+# checking against these types' pointer-receiver update() methods for
+# an example this size — three plain fields is simpler and obviously
+# correct).
+#
+# Runs a fixed number of frames rather than waiting on should_close() /
+# a real close click, so it finishes on its own under both an interactive
+# X session and a virtual display (Xvfb) — see examples/graphics/sprite_move
+# for the same "run to completion" shape this gallery's other graphics
+# examples use.
+# Needs a real (or virtual, e.g. Xvfb) X display, and ffmpeg's
+# libavformat/libavcodec/libavutil/libswscale *development* packages at
+# build time (see std/video.przp's own doc comment).
+# Controls: Space advances to the next slide immediately.
+# Run it with: przp run   (from this directory)
+
+import(gfx   = "std/graphics")
+import(gdev  = "std/gdev")
+import(video = "std/video")
+
+WIN_W: i32 = 320
+WIN_H: i32 = 240
+FWIN_W: f32 = 320.0
+FWIN_H: f32 = 240.0
+
+SLIDE_SECONDS: f32 = 2.5
+FRAMES: i32 = 400
+
+SLIDE_IMAGE: i32 = 0
+SLIDE_GIF:   i32 = 1
+SLIDE_VIDEO: i32 = 2
+N_SLIDES:    i32 = 3
+
+fn slide_name(slide: i32) -> str {
+    if slide == SLIDE_IMAGE { ret "image" }
+    if slide == SLIDE_GIF   { ret "gif" }
+    ret "video"
+}
+
+fn main() -> i32 {
+    win: gfx.Window = gfx.Window.open("media_gallery", WIN_W, WIN_H)
+
+    photo, perr: !gfx.Texture = gfx.Texture.load("src/assets/photo.png")
+    if perr != 0 { @epf("failed to load photo.png: {perr}\n") ret 1 }
+
+    gif, gerr: !gdev.AnimatedSprite = gdev.load_animated_sprite("src/assets/bounce.gif")
+    if gerr != 0 { @epf("failed to load bounce.gif: {gerr}\n") ret 1 }
+
+    clip, verr: !video.VideoSprite = video.load_video_sprite("src/assets/clip.mp4")
+    if verr != 0 { @epf("failed to load clip.mp4: {verr}\n") ret 1 }
+
+    slide: i32 = SLIDE_IMAGE
+    advance: gdev.Timer = gdev.Timer.new(SLIDE_SECONDS)
+    @pf("slide 0: {slide_name(slide)}\n")
+
+    gdev.set_target_fps(60)
+
+    frame: i32 = 0
+    while frame < FRAMES && !win.should_close() {
+        dt: f32 = gdev.get_frame_time()
+        if dt <= 0.0 { dt = 1.0 / 60.0 }
+
+        advance.tick(dt)
+        space_pressed: bool = gfx.is_key_down(gfx.Key.Space)
+        if advance.ready() || space_pressed {
+            slide = (slide + 1) % N_SLIDES
+            advance.reset(SLIDE_SECONDS)
+            @pf("slide {frame}: {slide_name(slide)}\n")
+        }
+
+        if slide == SLIDE_GIF   { gif.update(dt) }
+        if slide == SLIDE_VIDEO { clip.update(dt) }
+
+        gdev.begin_drawing()
+        gfx.clear_background(gfx.RAYWHITE)
+
+        if slide == SLIDE_IMAGE {
+            gfx.draw_texture(photo, (FWIN_W - @f32(photo.w)) / 2.0, (FWIN_H - @f32(photo.h)) / 2.0)
+        } elif slide == SLIDE_GIF {
+            gif.draw(gfx.Vector2{.x=(FWIN_W - @f32(gif.width())) / 2.0, .y=(FWIN_H - @f32(gif.height())) / 2.0})
+        } else {
+            clip.draw(gfx.Vector2{.x=(FWIN_W - @f32(clip.width())) / 2.0, .y=(FWIN_H - @f32(clip.height())) / 2.0})
+        }
+
+        gdev.end_drawing()
+        frame += 1
+    }
+
+    @pf("ran {frame} frames, ended on slide {slide_name(slide)}\n")
+
+    photo.unload()
+    gif.unload()
+    clip.unload()
+    win.close()
+    ret 0
+}
