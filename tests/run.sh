@@ -501,6 +501,86 @@ run_gl_case() {
     fi
 }
 
+# run_gl_video_case: run_gl_case plus ffmpeg's libavformat/libavcodec/
+# libavutil/libswscale link flags, for the one tests/gl case
+# (video_sprite) that also needs std/video — gated separately below on
+# top of run_gl_case's own X11/GL gating, since ffmpeg's dev packages
+# are a distinct, less commonly pre-installed dependency.
+run_gl_video_case() {
+    local src_dir="$1"
+    local name
+    name="$(basename "$src_dir")"
+    local bin="$TMP/bin/$name.gl"
+    local actual="$TMP/out/$name.gl.stdout"
+    local compile_err="$TMP/err/$name.gl.compile.stderr"
+    local run_err="$TMP/err/$name.gl.run.stderr"
+    local expected="$src_dir/stdout"
+
+    printf 'gl    %s\n' "$name"
+    if ! PRZP_STDLIB="$STDLIB" "$PRZP" sac "$src_dir/main.przp" -lX11 -lGL -lz \
+            -lavformat -lavcodec -lavutil -lswscale -o="$bin" \
+            >"$TMP/out/$name.gl.compile.stdout" 2>"$compile_err"; then
+        printf 'FAIL  %s: gl compile failed\n' "$name" >&2
+        sed -n '1,120p' "$compile_err" >&2
+        failures=$((failures + 1))
+        return
+    fi
+
+    if ! DISPLAY="$X11_DISPLAY" timeout 10 "$bin" >"$actual" 2>"$run_err"; then
+        printf 'FAIL  %s: gl run failed\n' "$name" >&2
+        sed -n '1,120p' "$run_err" >&2
+        failures=$((failures + 1))
+        return
+    fi
+
+    if ! diff -u "$expected" "$actual"; then
+        printf 'FAIL  %s: gl stdout mismatch\n' "$name" >&2
+        failures=$((failures + 1))
+    fi
+}
+
+# std/video tests (ffmpeg's libavformat/libavcodec/libavutil/libswscale
+# FFI). Needs all four libraries' *development* packages at build time
+# (not just the runtime .so — see std/video.przp's own doc comment on
+# why), gated separately below, skipped (not failed) when absent. Also
+# needs -lX11 -lGL -lz: std/video.przp imports std/graphics for
+# VideoSprite's GL texture, so even a program that only uses the
+# decode-only `Video` type still compiles the whole module (this
+# compiler doesn't dead-code-eliminate unused imports) — the same
+# reason std/audio's tests need -lasound -lmpg123 even for a program
+# that only decodes and never plays anything.
+run_video_case() {
+    local src="$1"
+    local name
+    name="$(basename "$src" .przp)"
+    local bin="$TMP/bin/$name"
+    local actual="$TMP/out/$name.stdout"
+    local compile_err="$TMP/err/$name.compile.stderr"
+    local run_err="$TMP/err/$name.run.stderr"
+    local expected="${src%.przp}.stdout"
+
+    printf 'video %s\n' "$name"
+    if ! PRZP_STDLIB="$STDLIB" "$PRZP" sac "$src" -lX11 -lGL -lz -lavformat -lavcodec -lavutil -lswscale -o="$bin" \
+            >"$TMP/out/$name.compile.stdout" 2>"$compile_err"; then
+        printf 'FAIL  %s: compile failed\n' "$name" >&2
+        sed -n '1,120p' "$compile_err" >&2
+        failures=$((failures + 1))
+        return
+    fi
+
+    if ! "$bin" >"$actual" 2>"$run_err"; then
+        printf 'FAIL  %s: run failed\n' "$name" >&2
+        sed -n '1,120p' "$run_err" >&2
+        failures=$((failures + 1))
+        return
+    fi
+
+    if ! diff -u "$expected" "$actual"; then
+        printf 'FAIL  %s: stdout mismatch\n' "$name" >&2
+        failures=$((failures + 1))
+    fi
+}
+
 # std/zip tests (libzip FFI). Needs libzip-dev's runtime .so, not guaranteed
 # on every dev/CI machine — skipped with a message, not failed, when absent.
 run_zip_case() {
@@ -1027,7 +1107,7 @@ for src in "$ROOT"/tests/run/*.przp; do
     # std_image_gif needs -lz (std/image's uncompress() extern) — run via
     # run_lz_case below instead of the plain no-extra-links case here.
     case "$(basename "$src")" in
-        std_image_gif.przp|std_audio.przp|std_audio_control.przp) continue ;;
+        std_image_gif.przp|std_audio.przp|std_audio_control.przp|std_video_decode.przp) continue ;;
     esac
     run_success_case "$src"
 done
@@ -1043,6 +1123,20 @@ if ldconfig -p 2>/dev/null | grep -q "libasound\.so" && ldconfig -p 2>/dev/null 
     run_audio_case "$ROOT/tests/run/std_audio_control.przp"
 else
     printf 'skip  std_audio: libasound/libmpg123 not installed\n'
+fi
+
+HAVE_FFMPEG=0
+if ldconfig -p 2>/dev/null | grep -q "libavformat\.so" \
+        && ldconfig -p 2>/dev/null | grep -q "libavcodec\.so" \
+        && ldconfig -p 2>/dev/null | grep -q "libavutil\.so" \
+        && ldconfig -p 2>/dev/null | grep -q "libswscale\.so" \
+        && ldconfig -p 2>/dev/null | grep -q "libX11\.so" \
+        && ldconfig -p 2>/dev/null | grep -q "libGL\.so" \
+        && ldconfig -p 2>/dev/null | grep -q "libz\.so"; then
+    HAVE_FFMPEG=1
+    run_video_case "$ROOT/tests/run/std_video_decode.przp"
+else
+    printf 'skip  std_video_decode: libavformat/libavcodec/libavutil/libswscale (or libX11/libGL/libz) not installed\n'
 fi
 
 for dir in "$ROOT"/tests/project/*; do
@@ -1075,8 +1169,14 @@ if run_x11_setup; then
     if ldconfig -p 2>/dev/null | grep -q "libGL\.so"; then
         for dir in "$ROOT"/tests/gl/*; do
             [ -d "$dir" ] || continue
+            [ "$(basename "$dir")" = "video_sprite" ] && continue
             run_gl_case "$dir"
         done
+        if [ "$HAVE_FFMPEG" = "1" ]; then
+            run_gl_video_case "$ROOT/tests/gl/video_sprite"
+        else
+            printf 'skip  gl video_sprite: libavformat/libavcodec/libavutil/libswscale not installed\n'
+        fi
     else
         printf 'skip  gl tests: libGL not installed\n'
     fi

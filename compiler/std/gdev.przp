@@ -257,6 +257,22 @@ impl AnimatedSprite {
         gfx.draw_texture(self.frames[self.cur_frame].texture, pos.x, pos.y)
     }
 
+    # width/height: the animation's frame size in pixels — every frame of
+    # a GIF composites onto the same fixed-size canvas (the GIF spec's
+    # own logical screen descriptor), so any frame's texture dimensions
+    # (frame 0's, here) give the whole animation's size, not just the
+    # current frame's. 0 if decoding produced no frames at all, rather
+    # than reading out of bounds.
+    fn width(self) -> i32 {
+        if self.n_frames == 0 { ret 0 }
+        ret self.frames[0].texture.w
+    }
+
+    fn height(self) -> i32 {
+        if self.n_frames == 0 { ret 0 }
+        ret self.frames[0].texture.h
+    }
+
     # unload: delete every frame's GPU texture, then free the frame array
     # itself — mirrors std/image's free_gif (per-element cleanup, then
     # the outer array), just at the GL-texture layer instead of a raw

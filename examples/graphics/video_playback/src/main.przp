@@ -1,0 +1,53 @@
+# examples/graphics/video_playback — std/video's VideoSprite: decode an
+# MP4 (src/assets/clip.mp4, ffmpeg's own synthetic testsrc2 pattern —
+# see its own CREDITS.md) via libavformat/libavcodec/libswscale, and
+# draw it as a single GL texture that gets overwritten in place every
+# time playback decodes a new frame — unlike the GIF-backed
+# gdev.AnimatedSprite (examples/graphics/animated_gif), which can afford
+# to pre-upload every frame as its own texture up front, a video can be
+# far too long for that, so there is exactly one texture here for the
+# whole clip's lifetime.
+#
+# Runs a fixed number of frames rather than waiting on should_close() /
+# a real close click, so it finishes on its own under both an interactive
+# X session and a virtual display (Xvfb) — see examples/graphics/sprite_move
+# for the same "run to completion" shape this gallery's other graphics
+# examples use.
+# Needs a real (or virtual, e.g. Xvfb) X display to run against, and
+# ffmpeg's libavformat/libavcodec/libavutil/libswscale *development*
+# packages installed at build time (not just their runtime .so's) — see
+# std/video.przp's own doc comment for why.
+# Run it with: przp run   (from this directory)
+
+import(gfx   = "std/graphics")
+import(video = "std/video")
+
+FRAMES: i32 = 120
+
+fn main() -> i32 {
+    win: gfx.Window = gfx.Window.open("video_playback", 320, 240)
+
+    clip, err: !video.VideoSprite = video.load_video_sprite("src/assets/clip.mp4")
+    if err != 0 {
+        @epf("failed to load clip.mp4: {err}\n")
+        ret 1
+    }
+
+    frame: i32 = 0
+    while frame < FRAMES && !win.should_close() {
+        gfx.begin_drawing()
+        clip.update(1.0 / 60.0)
+
+        gfx.clear_background(gfx.RAYWHITE)
+        clip.draw(gfx.Vector2{.x=80.0, .y=60.0})   # centers the 160x120 clip in the 320x240 window
+
+        gfx.end_drawing()
+        frame += 1
+    }
+
+    @pf("ran {frame} frames\n")
+
+    clip.unload()
+    win.close()
+    ret 0
+}

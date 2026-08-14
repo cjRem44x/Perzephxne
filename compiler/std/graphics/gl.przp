@@ -56,6 +56,8 @@ extern fn glBindTexture(target: u32, texture: u32)
 extern fn glTexParameteri(target: u32, pname: u32, param: i32)
 extern fn glTexImage2D(target: u32, level: i32, internalformat: i32, w: i32, h: i32,
                         border: i32, format: u32, ty: u32, data: *u8)
+extern fn glTexSubImage2D(target: u32, level: i32, xoffset: i32, yoffset: i32, w: i32, h: i32,
+                           format: u32, ty: u32, data: *u8)
 extern fn glTexCoord2f(s: f32, t: f32)
 
 GL_COLOR_BUFFER_BIT: u32 = 0x00004000
@@ -218,6 +220,19 @@ fn create_texture(pixels: *u8, w: i32, h: i32, channels: i32) -> u32 {
 fn delete_texture(tex: u32) {
     t: u32 = tex
     glDeleteTextures(1, &t)
+}
+
+# update_texture: overwrite an *existing* texture's pixels in place via
+# glTexSubImage2D, rather than allocating a new GL texture id the way
+# create_texture does — for anything whose pixels change every frame
+# (a decoded video frame; see std/gdev's VideoSprite) at a fixed size,
+# reusing one id avoids leaking a new texture into the GL context on
+# every single frame. `w`/`h` must match the texture's own existing
+# size (this only replaces pixels, it never resizes).
+fn update_texture(tex: u32, pixels: *u8, w: i32, h: i32, channels: i32) {
+    glBindTexture(GL_TEXTURE_2D, tex)
+    fmt: u32 = if channels == 4 { GL_RGBA } else { GL_RGB }
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, fmt, GL_UNSIGNED_BYTE, pixels)
 }
 
 # draw_textured_rect_uv: an axis-aligned rect at (x, y) sized w x h,
