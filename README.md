@@ -7,7 +7,7 @@
   <img src="assets/logo.png" alt="Perzephxne logo" width="320">
 </p>
 
-A compiled, statically typed systems language with a C-flavored syntax and an LLVM backend.
+A compiled, statically typed systems language with a C-flavored syntax, a touch of Golang and Odin, and an LLVM backend.
 
 ```
 fn main() {
