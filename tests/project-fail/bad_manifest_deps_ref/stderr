@@ -1,0 +1,1 @@
+przp.toml:8: error: [deps].foo = "1.0.0; rm -rf /" is not a valid git ref

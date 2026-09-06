@@ -1,0 +1,43 @@
+# regression: book/src/generics.md documents `y: f64 = max(1.5, 0.7)  #
+# inferred from args` as a valid way to call a generic function — no
+# explicit `<T>` needed, the type parameter is worked out from the
+# actual argument types. This never actually worked: lookup() (plain
+# scope-chain search) and s->generics (the uninstantiated-template list)
+# were two entirely disjoint structures in sema.c, with nothing that
+# ever cross-referenced them — `name<Type>(...)` explicit syntax was
+# the *only* thing that ever created a GenInst, purely in the parser,
+# with no argument type available at that point to infer from even in
+# principle. `biggest(1.5, 0.7)` (the book's own shape, renamed to
+# avoid colliding with any builtin) failed with "undefined identifier
+# 'biggest'" while the explicit form (`biggest<f64>(...)`) worked fine.
+#
+# Covers: basic single-type-param inference at two different concrete
+# types in one program (proves two separate instantiations both work
+# correctly, independently), plus calling the same concrete type twice
+# (proves reuse — one instantiation, not a duplicate/error) and mixing
+# inferred calls with plain expression arguments (not just bare
+# literals — the exact case originally reported alongside this bug).
+
+fn biggest<T>(a: T, b: T) -> T {
+    if a > b { ret a }
+    ret b
+}
+
+fn main() -> i32 {
+    x: f64 = biggest(1.5, 0.7)
+    @pf("f64: {x}\n")
+
+    y: i32 = biggest(3, 9)
+    @pf("i32: {y}\n")
+
+    a: i32 = 10
+    b: i32 = 4
+    z: i32 = biggest(a + 1, b * 2)
+    @pf("expr args: {z}\n")
+
+    p: i32 = biggest(1, 2)
+    q: i32 = biggest(5, 6)
+    @pf("reuse: {p} {q}\n")
+
+    ret 0
+}

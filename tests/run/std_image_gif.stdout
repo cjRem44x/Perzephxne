@@ -1,0 +1,15 @@
+two_color: 4x4 frames=2
+frame 0 (0,0): got 252,0,0 want 252,0,0 ok=1
+frame 1 (0,0): got 0,0,170 want 0,0,170 ok=1
+delays: 500 500
+moving_dot: 8x8 frames=3
+frame 0 (0,0): got 255,0,0 want 255,0,0 ok=1
+frame 0 (7,7): got 0,200,0 want 0,200,0 ok=1
+frame 1 (1,0): got 255,0,0 want 255,0,0 ok=1
+frame 1 (0,0): got 0,200,0 want 0,200,0 ok=1
+frame 2 (2,0): got 255,0,0 want 255,0,0 ok=1
+frame 2 (1,0): got 0,200,0 want 0,200,0 ok=1
+transparency: 4x4 frames=2
+frame 0 (0,0): got 0,0,200 want 0,0,200 ok=1
+frame 1 (0,0): got 255,255,0 want 255,255,0 ok=1
+frame 1 (3,3): got 0,0,200 want 0,0,200 ok=1

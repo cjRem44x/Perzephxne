@@ -1,0 +1,17 @@
+# regression: an f32 global initialized with a literal that isn't exactly
+# representable in float precision (e.g. 3.6) failed to compile
+# ("floating point constant invalid for type"). The global-initializer
+# constant emitter always encoded a float literal using its raw double
+# bit pattern, but LLVM IR's hex-float syntax requires that pattern to be
+# exactly representable at the constant's declared type — cg_expr (the
+# non-global expression path) already rounds through the target type
+# first for exactly this reason; the global-initializer path didn't.
+# Found writing examples/games/astro_blaster's SHIP_ROT_SPEED: f32 = 3.6.
+
+SPEED: f32 = 3.6
+HALF:  f16 = 3.6
+
+fn main() -> i32 {
+    @pf("{SPEED} {HALF}\n")
+    ret 0
+}

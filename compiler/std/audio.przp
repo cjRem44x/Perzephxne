@@ -1,0 +1,421 @@
+# std/audio — MP3 decoding (libmpg123) and PCM playback (ALSA). Both are
+# system libraries every mainstream Linux desktop/server ships (see
+# [build].link in book/build-system.md) — no hand-written MP3 decoder or
+# audio driver, same reasoning as PNG's zlib dependency in std/image.
+#
+# Playback goes straight to ALSA's PCM API rather than a higher-level
+# sound-server abstraction (PulseAudio/PipeWire) — both of those still
+# expose an ALSA-compatible PCM device on any system that has them, so
+# there's nothing an extra layer would add here.
+
+extern fn malloc(n: usize) -> *u8
+extern fn realloc(p: *u8, n: usize) -> *u8
+extern fn free(p: *u8)
+extern fn memcpy(dst: *u8, src: *u8, n: usize) -> *u8
+
+extern fn mpg123_init() -> i32
+extern fn mpg123_new(decoder: *u8, err: *i32) -> *u8
+extern fn mpg123_delete(mh: *u8)
+extern fn mpg123_open(mh: *u8, path: *u8) -> i32
+extern fn mpg123_close(mh: *u8) -> i32
+extern fn mpg123_format_none(mh: *u8) -> i32
+extern fn mpg123_format(mh: *u8, rate: i64, channels: i32, encodings: i32) -> i32
+extern fn mpg123_getformat(mh: *u8, rate: *i64, channels: *i32, encoding: *i32) -> i32
+extern fn mpg123_read(mh: *u8, outmemory: *u8, outmemsize: usize, done: *usize) -> i32
+
+MPG123_OK:         i32 = 0
+MPG123_DONE:       i32 = -12
+MPG123_NEW_FORMAT: i32 = -11
+MPG123_ENC_SIGNED_16: i32 = 0xD0
+
+extern fn snd_pcm_open(pcm: **u8, name: *u8, stream: i32, mode: i32) -> i32
+extern fn snd_pcm_close(pcm: *u8) -> i32
+extern fn snd_pcm_set_params(pcm: *u8, format: i32, access: i32, channels: u32, rate: u32, soft_resample: i32, latency: u32) -> i32
+extern fn snd_pcm_writei(pcm: *u8, buffer: *u8, size: u64) -> i64
+extern fn snd_pcm_drain(pcm: *u8) -> i32
+extern fn snd_pcm_recover(pcm: *u8, err: i32, silent: i32) -> i32
+extern fn snd_pcm_drop(pcm: *u8) -> i32
+extern fn snd_pcm_prepare(pcm: *u8) -> i32
+
+extern fn pthread_create(thread: *u64, attr: *u8, start_routine: fn(*u8) -> *u8, arg: *u8) -> i32
+extern fn pthread_join(thread: u64, retval: *u8) -> i32
+
+import(os   = "std/os")
+import(sync = "std/sync")
+
+SND_PCM_STREAM_PLAYBACK:      i32 = 0
+SND_PCM_FORMAT_S16_LE:        i32 = 2
+SND_PCM_ACCESS_RW_INTERLEAVED: i32 = 3
+
+# Sound: fully decoded PCM, signed 16-bit little-endian, interleaved
+# channels — the format both mpg123_format() forces on decode and ALSA's
+# writei expects, so no per-sample conversion sits between the two.
+struct Sound {
+    pcm:      *u8,   # n_frames * channels * 2 bytes
+    n_frames: usize,
+    channels: i32,
+    rate:     i32,
+}
+
+fn free_sound(s: Sound) {
+    if s.pcm != null { free(s.pcm) }
+}
+
+# decode_mp3: fully decodes an MP3 file into memory as signed 16-bit PCM.
+# Fine for the short sound effects/music loops 2D games actually use —
+# streaming decode during playback is a straightforward extension of the
+# same mpg123_read loop if a future caller ever needs it for long tracks.
+fn decode_mp3(path: str) -> !Sound {
+    mpg123_init()
+
+    err: i32 = 0
+    mh: *u8 = mpg123_new(null, &err)
+    if mh == null { ret @err(1) }
+
+    if mpg123_open(mh, path.data) != MPG123_OK {
+        mpg123_delete(mh)
+        ret @err(2)
+    }
+
+    rate: i64 = 0
+    channels: i32 = 0
+    encoding: i32 = 0
+    if mpg123_getformat(mh, &rate, &channels, &encoding) != MPG123_OK {
+        mpg123_close(mh)
+        mpg123_delete(mh)
+        ret @err(3)
+    }
+    mpg123_format_none(mh)
+    mpg123_format(mh, rate, channels, MPG123_ENC_SIGNED_16)
+
+    cap: usize = 1048576
+    buf: *u8 = @alo(u8, cap)
+    len: usize = 0
+
+    chunk_cap: usize = 65536
+    chunk: *u8 = @alo(u8, chunk_cap)
+
+    done: bool = false
+    while !done {
+        got: usize = 0
+        r: i32 = mpg123_read(mh, chunk, chunk_cap, &got)
+        if got > 0 {
+            if len + got > cap {
+                while len + got > cap { cap = cap * 2 }
+                buf = @realo(buf, u8, cap)
+            }
+            memcpy(buf + len, chunk, got)
+            len += got
+        }
+        if r == MPG123_NEW_FORMAT {
+            mpg123_getformat(mh, &rate, &channels, &encoding)
+        } elif r != MPG123_OK {
+            done = true # MPG123_DONE, or any error — either way, stop
+        }
+    }
+
+    free(chunk)
+    mpg123_close(mh)
+    mpg123_delete(mh)
+
+    bytes_per_frame: usize = @usize(channels) * 2
+    n_frames: usize = len / bytes_per_frame
+
+    ret Sound{.pcm=buf, .n_frames=n_frames, .channels=channels, .rate=@i32(rate)}
+}
+
+# AUDIO_QUEUE_CAP: how many play_sound() requests can be pending for the
+# background audio thread at once — headroom well beyond what a 2D game's
+# rapid-fire SFX realistically queues between two drains of the ALSA
+# buffer; a request that finds the queue full just drops that one shot's
+# sound rather than ever making the caller wait, the same fixed-capacity
+# tradeoff MAX_BULLETS makes in examples/games/astro_blaster.
+AUDIO_QUEUE_CAP: usize : 16
+
+# AUDIO_SCRATCH_FRAMES: the chunk size audio_worker writes at once, and
+# the size of the scratch buffer it volume-scales into before each write
+# (see apply_volume) — a fixed cap rather than one big per-request
+# buffer sized to the whole sound, so a very long sound doesn't need a
+# proportionally large scratch allocation; just more, smaller writes.
+AUDIO_SCRATCH_FRAMES: usize : 4096
+
+struct AudioRequest {
+    pcm:      *u8,
+    n_frames: usize,
+}
+
+# AudioCtrl: the state shared between a caller's thread and the
+# background audio thread — always accessed through a pointer (see
+# AudioOutput.ctrl) so every AudioOutput copy still refers to the same
+# queue, mutex, and PCM handle. `running=false` plus an empty queue is
+# the worker's exit signal (see close_output/audio_worker).
+#
+# paused/stop_requested/volume are whole-output controls, not per-sound:
+# this module has no software mixing (see decode_mp3's own doc comment)
+# and every play_sound request shares the one PCM stream `ctrl.pcm`
+# already is, so there's no way to identify "just this one sound" once
+# it's queued — pausing/stopping/setting volume affects everything
+# currently playing or about to play through this AudioOutput. See
+# pause_output/resume_output/stop_output/set_volume below.
+struct AudioCtrl {
+    mu:              sync.Mutex,
+    pcm:             *u8,
+    bytes_per_frame: usize,
+    thread:          u64,
+    queue:           [AUDIO_QUEUE_CAP]AudioRequest,
+    head:            usize,
+    count:           usize,
+    running:         bool,
+    paused:          bool,
+    stop_requested:  bool,
+    volume:          f32,
+    scratch:         *u8,
+}
+
+# apply_volume: copy `n_frames` frames (interleaved 16-bit PCM) from
+# `src` to `dst`, scaling every sample by `vol` and clamping to i16
+# range — vol > 1.0 can clip, same as any other digital gain. A copy
+# rather than an in-place scale since `src` is the caller's own decoded
+# Sound.pcm, reused on every future play_sound call for that Sound;
+# permanently rescaling it here would make one call's volume answer for
+# every later one too.
+fn apply_volume(src: *u8, dst: *u8, n_frames: usize, bytes_per_frame: usize, vol: f32) {
+    n_samples: usize = n_frames * (bytes_per_frame / 2)
+    src16: *i16 = @bitcast(*i16, src)
+    dst16: *i16 = @bitcast(*i16, dst)
+    i: usize = 0
+    while i < n_samples {
+        v: f32 = @f32(src16[i]) * vol
+        if v > 32767.0 { v = 32767.0 }
+        if v < -32768.0 { v = -32768.0 }
+        dst16[i] = @i16(v)
+        i += 1
+    }
+}
+
+# audio_worker: runs on its own thread for the lifetime of an
+# AudioOutput. Blocks freely on snd_pcm_writei — that's the whole point:
+# a game's single-threaded render loop calls play_sound() to enqueue a
+# request (a mutex-guarded pointer/length copy, never touches ALSA) and
+# carries on immediately, no matter how slowly the ALSA backend the
+# system resolves "default" to actually services a write. Some ALSA PCM
+# plugins — PulseAudio's/PipeWire's ALSA-compat shim especially, common
+# on desktop Linux — have historically not honored SND_PCM_NONBLOCK
+# cheaply (or at all) on every write, which was the working theory
+# behind this rewrite (a stutter reported against
+# examples/games/astro_blaster, worse holding fire down). It turned out
+# not to be the cause — the same stutter reproduces with audio skipped
+# entirely (`przp run --no-audio`) — but moving playback off the render
+# thread is still the right design regardless of what "default"
+# resolves to, so it stays; the actual stutter is still open, see
+# astro_blaster's main.przp for the frame-stall diagnostic tracking it.
+fn audio_worker(arg: *u8) -> *u8 {
+    ctrl: *AudioCtrl = arg
+    while true {
+        sync.lock(&ctrl.mu)
+        if ctrl.paused || ctrl.count == 0 {
+            still_running: bool = ctrl.running
+            sync.unlock(&ctrl.mu)
+            if !still_running { ret null }
+            os.sleep_ms(2)
+            continue
+        }
+        req: AudioRequest = ctrl.queue[ctrl.head]
+        ctrl.head = (ctrl.head + 1) % AUDIO_QUEUE_CAP
+        ctrl.count -= 1
+        # A stop_output before this dequeue only ever meant to affect
+        # whatever was already in flight — clear it now so it can't
+        # wrongly cut off this brand new, unrelated request too.
+        ctrl.stop_requested = false
+        sync.unlock(&ctrl.mu)
+
+        buf: *u8 = req.pcm
+        frames_left: usize = req.n_frames
+        while frames_left > 0 {
+            sync.lock(&ctrl.mu)
+            stop_now: bool = ctrl.stop_requested
+            paused_now: bool = ctrl.paused
+            vol: f32 = ctrl.volume
+            sync.unlock(&ctrl.mu)
+
+            if stop_now {
+                snd_pcm_drop(ctrl.pcm)
+                snd_pcm_prepare(ctrl.pcm)
+                sync.lock(&ctrl.mu)
+                ctrl.stop_requested = false
+                sync.unlock(&ctrl.mu)
+                break
+            }
+            if paused_now {
+                os.sleep_ms(5)
+                continue
+            }
+
+            chunk: usize = frames_left
+            if chunk > AUDIO_SCRATCH_FRAMES { chunk = AUDIO_SCRATCH_FRAMES }
+
+            write_buf: *u8 = buf
+            if vol != 1.0 {
+                apply_volume(buf, ctrl.scratch, chunk, ctrl.bytes_per_frame, vol)
+                write_buf = ctrl.scratch
+            }
+
+            r: i64 = snd_pcm_writei(ctrl.pcm, write_buf, @u64(chunk))
+            if r < 0 {
+                if snd_pcm_recover(ctrl.pcm, @i32(r), 1) != 0 { break }
+                continue
+            }
+            written: usize = @usize(r)
+            if written == 0 { break }
+            frames_left -= written
+            buf = buf + written * ctrl.bytes_per_frame
+        }
+    }
+    ret null
+}
+
+# AudioOutput: an open ALSA PCM playback handle plus its background
+# playback thread. `device` is an ALSA PCM name — "default" for the
+# system's default output, "null" for ALSA's hardware-free sink (useful
+# for testing FFI plumbing on a machine with no real sound card, the same
+# role Xvfb plays for std/graphics/gl).
+struct AudioOutput {
+    channels: i32,
+    ctrl:     *AudioCtrl,
+}
+
+fn open_output(device: str, rate: i32, channels: i32) -> !AudioOutput {
+    pcm: *u8 = null
+    if snd_pcm_open(&pcm, device.data, SND_PCM_STREAM_PLAYBACK, 0) < 0 {
+        ret @err(1)
+    }
+    if snd_pcm_set_params(pcm, SND_PCM_FORMAT_S16_LE, SND_PCM_ACCESS_RW_INTERLEAVED,
+            @u32(channels), @u32(rate), 1, 500000u32) < 0 {
+        snd_pcm_close(pcm)
+        ret @err(2)
+    }
+
+    ctrl: *AudioCtrl = @alo(AudioCtrl)
+    ctrl.mu = sync.mutex_new()
+    ctrl.pcm = pcm
+    ctrl.bytes_per_frame = @usize(channels) * 2
+    ctrl.head = 0
+    ctrl.count = 0
+    ctrl.running = true
+    ctrl.paused = false
+    ctrl.stop_requested = false
+    ctrl.volume = 1.0
+    ctrl.scratch = @alo(u8, AUDIO_SCRATCH_FRAMES * ctrl.bytes_per_frame)
+
+    tid: u64 = 0
+    if pthread_create(&tid, null, audio_worker, ctrl) != 0 {
+        free(ctrl.scratch)
+        sync.mutex_destroy(&ctrl.mu)
+        free(ctrl)
+        snd_pcm_close(pcm)
+        ret @err(3)
+    }
+    ctrl.thread = tid
+
+    ret AudioOutput{.channels=channels, .ctrl=ctrl}
+}
+
+# play_sound: hands `s` off to the background audio thread and returns
+# immediately — never calls into ALSA itself, so it never stalls the
+# caller no matter how the underlying PCM device behaves. Returns the
+# frame count enqueued, or 0 if the queue was full (dropped, see
+# AUDIO_QUEUE_CAP) — either way the caller's frame time is unaffected.
+fn play_sound(out: AudioOutput, s: Sound) -> i64 {
+    ctrl: *AudioCtrl = out.ctrl
+    sync.lock(&ctrl.mu)
+    if ctrl.count >= AUDIO_QUEUE_CAP {
+        sync.unlock(&ctrl.mu)
+        ret 0
+    }
+    tail: usize = (ctrl.head + ctrl.count) % AUDIO_QUEUE_CAP
+    ctrl.queue[tail] = AudioRequest{.pcm=s.pcm, .n_frames=s.n_frames}
+    ctrl.count += 1
+    sync.unlock(&ctrl.mu)
+    ret @i64(s.n_frames)
+}
+
+# pause_output/resume_output: stop/resume feeding new audio to the ALSA
+# buffer. Not instant silence — whatever's already sitting in the
+# hardware ring buffer (up to open_output's ~500ms latency) keeps
+# playing out, since pausing doesn't touch it, only what the worker
+# writes *next*. That's deliberate: resuming quickly picks up exactly
+# where playback left off, no click or dropped frame at the seam. For
+# an immediate cut instead, see stop_output.
+fn pause_output(out: AudioOutput) {
+    ctrl: *AudioCtrl = out.ctrl
+    sync.lock(&ctrl.mu)
+    ctrl.paused = true
+    sync.unlock(&ctrl.mu)
+}
+
+fn resume_output(out: AudioOutput) {
+    ctrl: *AudioCtrl = out.ctrl
+    sync.lock(&ctrl.mu)
+    ctrl.paused = false
+    sync.unlock(&ctrl.mu)
+}
+
+fn is_paused(out: AudioOutput) -> bool {
+    ctrl: *AudioCtrl = out.ctrl
+    sync.lock(&ctrl.mu)
+    p: bool = ctrl.paused
+    sync.unlock(&ctrl.mu)
+    ret p
+}
+
+# stop_output: drop whatever's queued (not yet started) and cut off
+# whatever's currently mid-write immediately — snd_pcm_drop discards the
+# hardware ring buffer's contents outright (unlike pause, which leaves
+# them to play out), then snd_pcm_prepare puts the stream back in a
+# writable state for whatever plays next.
+fn stop_output(out: AudioOutput) {
+    ctrl: *AudioCtrl = out.ctrl
+    sync.lock(&ctrl.mu)
+    ctrl.count = 0
+    ctrl.head = 0
+    ctrl.stop_requested = true
+    sync.unlock(&ctrl.mu)
+}
+
+# set_volume: scale every sample written from this point on by `vol`
+# (1.0 = unchanged, 0.0 = silent, >1.0 = boost — clamps to i16 range,
+# same as any other digital gain past 1.0 risking clipping). Applies to
+# the whole output, including whatever's already mid-write — there's no
+# per-sound identity to target (see AudioCtrl's own doc comment).
+# Negative values clamp to 0.0 rather than erroring.
+fn set_volume(out: AudioOutput, vol: f32) {
+    v: f32 = vol
+    if v < 0.0 { v = 0.0 }
+    ctrl: *AudioCtrl = out.ctrl
+    sync.lock(&ctrl.mu)
+    ctrl.volume = v
+    sync.unlock(&ctrl.mu)
+}
+
+# close_output: signals the worker to stop once its queue drains, joins
+# it (bounded — the worker only blocks inside ALSA calls that themselves
+# complete), then drains the PCM device and closes it. Joining first
+# guarantees the worker is done touching `pcm` before this thread closes
+# it out from under it. Clears `paused` along with `running`: the worker's
+# exit check requires !paused (see audio_worker) precisely so a paused
+# output can still shut down instead of waiting forever for a
+# resume_output that's never coming.
+fn close_output(out: AudioOutput) {
+    ctrl: *AudioCtrl = out.ctrl
+    sync.lock(&ctrl.mu)
+    ctrl.running = false
+    ctrl.paused = false
+    sync.unlock(&ctrl.mu)
+
+    pthread_join(ctrl.thread, null)
+    snd_pcm_drain(ctrl.pcm)
+    snd_pcm_close(ctrl.pcm)
+    sync.mutex_destroy(&ctrl.mu)
+    free(ctrl.scratch)
+    free(ctrl)
+}

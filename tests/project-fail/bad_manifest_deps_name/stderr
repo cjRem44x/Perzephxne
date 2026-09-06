@@ -1,0 +1,1 @@
+przp.toml:8: error: [deps] key 'bad-name' must be a plain identifier

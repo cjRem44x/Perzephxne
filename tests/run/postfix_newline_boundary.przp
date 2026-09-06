@@ -1,0 +1,29 @@
+# regression: a statement starting with '(' right after a preceding
+# statement used to get silently swallowed as a call/index continuation
+# of that *previous* statement's expression, rather than starting its own
+# statement — parse_postfix treated a following '(' or '[' as "this
+# extends what I'm already parsing" with no check for a newline in
+# between, unlike every other statement boundary in the grammar (which
+# has no semicolons and relies entirely on this working correctly).
+#
+# `a: i32 = foo()` followed by `(a + 1)` used to parse as ONE statement,
+# `a: i32 = foo()(a + 1)` — calling foo()'s result with (a+1) as an
+# argument — which fails today with "undefined identifier 'a'" (since
+# `a` isn't in scope yet inside its own initializer), but would have
+# silently miscompiled instead of erroring if foo() happened to return
+# something callable. Fixed by tracking each token's line and refusing
+# to continue a call/index across a line break.
+
+fn foo() -> i32 { ret 41 }
+
+fn main() -> i32 {
+    a: i32 = foo()
+    (a + 1)
+    @pf("{a}\n")
+
+    dst: *u8 = @alo(u8, 4)
+    x: usize = 0
+    (dst + x).* = 99u8
+    @pf("{dst.*}\n")
+    ret 0
+}

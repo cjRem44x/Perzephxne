@@ -1,0 +1,13 @@
+# regression: generic-call inference (see tests/run/generic_infer_basic.przp)
+# where two argument positions bind the same type parameter to two
+# different concrete types — must be a clear conflict error, not a
+# silent pick of whichever argument happened to be checked first.
+
+fn same<T>(a: T, b: T) -> bool {
+    ret a == b
+}
+
+fn main() -> i32 {
+    x: bool = same(1, 1.5)
+    ret 0
+}

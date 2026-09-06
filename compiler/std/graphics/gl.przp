@@ -38,12 +38,17 @@ extern fn glReadPixels(x: i32, y: i32, w: i32, h: i32, format: u32, ty: u32, dat
 extern fn glMatrixMode(mode: u32)
 extern fn glLoadIdentity()
 extern fn glOrtho(left: f64, right: f64, bottom: f64, top: f64, near: f64, far: f64)
+extern fn glPushMatrix()
+extern fn glPopMatrix()
+extern fn glTranslatef(x: f32, y: f32, z: f32)
+extern fn glScalef(x: f32, y: f32, z: f32)
 extern fn glBegin(mode: u32)
 extern fn glEnd()
 extern fn glVertex2f(x: f32, y: f32)
 extern fn glColor4f(r: f32, g: f32, b: f32, a: f32)
 extern fn glEnable(cap: u32)
 extern fn glDisable(cap: u32)
+extern fn glBlendFunc(sfactor: u32, dfactor: u32)
 
 extern fn glGenTextures(n: i32, textures: *u32)
 extern fn glDeleteTextures(n: i32, textures: *u32)
@@ -51,6 +56,8 @@ extern fn glBindTexture(target: u32, texture: u32)
 extern fn glTexParameteri(target: u32, pname: u32, param: i32)
 extern fn glTexImage2D(target: u32, level: i32, internalformat: i32, w: i32, h: i32,
                         border: i32, format: u32, ty: u32, data: *u8)
+extern fn glTexSubImage2D(target: u32, level: i32, xoffset: i32, yoffset: i32, w: i32, h: i32,
+                           format: u32, ty: u32, data: *u8)
 extern fn glTexCoord2f(s: f32, t: f32)
 
 GL_COLOR_BUFFER_BIT: u32 = 0x00004000
@@ -72,6 +79,10 @@ GL_TRIANGLE_FAN: u32 = 0x0006
 GL_QUADS:        u32 = 0x0007
 GL_PROJECTION:   u32 = 0x1701
 GL_MODELVIEW:    u32 = 0x1700
+
+GL_BLEND:               u32 = 0x0BE2
+GL_SRC_ALPHA:           u32 = 0x0302
+GL_ONE_MINUS_SRC_ALPHA: u32 = 0x0303
 
 GLX_RGBA: i32 = 4
 GLX_DEPTH_SIZE: i32 = 12
@@ -105,6 +116,17 @@ fn create_context(display: *u8, window: u64, vis: *u8) -> *u8 {
     if ctx == null { ret null }
     ok: i32 = glXMakeCurrent(display, window, ctx)
     if ok == 0 { ret null }
+    # Standard alpha blending, on for the program's whole lifetime rather
+    # than toggled around specific draws: with GL_SRC_ALPHA/
+    # GL_ONE_MINUS_SRC_ALPHA, an opaque source (alpha=1, every existing
+    # draw_rect/draw_circle/draw_texture call) composites identically to
+    # having blending off, so leaving this on doesn't change how anything
+    # already drawn looks — it only starts mattering for a texture with
+    # real alpha<255 pixels (a font atlas's transparent background, or a
+    # PNG/GIF with genuine transparency), which previously always drew as
+    # fully opaque regardless of its own alpha channel.
+    glEnable(GL_BLEND)
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
     ret ctx
 }
 
@@ -128,7 +150,24 @@ fn destroy_context(display: *u8, ctx: *u8) {
 # bottom-right, matching screen/raylib coordinate conventions rather than
 # GL's default bottom-left-origin, Y-up NDC cube. Call once per resize
 # (including the first frame), before any draw_* call.
+#
+# Also resets the GL *viewport* to (0, 0, w, h) — easy to assume the
+# projection matrix alone is enough since it's what maps world-space
+# coordinates to NDC, but it's the viewport that then maps NDC to actual
+# framebuffer pixels; leaving it at whatever size the window had when
+# the context was created means every resize path here (window-manager-
+# driven, via poll_events' EVENT_CONFIGURE_NOTIFY; or programmatic, via
+# Window.resize/set_fullscreen) updated the projection correctly but
+# left rendering pinned to the *original* window's pixel dimensions —
+# real content, just stretched/cropped into a stale sub-rectangle of
+# the actually-resized window instead of filling it. Nothing had caught
+# this before: `tests/gl/window_size_hints` only ever checks WM size
+# *hints* (min/max constraints via XGetWMNormalHints), never an actual
+# resize followed by a draw+read-back — this fixes it for every caller
+# in one place rather than at each of the (now four) call sites that
+# resize a window.
 fn set_ortho_2d(w: i32, h: i32) {
+    glViewport(0, 0, w, h)
     glMatrixMode(GL_PROJECTION)
     glLoadIdentity()
     glOrtho(0.0, @f64(w), @f64(h), 0.0, -1.0, 1.0)
@@ -200,26 +239,76 @@ fn delete_texture(tex: u32) {
     glDeleteTextures(1, &t)
 }
 
-# draw_textured_rect: an axis-aligned rect at (x, y) sized w x h, textured
-# with `tex` at full opacity (glColor4f(1,1,1,1) so the texture's own
-# colors show through unmodified). GL_TEXTURE_2D is enabled/disabled
-# around the draw rather than left on globally, so it doesn't leak into
-# draw_rect/draw_circle/draw_line calls elsewhere in a frame.
-fn draw_textured_rect(tex: u32, x: f32, y: f32, w: f32, h: f32) {
+# update_texture: overwrite an *existing* texture's pixels in place via
+# glTexSubImage2D, rather than allocating a new GL texture id the way
+# create_texture does — for anything whose pixels change every frame
+# (a decoded video frame; see std/gdev's VideoSprite) at a fixed size,
+# reusing one id avoids leaking a new texture into the GL context on
+# every single frame. `w`/`h` must match the texture's own existing
+# size (this only replaces pixels, it never resizes).
+fn update_texture(tex: u32, pixels: *u8, w: i32, h: i32, channels: i32) {
+    glBindTexture(GL_TEXTURE_2D, tex)
+    fmt: u32 = if channels == 4 { GL_RGBA } else { GL_RGB }
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, fmt, GL_UNSIGNED_BYTE, pixels)
+}
+
+# draw_textured_rect_uv: an axis-aligned rect at (x, y) sized w x h,
+# textured with `tex` and tinted by (r, g, b, a) — GL 1.1's default
+# texture environment mode is GL_MODULATE (texture color × vertex
+# color, never changed anywhere in this file), so (1,1,1,1) leaves the
+# texture's own colors showing through unmodified — every existing
+# caller before tinting existed — while any other tint scales them,
+# which is what a colored font-atlas glyph draw needs (see
+# std/graphics's draw_text). Samples the arbitrary axis-aligned
+# sub-region of the texture from (u0, v0) to (u1, v1) in normalized
+# [0, 1] texture coordinates — (0,0)-(1,1) for the whole image, or a
+# smaller box for one frame of a spritesheet/atlas. GL_TEXTURE_2D is
+# enabled/disabled around the draw rather than left on globally, so it
+# doesn't leak into draw_rect/draw_circle/draw_line calls elsewhere in
+# a frame.
+fn draw_textured_rect_uv(tex: u32, x: f32, y: f32, w: f32, h: f32,
+                          u0: f32, v0: f32, u1: f32, v1: f32,
+                          r: f32, g: f32, b: f32, a: f32) {
     glEnable(GL_TEXTURE_2D)
     glBindTexture(GL_TEXTURE_2D, tex)
-    glColor4f(1.0, 1.0, 1.0, 1.0)
+    glColor4f(r, g, b, a)
     glBegin(GL_QUADS)
-    glTexCoord2f(0.0, 0.0)
+    glTexCoord2f(u0, v0)
     glVertex2f(x, y)
-    glTexCoord2f(1.0, 0.0)
+    glTexCoord2f(u1, v0)
     glVertex2f(x + w, y)
-    glTexCoord2f(1.0, 1.0)
+    glTexCoord2f(u1, v1)
     glVertex2f(x + w, y + h)
-    glTexCoord2f(0.0, 1.0)
+    glTexCoord2f(u0, v1)
     glVertex2f(x, y + h)
     glEnd()
     glDisable(GL_TEXTURE_2D)
+}
+
+# draw_textured_rect: the whole texture, stretched to fill (x, y, w, h), untinted.
+fn draw_textured_rect(tex: u32, x: f32, y: f32, w: f32, h: f32) {
+    draw_textured_rect_uv(tex, x, y, w, h, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0)
+}
+
+# push_camera_2d/pop_camera_2d: apply (and later undo) a 2D camera's
+# scroll+zoom as a modelview transform on top of set_ortho_2d's
+# projection — offset is the screen-space point target maps to (usually
+# screen center), target is the world-space point the camera centers on,
+# zoom is a scale factor (1.0 = no zoom). Every draw_* call between the
+# two, in either screen or world space, ends up drawn in camera space;
+# draw_* calls outside the pair are unaffected. Order matters: GL's
+# modelview multiply is right-to-left, so translate-by-offset happens
+# last (screen space) and translate-by-target happens first (world
+# space), with the zoom scale in between.
+fn push_camera_2d(offset_x: f32, offset_y: f32, target_x: f32, target_y: f32, zoom: f32) {
+    glPushMatrix()
+    glTranslatef(offset_x, offset_y, 0.0)
+    glScalef(zoom, zoom, 1.0)
+    glTranslatef(-target_x, -target_y, 0.0)
+}
+
+fn pop_camera_2d() {
+    glPopMatrix()
 }
 
 # ── Backend contract conformance ────────────────────────────────────────────
@@ -258,6 +347,31 @@ fn gl_backend_present(ctx: *u8) {
 fn gl_backend_shutdown(ctx: *u8) {
     bctx: *GLBackendCtx = ctx
     destroy_context(bctx.display, bctx.ctx)
+}
+
+# on_resize: call after actually resizing the underlying X window (see
+# std/graphics's Window.resize/set_fullscreen) to make the GL side catch
+# up. Re-issues glXMakeCurrent on the same (display, window, ctx) before
+# set_ortho_2d's own glViewport/glOrtho calls — standard GLX practice
+# after a drawable's size changes underneath a bound context, since not
+# every driver notices on its own.
+#
+# Caveat, found while adding this: under Xvfb + a software GL renderer
+# (llvmpipe/swrast, no GPU — this project's own test environment),
+# XResizeWindow on a window with a bound GLX context breaks rendering
+# entirely (every subsequent draw reads back as untouched/black),
+# confirmed even with *no* GL-side handling at all — a bare
+# XResizeWindow call, nothing else, already breaks it. So this couldn't
+# be verified end-to-end by pixel read-back here the way the rest of
+# tests/gl is: `resize`'s X11-level effect (the window's own reported
+# dimensions) is real and tested (XGetWindowAttributes agrees), but
+# rendering-after-resize itself is an environment limitation of
+# Xvfb+swrast specifically, not something this code can route around —
+# a real GPU-backed X server is expected to handle this normally.
+fn on_resize(ctx: *u8, w: i32, h: i32) {
+    bctx: *GLBackendCtx = ctx
+    glXMakeCurrent(bctx.display, bctx.window, bctx.ctx)
+    set_ortho_2d(w, h)
 }
 
 GL_BACKEND: be.Backend : be.Backend{

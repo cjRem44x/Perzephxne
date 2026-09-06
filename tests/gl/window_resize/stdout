@@ -1,0 +1,6 @@
+initial: 100x100 state=100x100
+after resize(200,150): 200x150 state=200x150
+after fullscreen(true): grew_to_screen=1 fullscreen=1
+after fullscreen(false): 200x150 state=200x150 fullscreen=0
+restored to pre-fullscreen size: 1
+after configs(Fullscreen): fullscreen=1 grew=1

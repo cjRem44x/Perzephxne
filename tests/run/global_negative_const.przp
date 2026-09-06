@@ -1,0 +1,15 @@
+# regression: a global initialized with a negative literal used to fail
+# to compile ("global initializer must be a compile-time constant") — a
+# negative literal parses as UNOP_NEG over a positive EXPR_INT/EXPR_FLOAT,
+# not a single literal node, and emit_const_init only recognized the
+# latter. Found writing std/audio, whose libmpg123 status-code constants
+# (MPG123_DONE = -12, MPG123_NEW_FORMAT = -11) are negative by definition.
+
+FOO: i32 = -12
+BAR: f64 = -1.5
+BAZ: i64 = -9000000000
+
+fn main() -> i32 {
+    @pf("{FOO} {BAR} {BAZ}\n")
+    ret 0
+}

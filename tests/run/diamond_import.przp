@@ -1,0 +1,26 @@
+# regression: a "diamond" import — this file imports helpers/diamond_shared
+# directly *and* imports helpers/diamond_wrapper, which itself imports the
+# exact same diamond_shared.przp — used to produce two incompatible types
+# for the same struct ("sh__Point" via the direct import vs "wr__sh__Point"
+# via the transitive one), because mangle_items named a module's items by
+# the alias chain used to reach it rather than the module's own identity,
+# so the same file got prefixed differently depending on import depth.
+#
+# Fixed by freezing an item's name (Item.mangled in ast.h) the moment it's
+# merged in via a cross-file import — no later mangle_items pass may
+# prefix it again, even if the module holding it is itself re-imported —
+# combined with letting the existing merged-import cache (previously
+# top-level-imports-only) apply at any nesting depth, so the second import
+# of the same (path, alias) pair anywhere in the compile reuses the first
+# one's already-frozen names instead of re-parsing a second, differently
+# -named copy.
+import(sh = "helpers/diamond_shared")
+import(wr = "helpers/diamond_wrapper")
+
+fn main() -> i32 {
+    p: sh.Point = wr.make_point(3, 4)          # type from the transitive import...
+    q: sh.Point = sh.origin()                  # ...assigned from the direct one
+    r: sh.Point = wr.offset(p, 1, 1)           # ...passed back through the wrapper
+    @pf("{p.x} {p.y} {q.x} {q.y} {r.x} {r.y}\n")
+    ret 0
+}

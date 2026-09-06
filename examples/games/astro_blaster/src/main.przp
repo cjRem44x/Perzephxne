@@ -1,0 +1,429 @@
+# examples/games/astro_blaster — a small Asteroids-style shooter, built to
+# exercise the whole 2D stack at once rather than any one piece in
+# isolation: std/graphics (window, input, primitives, texture draw),
+# std/image (the asteroid textures), std/gdev (frame timing, Sprite,
+# Camera2D screen shake, circle-collision), and std/audio (MP3 decode +
+# ALSA playback for fire/explosion sound effects) all in one real program.
+#
+# Runs to completion on its own (should_close(), a lives-exhausted game
+# over, or a hard frame cap — whichever comes first) so it finishes the
+# same way under an interactive X session or a headless Xvfb display,
+# the same "run to completion" shape as examples/graphics/sprite_move.
+#
+# Textures and sound effects are real, free (CC0/public domain) assets —
+# see src/assets/CREDITS.md for exact provenance — not hand-drawn
+# placeholders, so asteroids come in 3 real sizes: shooting a big or
+# medium one splits it into 2 smaller ones (classic Asteroids), which
+# also means std/image's texture loading and std/gdev's Sprite get
+# exercised with 3 distinct textures instead of 1.
+#
+# Controls: Left/Right rotate, Up thrust, Space fire, Escape/close to quit.
+# Run it with: przp run   (from this directory)
+
+import(gfx   = "std/graphics")
+import(gdev  = "std/gdev")
+import(audio = "std/audio")
+import(math  = "std/math")
+import(str   = "std/str")
+
+WIN_W: i32 = 640
+WIN_H: i32 = 480
+FWIN_W: f32 = 640.0
+FWIN_H: f32 = 480.0
+
+SHIP_RADIUS:     f32 = 9.0
+SHIP_ROT_SPEED:  f32 = 3.6     # rad/s
+SHIP_THRUST:     f32 = 160.0   # px/s^2
+SHIP_DRAG:       f32 = 0.55    # velocity *= exp(-SHIP_DRAG * dt) each frame
+RESPAWN_INVULN:  f32 = 1.5     # seconds of flashing invulnerability after a hit
+
+BULLET_SPEED:    f32 = 320.0
+BULLET_LIFE:     f32 = 1.1
+FIRE_COOLDOWN:   f32 = 0.22
+MAX_BULLETS:     usize : 24
+
+# MAX_ASTEROIDS has headroom well beyond the biggest wave's initial big-
+# asteroid count (capped by WAVE_MAX_BIG below) since splitting a hit
+# asteroid into 2 smaller ones can transiently grow the active count —
+# a split that finds no free slot just loses that one fragment rather
+# than crashing, the same fixed-capacity tradeoff MAX_BULLETS already
+# makes for fire rate.
+MAX_ASTEROIDS:      usize : 32
+WAVE_MAX_BIG:        i32 = 8      # cap on how many big asteroids one wave spawns
+ASTEROID_MIN_SPEED:  f32 = 25.0
+ASTEROID_MAX_SPEED:  f32 = 70.0
+# Size tiers, indexed by Asteroid.size (0=big, 1=medium, 2=small):
+# collision radius per tier (roughly half the real texture's width) and
+# score per tier (smaller = harder to hit = worth more, classic Asteroids
+# scoring).
+ASTEROID_RADIUS: [3]f32 : [34.0, 16.0, 10.0]
+ASTEROID_SCORE:  [3]i32 : [100, 150, 200]
+
+STAR_COUNT:  usize : 70
+START_LIVES: i32 = 3
+MAX_FRAMES:  i32 = 3600   # 60s @ 60fps hard cap so a headless/CI run always terminates
+
+struct Ship {
+    pos:    gfx.Vector2,
+    vel:    gfx.Vector2,
+    angle:  f32,   # facing direction, radians; forward = (cos(angle), sin(angle))
+    invuln: f32,
+}
+
+struct Bullet {
+    pos:    gfx.Vector2,
+    vel:    gfx.Vector2,
+    life:   f32,
+    active: bool,
+}
+
+struct Asteroid {
+    pos:    gfx.Vector2,
+    vel:    gfx.Vector2,
+    size:   i32,   # 0=big, 1=medium, 2=small — indexes ASTEROID_RADIUS/ASTEROID_SCORE
+    active: bool,
+}
+
+struct Star {
+    pos: gfx.Vector2,
+    r:   f32,
+}
+
+# spawn_wave: (re)activates the first `n_active` asteroid slots at random
+# screen-edge positions, aimed roughly toward the center with some angular
+# jitter so a wave doesn't fly in as one predictable line; the rest of the
+# slots are deactivated. Speed increases with wave count is the caller's
+# job (it just passes a growing `n_active`).
+fn spawn_wave(asteroids: []Asteroid, n_active: usize) {
+    for i => 0..MAX_ASTEROIDS {
+        if i >= n_active {
+            asteroids[i].active = false
+        } else {
+            side: i32 = @rng(i32, 0, 3)
+            px: f64 = 0.0
+            py: f64 = 0.0
+            if side == 0 {
+                px = 0.0
+                py = @rng(f64, 0.0, @f64(FWIN_H))
+            } elif side == 1 {
+                px = @f64(FWIN_W)
+                py = @rng(f64, 0.0, @f64(FWIN_H))
+            } elif side == 2 {
+                px = @rng(f64, 0.0, @f64(FWIN_W))
+                py = 0.0
+            } else {
+                px = @rng(f64, 0.0, @f64(FWIN_W))
+                py = @f64(FWIN_H)
+            }
+
+            dx: f64 = @f64(FWIN_W) / 2.0 - px
+            dy: f64 = @f64(FWIN_H) / 2.0 - py
+            base_ang: f64 = math.atan2(dy, dx)
+            ang: f64 = base_ang + @rng(f64, -0.6, 0.6)
+            spd: f64 = @rng(f64, @f64(ASTEROID_MIN_SPEED), @f64(ASTEROID_MAX_SPEED))
+
+            asteroids[i].pos = gfx.Vector2{.x=@f32(px), .y=@f32(py)}
+            asteroids[i].vel = gfx.Vector2{.x=@f32(math.cos(ang) * spd), .y=@f32(math.sin(ang) * spd)}
+            asteroids[i].size = 0   # waves always start with big asteroids
+            asteroids[i].active = true
+        }
+    }
+}
+
+fn find_free_slot(asteroids: []Asteroid) -> i32 {
+    for i => 0..MAX_ASTEROIDS {
+        if !asteroids[i].active { ret @i32(i) }
+    }
+    ret -1
+}
+
+# spawn_fragment: activates asteroid slot `idx` as a `size`-tier fragment
+# at `pos`, moving outward around `base_ang` (the destroyed parent's own
+# heading) with extra angular spread and a speed bump — the classic
+# "asteroid breaks into faster, wider-scattering pieces" feel.
+fn spawn_fragment(asteroids: []Asteroid, idx: i32, pos: gfx.Vector2, base_ang: f64, size: i32) {
+    if idx < 0 { ret }
+    i: usize = @usize(idx)
+    spd: f64 = @rng(f64, @f64(ASTEROID_MIN_SPEED), @f64(ASTEROID_MAX_SPEED)) * 1.3
+    ang: f64 = base_ang + @rng(f64, -0.9, 0.9)
+    asteroids[i].pos = pos
+    asteroids[i].vel = gfx.Vector2{.x=@f32(math.cos(ang) * spd), .y=@f32(math.sin(ang) * spd)}
+    asteroids[i].size = size
+    asteroids[i].active = true
+}
+
+fn main() -> i32 {
+    win: gfx.Window = gfx.Window.open("Astro Blaster", WIN_W, WIN_H)
+    # Resizing stretches the same 640x480 logical playfield to fill the
+    # window (poll_events re-runs the ortho projection on every resize) —
+    # fine within a reasonable range, not at the extremes, so bound it
+    # rather than leave it (X11's own default) unconstrained.
+    win.set_min_size(WIN_W / 2, WIN_H / 2)
+    win.set_max_size(WIN_W * 2, WIN_H * 2)
+
+    ast_tex_big, big_err: !gfx.Texture = gfx.Texture.load("src/assets/asteroid_big.png")
+    ast_tex_med, med_err: !gfx.Texture = gfx.Texture.load("src/assets/asteroid_med.png")
+    ast_tex_small, small_err: !gfx.Texture = gfx.Texture.load("src/assets/asteroid_small.png")
+    if big_err != 0 || med_err != 0 || small_err != 0 {
+        @epf("failed to load asteroid textures: {big_err} {med_err} {small_err}\n")
+        ret 1
+    }
+    ast_sprites: [3]gdev.Sprite = undef
+    ast_half_w:  [3]f32 = undef
+    ast_half_h:  [3]f32 = undef
+    ast_sprites[0] = gdev.Sprite{.texture=ast_tex_big,   .frame=gfx.Rectangle{.x=0.0, .y=0.0, .w=@f32(ast_tex_big.w),   .h=@f32(ast_tex_big.h)}}
+    ast_sprites[1] = gdev.Sprite{.texture=ast_tex_med,   .frame=gfx.Rectangle{.x=0.0, .y=0.0, .w=@f32(ast_tex_med.w),   .h=@f32(ast_tex_med.h)}}
+    ast_sprites[2] = gdev.Sprite{.texture=ast_tex_small, .frame=gfx.Rectangle{.x=0.0, .y=0.0, .w=@f32(ast_tex_small.w), .h=@f32(ast_tex_small.h)}}
+    ast_half_w[0] = @f32(ast_tex_big.w) / 2.0
+    ast_half_h[0] = @f32(ast_tex_big.h) / 2.0
+    ast_half_w[1] = @f32(ast_tex_med.w) / 2.0
+    ast_half_h[1] = @f32(ast_tex_med.h) / 2.0
+    ast_half_w[2] = @f32(ast_tex_small.w) / 2.0
+    ast_half_h[2] = @f32(ast_tex_small.h) / 2.0
+
+    # Sound effects are optional: decode + open an ALSA output up front,
+    # and just run silent if either fails (e.g. no sound hardware in a
+    # headless/CI environment) rather than treating audio as required.
+    fire_snd, fire_err: !audio.Sound = audio.decode_mp3("src/assets/fire.mp3")
+    boom_snd, boom_err: !audio.Sound = audio.decode_mp3("src/assets/explosion.mp3")
+    out: audio.AudioOutput = undef
+    audio_ok: bool = false
+    # --no-audio: temporary diagnostic toggle for isolating a reported
+    # frame stutter from audio entirely — skips open_output and runs
+    # exactly the "no sound hardware" code path below on purpose. An
+    # actual argv flag (not an env var) so it works the same way
+    # regardless of shell/launcher — run with `przp run --no-audio`.
+    args: []str = @args
+    no_audio: bool = false
+    for i => 0..args.len {
+        if str.eq(args[i], "--no-audio") { no_audio = true }
+    }
+    if fire_err == 0 && boom_err == 0 && !no_audio {
+        o, out_err: !audio.AudioOutput = audio.open_output("default", fire_snd.rate, fire_snd.channels)
+        if out_err == 0 {
+            out = o
+            audio_ok = true
+        }
+    }
+    if !audio_ok { @pf("(no audio device available — running without sound)\n") }
+
+    ship: Ship = Ship{
+        .pos=gfx.Vector2{.x=FWIN_W / 2.0, .y=FWIN_H / 2.0},
+        .vel=gfx.Vector2{.x=0.0, .y=0.0},
+        .angle=-1.5707963,   # pointing up
+        .invuln=RESPAWN_INVULN,
+    }
+
+    bullets: [MAX_BULLETS]Bullet = undef
+    for i => 0..MAX_BULLETS {
+        bullets[i] = Bullet{.pos=gfx.Vector2{.x=0.0, .y=0.0}, .vel=gfx.Vector2{.x=0.0, .y=0.0}, .life=0.0, .active=false}
+    }
+
+    asteroids: [MAX_ASTEROIDS]Asteroid = undef
+    for i => 0..MAX_ASTEROIDS {
+        asteroids[i] = Asteroid{.pos=gfx.Vector2{.x=0.0, .y=0.0}, .vel=gfx.Vector2{.x=0.0, .y=0.0}, .size=0, .active=false}
+    }
+
+    stars: [STAR_COUNT]Star = undef
+    @rng_seed(1234)   # fixed seed: same starfield and asteroid waves every run
+    for i => 0..STAR_COUNT {
+        sx: f64 = @rng(f64, 0.0, @f64(FWIN_W))
+        sy: f64 = @rng(f64, 0.0, @f64(FWIN_H))
+        sr: f64 = @rng(f64, 0.5, 1.8)
+        stars[i] = Star{.pos=gfx.Vector2{.x=@f32(sx), .y=@f32(sy)}, .r=@f32(sr)}
+    }
+
+    wave: i32 = 1
+    n_active: usize = 4
+    spawn_wave(asteroids, n_active)
+
+    score: i32 = 0
+    lives: i32 = START_LIVES
+    fire_timer: gdev.Timer = gdev.Timer.new(0.0)
+    frame: i32 = 0
+    game_over: bool = false
+
+    screen_center: gfx.Vector2 = gfx.Vector2{.x=FWIN_W / 2.0, .y=FWIN_H / 2.0}
+    cam: gdev.Camera2D = gdev.Camera2D{.offset=screen_center, .target=screen_center, .zoom=1.0}
+
+    gdev.set_target_fps(60)
+
+    while frame < MAX_FRAMES && !win.should_close() && !game_over {
+        gdev.begin_drawing()
+        dt: f32 = gdev.get_frame_time()
+        # Temporary diagnostic: chasing a reported stutter that gets worse
+        # holding fire down. Audio (moved to a background thread) and
+        # stdout/terminal backpressure have both been ruled out by testing
+        # — this logs exactly which frame spikes and what was active at
+        # that moment, to pin down the real cause instead of guessing again.
+        if dt > 0.033 {
+            n_bullets: i32 = 0
+            for bi => 0..MAX_BULLETS { if bullets[bi].active { n_bullets += 1 } }
+            n_asteroids: i32 = 0
+            for ai => 0..MAX_ASTEROIDS { if asteroids[ai].active { n_asteroids += 1 } }
+            @pf("[STALL] frame={frame} dt={dt}s bullets={n_bullets} asteroids={n_asteroids}\n")
+        }
+        if dt <= 0.0 { dt = 1.0 / 60.0 }
+
+        if gfx.is_key_down(gfx.Key.Left)  { ship.angle -= SHIP_ROT_SPEED * dt }
+        if gfx.is_key_down(gfx.Key.Right) { ship.angle += SHIP_ROT_SPEED * dt }
+        if gfx.is_key_down(gfx.Key.Up) {
+            thrust: gfx.Vector2 = gfx.Vector2.from_angle(ship.angle, SHIP_THRUST * dt)
+            ship.vel = ship.vel.add(thrust)
+        }
+        drag: f32 = gdev.damp(1.0, SHIP_DRAG, dt)
+        ship.vel = ship.vel.scale(drag)
+        ship_move: gfx.Vector2 = ship.vel.scale(dt)
+        ship_newpos: gfx.Vector2 = ship.pos.add(ship_move)
+        ship.pos = gdev.wrap_vec2(ship_newpos, FWIN_W, FWIN_H)
+        if ship.invuln > 0.0 { ship.invuln -= dt }
+
+        fire_timer.tick(dt)
+        if gfx.is_key_down(gfx.Key.Space) && fire_timer.ready() {
+            for i => 0..MAX_BULLETS {
+                if !bullets[i].active {
+                    fire_timer.reset(FIRE_COOLDOWN)
+                    dir: gfx.Vector2 = gfx.Vector2.from_angle(ship.angle, 1.0)
+                    nose_off: gfx.Vector2 = dir.scale(SHIP_RADIUS)
+                    bullets[i].pos = ship.pos.add(nose_off)
+                    bullet_dir_vel: gfx.Vector2 = dir.scale(BULLET_SPEED)
+                    bullets[i].vel = bullet_dir_vel.add(ship.vel)
+                    bullets[i].life = BULLET_LIFE
+                    bullets[i].active = true
+                    if audio_ok { audio.play_sound(out, fire_snd) }
+                    break
+                }
+            }
+        }
+
+        for i => 0..MAX_BULLETS {
+            if !bullets[i].active { continue }
+            bullets[i].life -= dt
+            if bullets[i].life <= 0.0 {
+                bullets[i].active = false
+                continue
+            }
+            b_move: gfx.Vector2 = bullets[i].vel.scale(dt)
+            b_newpos: gfx.Vector2 = bullets[i].pos.add(b_move)
+            bullets[i].pos = gdev.wrap_vec2(b_newpos, FWIN_W, FWIN_H)
+        }
+
+        for i => 0..MAX_ASTEROIDS {
+            if !asteroids[i].active { continue }
+            a_move: gfx.Vector2 = asteroids[i].vel.scale(dt)
+            a_newpos: gfx.Vector2 = asteroids[i].pos.add(a_move)
+            asteroids[i].pos = gdev.wrap_vec2(a_newpos, FWIN_W, FWIN_H)
+        }
+
+        for bi => 0..MAX_BULLETS {
+            if !bullets[bi].active { continue }
+            for ai => 0..MAX_ASTEROIDS {
+                if !asteroids[ai].active { continue }
+                asize: i32 = asteroids[ai].size
+                if gdev.check_collision_circles(bullets[bi].pos, 2.0, asteroids[ai].pos, ASTEROID_RADIUS[asize]) {
+                    bullets[bi].active = false
+                    hit_pos: gfx.Vector2 = asteroids[ai].pos
+                    hit_ang: f64 = math.atan2(@f64(asteroids[ai].vel.y), @f64(asteroids[ai].vel.x))
+                    asteroids[ai].active = false
+                    score += ASTEROID_SCORE[asize]
+                    cam.shake(6.0)
+                    if audio_ok { audio.play_sound(out, boom_snd) }
+                    @pf("Asteroid destroyed! Score: {score}  Lives: {lives}\n")
+                    if asize < 2 {
+                        spawn_fragment(asteroids, @i32(ai), hit_pos, hit_ang, asize + 1)
+                        spawn_fragment(asteroids, find_free_slot(asteroids), hit_pos, hit_ang, asize + 1)
+                    }
+                    break
+                }
+            }
+        }
+
+        if ship.invuln <= 0.0 {
+            for ai => 0..MAX_ASTEROIDS {
+                if !asteroids[ai].active { continue }
+                if gdev.check_collision_circles(ship.pos, SHIP_RADIUS, asteroids[ai].pos, ASTEROID_RADIUS[asteroids[ai].size]) {
+                    lives -= 1
+                    cam.shake(10.0)
+                    @pf("Ship hit! Lives remaining: {lives}\n")
+                    ship.pos = gfx.Vector2{.x=FWIN_W / 2.0, .y=FWIN_H / 2.0}
+                    ship.vel = gfx.Vector2{.x=0.0, .y=0.0}
+                    ship.invuln = RESPAWN_INVULN
+                    if lives <= 0 { game_over = true }
+                    break
+                }
+            }
+        }
+
+        any_active: bool = false
+        for ai => 0..MAX_ASTEROIDS { if asteroids[ai].active { any_active = true } }
+        if !any_active && !game_over {
+            wave += 1
+            grown: i32 = @i32(n_active) + 1
+            n_active = if grown < WAVE_MAX_BIG { @usize(grown) } else { @usize(WAVE_MAX_BIG) }
+            spawn_wave(asteroids, n_active)
+            @pf("Wave {wave}!\n")
+        }
+
+        shake_off: gfx.Vector2 = cam.update_shake(dt)
+        cam.target = screen_center.add(shake_off)
+
+        gfx.clear_background(gfx.BLACK)
+        gdev.begin_mode_2d(cam)
+
+        for i => 0..STAR_COUNT {
+            gfx.draw_circle(stars[i].pos.x, stars[i].pos.y, stars[i].r, gfx.WHITE)
+        }
+
+        for ai => 0..MAX_ASTEROIDS {
+            if asteroids[ai].active {
+                asz: i32 = asteroids[ai].size
+                ast_sprites[asz].draw(gfx.Vector2{.x=asteroids[ai].pos.x - ast_half_w[asz], .y=asteroids[ai].pos.y - ast_half_h[asz]})
+            }
+        }
+
+        for bi => 0..MAX_BULLETS {
+            if bullets[bi].active { gfx.draw_circle(bullets[bi].pos.x, bullets[bi].pos.y, 2.0, gfx.YELLOW) }
+        }
+
+        draw_ship: bool = true
+        if ship.invuln > 0.0 {
+            draw_ship = gdev.blink(ship.invuln, 5.0)
+        }
+        if draw_ship {
+            nose_dir:  gfx.Vector2 = gfx.Vector2.from_angle(ship.angle, SHIP_RADIUS)
+            wing1_dir: gfx.Vector2 = gfx.Vector2.from_angle(ship.angle + 2.5, SHIP_RADIUS)
+            wing2_dir: gfx.Vector2 = gfx.Vector2.from_angle(ship.angle - 2.5, SHIP_RADIUS)
+            nose:  gfx.Vector2 = ship.pos.add(nose_dir)
+            wing1: gfx.Vector2 = ship.pos.add(wing1_dir)
+            wing2: gfx.Vector2 = ship.pos.add(wing2_dir)
+            gfx.draw_line(nose.x, nose.y, wing1.x, wing1.y, gfx.GREEN)
+            gfx.draw_line(nose.x, nose.y, wing2.x, wing2.y, gfx.GREEN)
+            gfx.draw_line(wing1.x, wing1.y, wing2.x, wing2.y, gfx.GREEN)
+            if gfx.is_key_down(gfx.Key.Up) {
+                flame_dir: gfx.Vector2 = gfx.Vector2.from_angle(ship.angle, SHIP_RADIUS * 1.4)
+                flame: gfx.Vector2 = ship.pos.sub(flame_dir)
+                gfx.draw_line(wing1.x, wing1.y, flame.x, flame.y, gfx.YELLOW)
+                gfx.draw_line(wing2.x, wing2.y, flame.x, flame.y, gfx.YELLOW)
+            }
+        }
+
+        gdev.end_mode_2d()
+
+        for li => 0..lives {
+            px: f32 = 12.0 + @f32(li) * 18.0
+            gfx.draw_rectangle(px, 12.0, 10.0, 10.0, gfx.RED)
+        }
+
+        gdev.end_drawing()
+        frame += 1
+    }
+
+    @pf("Game over. Final score: {score}  Wave: {wave}  Frames: {frame}\n")
+
+    if audio_ok { audio.close_output(out) }
+    ast_tex_big.unload()
+    ast_tex_med.unload()
+    ast_tex_small.unload()
+    win.close()
+    ret 0
+}

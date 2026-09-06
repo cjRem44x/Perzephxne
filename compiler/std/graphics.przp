@@ -22,11 +22,65 @@
 # used normally for lifecycle. This is a scoped, temporary coupling that
 # goes away once Backend grows a real submit entry point.
 
-import(win = "std/graphics/window")
-import(gl  = "std/graphics/gl")
-import(img = "std/image")
+import(win  = "std/graphics/window")
+import(gl   = "std/graphics/gl")
+import(img  = "std/image")
+import(math = "std/math")
 
 struct Color { r: u8, g: u8, b: u8, a: u8 }
+
+struct Vector2 { x: f32, y: f32 }
+struct Rectangle { x: f32, y: f32, w: f32, h: f32 }
+
+# Vector2 arithmetic — every 2D game ends up needing these; without them,
+# velocity/thrust/aiming code degenerates into repeating the same
+# component-wise `.x`/`.y` math (and, for anything angle-driven, the same
+# `cos(angle)*len, sin(angle)*len` pair) at every call site instead of
+# once here. `from_angle` is the static constructor for exactly that
+# angle-driven case (a thrust vector, a bullet's initial velocity, ...).
+impl Vector2 {
+    fn add(self, other: Vector2) -> Vector2 {
+        ret Vector2{.x=self.x + other.x, .y=self.y + other.y}
+    }
+
+    fn sub(self, other: Vector2) -> Vector2 {
+        ret Vector2{.x=self.x - other.x, .y=self.y - other.y}
+    }
+
+    fn scale(self, s: f32) -> Vector2 {
+        ret Vector2{.x=self.x * s, .y=self.y * s}
+    }
+
+    fn dot(self, other: Vector2) -> f32 {
+        ret self.x * other.x + self.y * other.y
+    }
+
+    fn length(self) -> f32 {
+        ret @f32(math.sqrt(@f64(self.x * self.x + self.y * self.y)))
+    }
+
+    # normalize: the zero vector normalizes to itself (rather than
+    # dividing by zero) — a stationary object's velocity/facing has no
+    # direction to normalize to, and this is the only sane default that
+    # isn't a crash or a NaN.
+    fn normalize(self) -> Vector2 {
+        len: f32 = self.length()
+        if len == 0.0 { ret Vector2{.x=0.0, .y=0.0} }
+        ret self.scale(1.0 / len)
+    }
+
+    # from_angle: the unit vector at `angle` radians (0 = +x, increasing
+    # counter-clockwise, matching cos/sin directly), scaled to `len` —
+    # e.g. `Vector2.from_angle(ship.angle, SHIP_THRUST * dt)` for a
+    # thrust impulse, or `Vector2.from_angle(angle, BULLET_SPEED)` for a
+    # bullet's initial velocity.
+    fn from_angle(angle: f32, len: f32) -> Vector2 {
+        ret Vector2{
+            .x = @f32(math.cos(@f64(angle))) * len,
+            .y = @f32(math.sin(@f64(angle))) * len,
+        }
+    }
+}
 
 # A handful of named colors (raylib's palette values), since typing out
 # four byte literals every draw call gets old fast. Not exhaustive — add
@@ -54,6 +108,17 @@ enum MouseButton => i32 {
     Left = 0, Right = 1, Middle = 2,
 }
 
+# WindowFlag: bits for Window.configs — raylib-shaped bulk window
+# configuration (`win.configs(@u32(WindowFlag.Resizable) | @u32(WindowFlag.Fullscreen))`)
+# instead of one call per setting. Powers of 2 so any subset ORs
+# together without collision; only covers what Window.configs actually
+# knows how to apply today (resizable, fullscreen) — not a placeholder
+# for raylib flags (MSAA hints, VSYNC, ...) nothing here backs yet.
+enum WindowFlag => u32 {
+    Resizable  = 1,
+    Fullscreen = 2,
+}
+
 struct Window { w: i32, h: i32 }
 
 struct GfxState {
@@ -68,15 +133,22 @@ struct GfxState {
     mouse_x: f32,
     mouse_y: f32,
     mouse_down: [3]bool,
+    resizable: bool,   # see set_resizable/apply_size_hints
+    min_w: i32, min_h: i32,   # 0 = no minimum set
+    max_w: i32, max_h: i32,   # 0 = no maximum set
+    fullscreen: bool,           # see set_fullscreen
+    pre_fs_w: i32, pre_fs_h: i32,   # size to restore on set_fullscreen(false)
 }
 
 # Zero-initialized: null display, 0 window/wm_delete, false should_close,
-# 0 width/height, all-false key/mouse-button state, 0.0 mouse position —
-# every field's zero value is exactly the "nothing open yet" state. A
-# struct literal needs at least one `.field=` to parse as one at all
-# (an empty `{}` doesn't), so `display` is named explicitly and every
-# other field defaults to zero.
-STATE: GfxState = GfxState{.display=null}
+# 0 width/height, all-false key/mouse-button state, 0.0 mouse position,
+# no min/max size set — every field's zero value is exactly the "nothing
+# open yet" state, except `resizable`, which needs to default true (no
+# size hints applied — a plain X11 window resizes freely) rather than
+# bool's own false zero-value, so it's named explicitly alongside
+# `display`. A struct literal needs at least one `.field=` to parse as
+# one at all (an empty `{}` doesn't); every other field defaults to zero.
+STATE: GfxState = GfxState{.display=null, .resizable=true}
 
 # keysym_to_key: map an X11 KeySym (see std/graphics/window's
 # XKeycodeToKeysym) to a Key index, or -1 if it's a key std/graphics
@@ -142,10 +214,40 @@ fn poll_events() {
             if neww != STATE.width || newh != STATE.height {
                 STATE.width  = neww
                 STATE.height = newh
-                gl.set_ortho_2d(neww, newh)
+                gl.on_resize(STATE.backend_ctx, neww, newh)
             }
         }
     }
+}
+
+# apply_size_hints: pushes STATE's resizable/min/max settings to the
+# window manager as one XSizeHints (X11 hints are replace-whole-struct,
+# not incremental, hence recomputing all of it from STATE on every call
+# rather than patching just the field that changed).
+#
+# A non-resizable window is a fixed size, full stop — matching raylib
+# (SetWindowMinSize/MaxSize are documented as only applying under
+# FLAG_WINDOW_RESIZABLE), locking min and max to the window's current
+# size overrides any independently configured min/max while !resizable,
+# without forgetting them: they're never written to STATE.min_w etc.,
+# so toggling back to resizable(true) reapplies whatever was set before.
+fn apply_size_hints() {
+    hints: [80]u8 = undef   # win.SIZE_HINTS_SIZE
+    min_w: i32 = STATE.min_w
+    min_h: i32 = STATE.min_h
+    max_w: i32 = STATE.max_w
+    max_h: i32 = STATE.max_h
+    if !STATE.resizable {
+        min_w = STATE.width
+        min_h = STATE.height
+        max_w = STATE.width
+        max_h = STATE.height
+    }
+    flags: i64 = 0
+    if min_w > 0 || min_h > 0 { flags = flags | win.PMinSize }
+    if max_w > 0 || max_h > 0 { flags = flags | win.PMaxSize }
+    win.fill_size_hints(&hints[0], flags, min_w, min_h, max_w, max_h)
+    win.XSetWMNormalHints(STATE.display, STATE.window, &hints[0])
 }
 
 impl Window {
@@ -180,6 +282,97 @@ impl Window {
     }
 
     fn should_close(self) -> bool { ret STATE.should_close }
+
+    # set_resizable: true (the default — a freshly opened window is
+    # resizable with no bounds) lets the window manager resize it freely,
+    # subject to set_min_size/set_max_size if either was called; false
+    # locks it to its current size, ignoring any min/max already set
+    # (they're remembered, not cleared — see apply_size_hints).
+    fn set_resizable(self, resizable: bool) {
+        STATE.resizable = resizable
+        apply_size_hints()
+    }
+
+    # set_min_size / set_max_size: like raylib's SetWindowMinSize/
+    # SetWindowMaxSize — only take effect while the window is resizable.
+    # Either dimension can be 0 to leave that bound unset.
+    fn set_min_size(self, w: i32, h: i32) {
+        STATE.min_w = w
+        STATE.min_h = h
+        apply_size_hints()
+    }
+
+    fn set_max_size(self, w: i32, h: i32) {
+        STATE.max_w = w
+        STATE.max_h = h
+        apply_size_hints()
+    }
+
+    # resize: programmatically resize the window to exactly (w, h) —
+    # distinct from set_min_size/set_max_size, which only constrain what
+    # the window manager/user is allowed to resize *to*, never resize
+    # anything themselves. Updates STATE and the GL ortho projection
+    # immediately, the same two things poll_events' own
+    # EVENT_CONFIGURE_NOTIFY handler updates when a resize instead comes
+    # from the window manager — so a draw call issued right after
+    # `resize` (before the next `end_drawing`/poll) still sees the new
+    # size, rather than waiting a frame for that event to arrive.
+    fn resize(self, w: i32, h: i32) {
+        win.XResizeWindow(STATE.display, STATE.window, @u32(w), @u32(h))
+        win.XFlush(STATE.display)
+        STATE.width  = w
+        STATE.height = h
+        gl.on_resize(STATE.backend_ctx, w, h)
+    }
+
+    # set_fullscreen: WM-independent — resizes+moves the window to cover
+    # the whole screen directly (XMoveResizeWindow), rather than sending
+    # a `_NET_WM_STATE_FULLSCREEN` EWMH ClientMessage and relying on a
+    # window manager to honor it. That's the "correct" desktop-integrated
+    # way (real border/decoration removal, compositor bypass) but it's
+    # unverifiable here: Xvfb (this test suite's own virtual display) has
+    # no window manager running at all to answer that message, so a test
+    # asserting fullscreen actually took effect would have nothing to
+    # check against. Covering the screen's own pixel dimensions is
+    # WM-independent and exactly what `resize` already does under the
+    # hood, so it composes with `resize` rather than needing new
+    # machinery — restores the pre-fullscreen size on `false` rather
+    # than leaving the window pinned at screen size.
+    fn set_fullscreen(self, enabled: bool) {
+        if enabled == STATE.fullscreen { ret }
+        w: i32 = STATE.width
+        h: i32 = STATE.height
+        if enabled {
+            STATE.pre_fs_w = STATE.width
+            STATE.pre_fs_h = STATE.height
+            w = win.XDisplayWidth(STATE.display, win.XDefaultScreen(STATE.display))
+            h = win.XDisplayHeight(STATE.display, win.XDefaultScreen(STATE.display))
+        } else {
+            w = STATE.pre_fs_w
+            h = STATE.pre_fs_h
+        }
+        # XMoveResizeWindow, not just resize()'s XResizeWindow: fullscreen
+        # must also pin the window back to (0, 0), not just cover the
+        # screen's pixel dimensions wherever the window already sits.
+        win.XMoveResizeWindow(STATE.display, STATE.window, 0, 0, @u32(w), @u32(h))
+        win.XFlush(STATE.display)
+        STATE.width  = w
+        STATE.height = h
+        gl.on_resize(STATE.backend_ctx, w, h)
+        STATE.fullscreen = enabled
+    }
+
+    # configs: raylib-shaped bulk window configuration — apply every
+    # WindowFlag set in `flags` in one call, e.g.
+    # `win.configs(@u32(WindowFlag.Resizable) | @u32(WindowFlag.Fullscreen))`.
+    # Equivalent to calling `set_resizable`/`set_fullscreen` individually;
+    # this is just the batch form for setting several at once, the same
+    # way raylib's own `SetWindowState` takes an OR'd flag mask instead
+    # of one call per flag.
+    fn configs(self, flags: u32) {
+        if (flags & @u32(WindowFlag.Resizable))  != 0 { self.set_resizable(true) }
+        if (flags & @u32(WindowFlag.Fullscreen)) != 0 { self.set_fullscreen(true) }
+    }
 
     fn close(self) {
         gl.GL_BACKEND.shutdown(STATE.backend_ctx)
@@ -244,5 +437,118 @@ impl Texture {
 }
 
 fn draw_texture(t: Texture, x: f32, y: f32) {
-    gl.draw_textured_rect(t.id, x, y, @f32(t.w), @f32(t.h))
+    whole: Rectangle = Rectangle{.x=0.0, .y=0.0, .w=@f32(t.w), .h=@f32(t.h)}
+    draw_texture_rec(t, whole, Vector2{.x=x, .y=y})
+}
+
+# draw_texture_rec: draw just the `source` sub-rectangle (in pixel
+# coordinates within `t`) at `pos`, at `source`'s own size — the
+# building block for spritesheet/atlas frames, where one Texture holds
+# many frames and each draw call picks out one. `source`'s coordinates
+# must stay within the texture's own (t.w, t.h) bounds; nothing here
+# clips or wraps an out-of-range source.
+fn draw_texture_rec(t: Texture, source: Rectangle, pos: Vector2) {
+    draw_texture_rec_tinted(t, source, pos, WHITE)
+}
+
+# draw_texture_rec_tinted: draw_texture_rec, scaled by `tint` (WHITE for
+# the same untinted result draw_texture_rec itself gives) — the building
+# block draw_text uses to color a font atlas's white-on-transparent
+# glyphs, but generally useful anywhere a texture needs recoloring
+# (flash-white-on-hit, a colored UI icon from a white-only atlas, ...).
+fn draw_texture_rec_tinted(t: Texture, source: Rectangle, pos: Vector2, tint: Color) {
+    u0: f32 = source.x / @f32(t.w)
+    v0: f32 = source.y / @f32(t.h)
+    u1: f32 = (source.x + source.w) / @f32(t.w)
+    v1: f32 = (source.y + source.h) / @f32(t.h)
+    gl.draw_textured_rect_uv(t.id, pos.x, pos.y, source.w, source.h, u0, v0, u1, v1,
+        @f32(tint.r) / 255.0, @f32(tint.g) / 255.0, @f32(tint.b) / 255.0, @f32(tint.a) / 255.0)
+}
+
+# ── Bitmap fonts ─────────────────────────────────────────────────────────────
+#
+# There is no bundled default font, deliberately — every asset in this
+# codebase (PNG, GIF, MP3) is always caller-supplied, loaded from a path
+# the caller names, never embedded in the compiler/stdlib itself. A
+# built-in default font would be the first exception to that, and would
+# need real new machinery (exposing the compiler's own stdlib-root
+# resolution to running programs, or embedding binary data directly in
+# a .przp source file) that nothing else here needs. So: `Font.load`
+# your own atlas, the same as `Texture.load`/`decode_mp3` already work.
+#
+# The atlas itself must be a monospace grid: every glyph cell the same
+# fixed (glyph_w, glyph_h) size, laid out left-to-right/top-to-bottom
+# starting at `first_char`'s own code point (typically 32, space) —
+# `cols` is derived from the texture's own width, so the atlas's pixel
+# width must be an exact multiple of glyph_w. For color tinting
+# (draw_text's own `c` parameter) to work correctly via GL's texture-
+# modulate blending, glyphs should be white (or grayscale) on a
+# transparent background — a colored atlas still draws, just always in
+# its own colors, ignoring `c`. tests/gl/draw_text's own fixture
+# (generated via Python/Pillow from a real system font, for testing
+# only — see its CREDITS.md) is exactly this shape and a reasonable
+# template for building your own.
+struct Font {
+    texture:    Texture,
+    glyph_w:    i32,
+    glyph_h:    i32,
+    first_char: i32,
+    cols:       i32,
+}
+
+impl Font {
+    fn load(path: str, glyph_w: i32, glyph_h: i32, first_char: i32) -> !Font {
+        t, err: !Texture = Texture.load(path)
+        if err != 0 { ret @err(err) }
+        cols: i32 = t.w / glyph_w
+        ret @ok(Font{.texture=t, .glyph_w=glyph_w, .glyph_h=glyph_h, .first_char=first_char, .cols=cols})
+    }
+
+    fn unload(self) {
+        self.texture.unload()
+    }
+}
+
+# draw_text: draw `s` starting at (x, y), each glyph cell scaled by
+# `scale` (1.0 = the atlas's own glyph_w/glyph_h size) and tinted by
+# `c`. A byte outside `f`'s covered range (before `first_char`, or past
+# the atlas's last populated cell) draws as a gap — advances the cursor
+# like any other character without drawing anything, rather than
+# wrapping to a garbage cell or erroring. No line wrapping, kerning, or
+# proportional spacing — this is a monospace bitmap font, not text
+# layout (see book/graphics.md's guix section for where real layout is
+# scoped).
+fn draw_text(f: Font, s: str, x: f32, y: f32, scale: f32, c: Color) {
+    # Goes straight to gl.draw_textured_rect_uv rather than through
+    # draw_texture_rec_tinted: that helper always draws at the source
+    # rectangle's own size, but a scaled glyph needs a *destination*
+    # size independent of the atlas cell's actual pixel size — already
+    # exactly how gl.draw_textured_rect_uv's own (w, h) vs (u0,v0,u1,v1)
+    # parameters are split, so no new gl-layer function is needed, just
+    # not routing through the higher-level helper that collapses them.
+    n_cells: i32 = (f.texture.h / f.glyph_h) * f.cols
+    gw: f32 = @f32(f.glyph_w) * scale
+    gh: f32 = @f32(f.glyph_h) * scale
+    tint_r: f32 = @f32(c.r) / 255.0
+    tint_g: f32 = @f32(c.g) / 255.0
+    tint_b: f32 = @f32(c.b) / 255.0
+    tint_a: f32 = @f32(c.a) / 255.0
+    i: usize = 0
+    cx: f32 = x
+    while i < s.len {
+        ch: u8 = (s.data + i).*
+        idx: i32 = @i32(ch) - f.first_char
+        if idx >= 0 && idx < n_cells {
+            col: i32 = idx % f.cols
+            row: i32 = idx / f.cols
+            u0: f32 = @f32(col * f.glyph_w) / @f32(f.texture.w)
+            v0: f32 = @f32(row * f.glyph_h) / @f32(f.texture.h)
+            u1: f32 = @f32(col * f.glyph_w + f.glyph_w) / @f32(f.texture.w)
+            v1: f32 = @f32(row * f.glyph_h + f.glyph_h) / @f32(f.texture.h)
+            gl.draw_textured_rect_uv(f.texture.id, cx, y, gw, gh, u0, v0, u1, v1,
+                tint_r, tint_g, tint_b, tint_a)
+        }
+        cx += gw
+        i += 1
+    }
 }

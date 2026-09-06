@@ -1,0 +1,14 @@
+# regression: generic-call inference (see tests/run/generic_infer_basic.przp)
+# where the type parameter only appears in the return type, never in any
+# parameter — there is nothing to infer it from, so this must be a clear
+# error telling the caller to use explicit zero<...>(...) syntax, not a
+# crash or a silently wrong default.
+
+fn zero<T>() -> T {
+    ret @zeroed(T)
+}
+
+fn main() -> i32 {
+    x: i32 = zero()
+    ret 0
+}

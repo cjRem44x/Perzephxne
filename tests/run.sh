@@ -51,6 +51,77 @@ run_success_case() {
     fi
 }
 
+# Like run_success_case, but links -lz — for tests/run/*.przp files that
+# import std/image (its uncompress() extern needs zlib even when only its
+# GIF decoder, which needs no zlib itself, is actually exercised). Gated
+# on libz's presence like tests/zip/gl's own link-time deps, though zlib
+# is ubiquitous enough this should essentially never skip in practice.
+run_lz_case() {
+    local src="$1"
+    local name
+    name="$(basename "$src" .przp)"
+    local bin="$TMP/bin/$name"
+    local actual="$TMP/out/$name.stdout"
+    local compile_err="$TMP/err/$name.compile.stderr"
+    local run_err="$TMP/err/$name.run.stderr"
+    local expected="${src%.przp}.stdout"
+
+    printf 'run   %s\n' "$name"
+    if ! PRZP_STDLIB="$STDLIB" "$PRZP" sac "$src" -lz -o="$bin" >"$TMP/out/$name.compile.stdout" 2>"$compile_err"; then
+        printf 'FAIL  %s: compile failed\n' "$name" >&2
+        sed -n '1,120p' "$compile_err" >&2
+        failures=$((failures + 1))
+        return
+    fi
+
+    if ! "$bin" >"$actual" 2>"$run_err"; then
+        printf 'FAIL  %s: run failed\n' "$name" >&2
+        sed -n '1,120p' "$run_err" >&2
+        failures=$((failures + 1))
+        return
+    fi
+
+    if ! diff -u "$expected" "$actual"; then
+        printf 'FAIL  %s: stdout mismatch\n' "$name" >&2
+        failures=$((failures + 1))
+    fi
+}
+
+# std/audio tests (libmpg123 + ALSA FFI). Needs both libraries' runtime
+# .so's — gated separately below, skipped (not failed) when absent.
+# Playback goes to ALSA's "null" PCM device, so no real sound hardware is
+# needed (see run_gl_case's Xvfb for the analogous graphics story).
+run_audio_case() {
+    local src="$1"
+    local name
+    name="$(basename "$src" .przp)"
+    local bin="$TMP/bin/$name"
+    local actual="$TMP/out/$name.stdout"
+    local compile_err="$TMP/err/$name.compile.stderr"
+    local run_err="$TMP/err/$name.run.stderr"
+    local expected="${src%.przp}.stdout"
+
+    printf 'audio %s\n' "$name"
+    if ! PRZP_STDLIB="$STDLIB" "$PRZP" sac "$src" -lasound -lmpg123 -o="$bin" >"$TMP/out/$name.compile.stdout" 2>"$compile_err"; then
+        printf 'FAIL  %s: compile failed\n' "$name" >&2
+        sed -n '1,120p' "$compile_err" >&2
+        failures=$((failures + 1))
+        return
+    fi
+
+    if ! "$bin" >"$actual" 2>"$run_err"; then
+        printf 'FAIL  %s: run failed\n' "$name" >&2
+        sed -n '1,120p' "$run_err" >&2
+        failures=$((failures + 1))
+        return
+    fi
+
+    if ! diff -u "$expected" "$actual"; then
+        printf 'FAIL  %s: stdout mismatch\n' "$name" >&2
+        failures=$((failures + 1))
+    fi
+}
+
 run_fail_case() {
     local src="$1"
     local name
@@ -128,6 +199,104 @@ run_project_fail_case() {
         sed -n '1,80p' "$expected" >&2
         printf 'actual:\n' >&2
         sed -n '1,120p' "$stderr" >&2
+        failures=$((failures + 1))
+    fi
+}
+
+# End-to-end `przp add` + ensure_deps auto-fetch + `dep/` import resolution
+# (see book/src/build-system.md#dependencies). Needs `git`, gated (skipped,
+# not failed) like the GL/audio tests are for their own runtime deps —
+# unlike those, there's no way to test this against a real, hardware-free
+# "null device" equivalent, so instead a whole fake przp_dep_greeter repo
+# is built as a local bare repo under $TMP and PRZP_DEPS_GIT_BASE points at
+# it with a file:// URL — real git clone/fetch/checkout behavior, but no
+# actual network access, the same reasoning std_audio.przp uses ALSA's
+# "null" device for.
+run_deps_case() {
+    if ! command -v git >/dev/null 2>&1; then
+        printf 'skip  deps: git not installed\n'
+        return
+    fi
+    printf 'deps  add_and_autofetch\n'
+
+    local base="$TMP/deps_fixture"
+    rm -rf "$base"
+    mkdir -p "$base/org" "$base/srcstage" "$base/proj/src"
+
+    if ! (
+        cd "$base/srcstage" &&
+        git init --quiet &&
+        git config user.email test@test.com &&
+        git config user.name test &&
+        printf 'fn greet() -> i32 { ret 7 }\n' > greeter.przp &&
+        git add greeter.przp &&
+        git commit --quiet -m init &&
+        git branch -M main
+    ); then
+        printf 'FAIL  deps: could not build fixture source repo\n' >&2
+        failures=$((failures + 1))
+        return
+    fi
+
+    git init --quiet --bare "$base/org/przp_dep_greeter.git"
+    if ! (cd "$base/srcstage" && git remote add origin "$base/org/przp_dep_greeter.git" && git push --quiet origin main); then
+        printf 'FAIL  deps: could not push fixture source repo to bare remote\n' >&2
+        failures=$((failures + 1))
+        return
+    fi
+    git --git-dir="$base/org/przp_dep_greeter.git" symbolic-ref HEAD refs/heads/main
+
+    cat > "$base/proj/przp.toml" <<'EOF'
+[package]
+name = "depsfixtureproj"
+
+[build]
+entry = "src/main.przp"
+EOF
+    cat > "$base/proj/src/main.przp" <<'EOF'
+import(g = "dep/greeter")
+
+fn main() -> i32 {
+    r: i32 = g.greet()
+    @pf("r={r}\n")
+    ret 0
+}
+EOF
+
+    local add_out="$TMP/out/deps_add.stdout"
+    local add_err="$TMP/err/deps_add.stderr"
+    if ! (cd "$base/proj" && PRZP_STDLIB="$STDLIB" PRZP_DEPS_GIT_BASE="file://$base/org" "$PRZP" add greeter >"$add_out" 2>"$add_err"); then
+        printf 'FAIL  deps: przp add failed\n' >&2
+        sed -n '1,80p' "$add_err" >&2
+        failures=$((failures + 1))
+        return
+    fi
+    if ! grep -q '^\[deps\]' "$base/proj/przp.toml" || ! grep -q '^greeter = ' "$base/proj/przp.toml"; then
+        printf 'FAIL  deps: przp.toml missing greeter entry after add\n' >&2
+        failures=$((failures + 1))
+        return
+    fi
+    if ! grep -q '^greeter = ' "$base/proj/przp.lock"; then
+        printf 'FAIL  deps: przp.lock missing greeter entry after add\n' >&2
+        failures=$((failures + 1))
+        return
+    fi
+
+    # Delete the fetched checkout so przp run has to exercise ensure_deps's
+    # auto-fetch path (missing .przp/deps/) rather than an already-warm one.
+    rm -rf "$base/proj/.przp"
+
+    local run_out="$TMP/out/deps_run.stdout"
+    local run_err="$TMP/err/deps_run.stderr"
+    if ! (cd "$base/proj" && PRZP_STDLIB="$STDLIB" PRZP_DEPS_GIT_BASE="file://$base/org" "$PRZP" run >"$run_out" 2>"$run_err"); then
+        printf 'FAIL  deps: przp run (auto-fetch) failed\n' >&2
+        sed -n '1,80p' "$run_err" >&2
+        failures=$((failures + 1))
+        return
+    fi
+    if ! grep -q '^r=7$' "$run_out"; then
+        printf 'FAIL  deps: unexpected przp run output\n' >&2
+        cat "$run_out" >&2
         failures=$((failures + 1))
     fi
 }
@@ -328,6 +497,86 @@ run_gl_case() {
 
     if ! diff -u "$expected" "$actual"; then
         printf 'FAIL  %s: gl stdout mismatch\n' "$name" >&2
+        failures=$((failures + 1))
+    fi
+}
+
+# run_gl_video_case: run_gl_case plus ffmpeg's libavformat/libavcodec/
+# libavutil/libswscale link flags, for the one tests/gl case
+# (video_sprite) that also needs std/video — gated separately below on
+# top of run_gl_case's own X11/GL gating, since ffmpeg's dev packages
+# are a distinct, less commonly pre-installed dependency.
+run_gl_video_case() {
+    local src_dir="$1"
+    local name
+    name="$(basename "$src_dir")"
+    local bin="$TMP/bin/$name.gl"
+    local actual="$TMP/out/$name.gl.stdout"
+    local compile_err="$TMP/err/$name.gl.compile.stderr"
+    local run_err="$TMP/err/$name.gl.run.stderr"
+    local expected="$src_dir/stdout"
+
+    printf 'gl    %s\n' "$name"
+    if ! PRZP_STDLIB="$STDLIB" "$PRZP" sac "$src_dir/main.przp" -lX11 -lGL -lz \
+            -lavformat -lavcodec -lavutil -lswscale -o="$bin" \
+            >"$TMP/out/$name.gl.compile.stdout" 2>"$compile_err"; then
+        printf 'FAIL  %s: gl compile failed\n' "$name" >&2
+        sed -n '1,120p' "$compile_err" >&2
+        failures=$((failures + 1))
+        return
+    fi
+
+    if ! DISPLAY="$X11_DISPLAY" timeout 10 "$bin" >"$actual" 2>"$run_err"; then
+        printf 'FAIL  %s: gl run failed\n' "$name" >&2
+        sed -n '1,120p' "$run_err" >&2
+        failures=$((failures + 1))
+        return
+    fi
+
+    if ! diff -u "$expected" "$actual"; then
+        printf 'FAIL  %s: gl stdout mismatch\n' "$name" >&2
+        failures=$((failures + 1))
+    fi
+}
+
+# std/video tests (ffmpeg's libavformat/libavcodec/libavutil/libswscale
+# FFI). Needs all four libraries' *development* packages at build time
+# (not just the runtime .so — see std/video.przp's own doc comment on
+# why), gated separately below, skipped (not failed) when absent. Also
+# needs -lX11 -lGL -lz: std/video.przp imports std/graphics for
+# VideoSprite's GL texture, so even a program that only uses the
+# decode-only `Video` type still compiles the whole module (this
+# compiler doesn't dead-code-eliminate unused imports) — the same
+# reason std/audio's tests need -lasound -lmpg123 even for a program
+# that only decodes and never plays anything.
+run_video_case() {
+    local src="$1"
+    local name
+    name="$(basename "$src" .przp)"
+    local bin="$TMP/bin/$name"
+    local actual="$TMP/out/$name.stdout"
+    local compile_err="$TMP/err/$name.compile.stderr"
+    local run_err="$TMP/err/$name.run.stderr"
+    local expected="${src%.przp}.stdout"
+
+    printf 'video %s\n' "$name"
+    if ! PRZP_STDLIB="$STDLIB" "$PRZP" sac "$src" -lX11 -lGL -lz -lavformat -lavcodec -lavutil -lswscale -o="$bin" \
+            >"$TMP/out/$name.compile.stdout" 2>"$compile_err"; then
+        printf 'FAIL  %s: compile failed\n' "$name" >&2
+        sed -n '1,120p' "$compile_err" >&2
+        failures=$((failures + 1))
+        return
+    fi
+
+    if ! "$bin" >"$actual" 2>"$run_err"; then
+        printf 'FAIL  %s: run failed\n' "$name" >&2
+        sed -n '1,120p' "$run_err" >&2
+        failures=$((failures + 1))
+        return
+    fi
+
+    if ! diff -u "$expected" "$actual"; then
+        printf 'FAIL  %s: stdout mismatch\n' "$name" >&2
         failures=$((failures + 1))
     fi
 }
@@ -855,8 +1104,40 @@ EOF
 
 for src in "$ROOT"/tests/run/*.przp; do
     [ -e "$src" ] || continue
+    # std_image_gif needs -lz (std/image's uncompress() extern) — run via
+    # run_lz_case below instead of the plain no-extra-links case here.
+    case "$(basename "$src")" in
+        std_image_gif.przp|std_audio.przp|std_audio_control.przp|std_video_decode.przp) continue ;;
+    esac
     run_success_case "$src"
 done
+
+if ldconfig -p 2>/dev/null | grep -q "libz\.so"; then
+    run_lz_case "$ROOT/tests/run/std_image_gif.przp"
+else
+    printf 'skip  std_image_gif: libz not installed\n'
+fi
+
+if ldconfig -p 2>/dev/null | grep -q "libasound\.so" && ldconfig -p 2>/dev/null | grep -q "libmpg123\.so"; then
+    run_audio_case "$ROOT/tests/run/std_audio.przp"
+    run_audio_case "$ROOT/tests/run/std_audio_control.przp"
+else
+    printf 'skip  std_audio: libasound/libmpg123 not installed\n'
+fi
+
+HAVE_FFMPEG=0
+if ldconfig -p 2>/dev/null | grep -q "libavformat\.so" \
+        && ldconfig -p 2>/dev/null | grep -q "libavcodec\.so" \
+        && ldconfig -p 2>/dev/null | grep -q "libavutil\.so" \
+        && ldconfig -p 2>/dev/null | grep -q "libswscale\.so" \
+        && ldconfig -p 2>/dev/null | grep -q "libX11\.so" \
+        && ldconfig -p 2>/dev/null | grep -q "libGL\.so" \
+        && ldconfig -p 2>/dev/null | grep -q "libz\.so"; then
+    HAVE_FFMPEG=1
+    run_video_case "$ROOT/tests/run/std_video_decode.przp"
+else
+    printf 'skip  std_video_decode: libavformat/libavcodec/libavutil/libswscale (or libX11/libGL/libz) not installed\n'
+fi
 
 for dir in "$ROOT"/tests/project/*; do
     [ -d "$dir" ] || continue
@@ -867,6 +1148,8 @@ for dir in "$ROOT"/tests/project-fail/*; do
     [ -d "$dir" ] || continue
     run_project_fail_case "$dir"
 done
+
+run_deps_case
 
 for dir in "$ROOT"/tests/multifile/*; do
     [ -d "$dir" ] || continue
@@ -886,8 +1169,14 @@ if run_x11_setup; then
     if ldconfig -p 2>/dev/null | grep -q "libGL\.so"; then
         for dir in "$ROOT"/tests/gl/*; do
             [ -d "$dir" ] || continue
+            [ "$(basename "$dir")" = "video_sprite" ] && continue
             run_gl_case "$dir"
         done
+        if [ "$HAVE_FFMPEG" = "1" ]; then
+            run_gl_video_case "$ROOT/tests/gl/video_sprite"
+        else
+            printf 'skip  gl video_sprite: libavformat/libavcodec/libavutil/libswscale not installed\n'
+        fi
     else
         printf 'skip  gl tests: libGL not installed\n'
     fi

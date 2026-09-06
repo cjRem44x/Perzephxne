@@ -1,0 +1,14 @@
+# regression: see helpers/array_size_import_helper.przp for the actual
+# bug — this file's only job is to import that module (the step that
+# used to break array-size constant folding for a struct's own,
+# module-local `::` constant) and prove both array fields end up the
+# right size.
+import(h = "helpers/array_size_import_helper")
+
+fn main() -> i32 {
+    t: h.Thing = h.make()
+    @pf("count = {t.count}\n")
+    @pf("sizeof t.data = {@size(t.data)}\n")
+    @pf("sizeof t.more = {@size(t.more)}\n")
+    ret 0
+}

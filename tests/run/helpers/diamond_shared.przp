@@ -1,0 +1,5 @@
+# the file both diamond_wrapper.przp and the top-level test import — the
+# thing whose type identity must stay consistent across both import paths.
+struct Point { x: i32, y: i32 }
+
+fn origin() -> Point { ret Point{.x=0, .y=0} }

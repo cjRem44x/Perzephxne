@@ -278,6 +278,20 @@ struct Item {
     ItemKind    kind;
     Span        span;
     const char *name;     /* NULL for ITEM_IMPORT */
+    /* set once this item has been merged into an importer's module as
+       part of a *cross-file* import() (see main.c's load_imports) — a
+       frozen item's name is final and must never be prefixed again by a
+       later mangle_items pass, even if the module it was merged into
+       itself later gets imported under another alias. This is what lets
+       two different files that both import() the same third file (a
+       "diamond") end up sharing one canonical name for its types instead
+       of each accumulating a different alias-chain prefix. Deliberately
+       NOT set by expand_mod_items's own same-file `mod Name {}`
+       flattening — a mod block's items are still genuinely part of the
+       containing file's own content, and still need the containing
+       file's own import alias prefixed onto them if that file is later
+       imported elsewhere (see tests/run/mod_in_imported_file.przp). */
+    int         mangled;
     union {
         struct {
             ParamList    params;
@@ -374,3 +388,14 @@ typedef struct {
     const char **mod_names;
     size_t       n_mod_names;
 } Module;
+
+/* Render a Type as the mangling-safe string a generic instantiation's
+   name is built from (e.g. "f64", "rc_vec2", "sl_i32" — identifier-safe,
+   unlike ty_str's source-syntax "^vec2"/"[]i32" used for diagnostics).
+   Implemented in parser.c (the explicit `name<Type>(...)` call syntax's
+   own mangling needs it there) but declared here, not parser.h, since
+   sema.c's generic-call-inference path needs to build the identical
+   mangled name for a given concrete type — same scheme, not a
+   lookalike, so an inferred call and an equivalent explicit call for the
+   same concrete types resolve to one shared instantiation. */
+const char *type_to_str(Type *ty, Arena *a);

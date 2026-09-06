@@ -24,6 +24,7 @@ extern fn malloc(n: usize) -> *u8
 extern fn realloc(p: *u8, n: usize) -> *u8
 extern fn free(p: *u8)
 extern fn memcpy(dst: *u8, src: *u8, n: usize) -> *u8
+extern fn memset(dst: *u8, val: i32, n: usize) -> *u8
 
 # zlib's one-shot decompressor: given a big-enough destination buffer,
 # inflates a complete zlib stream in a single call — no need for the
@@ -172,4 +173,395 @@ fn load_png(path: str) -> !Image {
 
     img: Image = Image{.width=width, .height=height, .channels=channels, .pixels=pixels}
     ret @ok(img)
+}
+
+# ── GIF (animated) ───────────────────────────────────────────────────────────
+#
+# GIF87a/89a, non-interlaced only (matching PNG's precedent above of
+# rejecting a scope-widening variant with a clear error rather than
+# building it preemptively). Every frame is fully composited against a
+# persistent canvas honoring the Graphic Control Extension's disposal
+# method (0/1 leave in place, 2 restore to background, 3 restore to
+# previous) and transparent color index — real animated GIFs routinely
+# only redraw the changed region per frame and rely on this compositing,
+# so skipping it would visibly corrupt most real-world animated GIFs, not
+# just an edge case. LZW decompression (GIF's own variant — 87a/89a
+# predates DEFLATE) is hand-written below; there's no system library for
+# it the way zlib covers PNG's DEFLATE.
+
+fn read_le16(buf: *u8) -> u32 {
+    b0: u32 = @u32(buf.*)
+    b1: u32 = @u32((buf + 1).*)
+    ret b0 | (b1 << 8u32)
+}
+
+struct GifFrame {
+    pixels:   *u8,   # width*height*4 bytes RGBA, row-major, top row first
+    delay_ms: i32,
+}
+
+struct Gif {
+    width:    i32,
+    height:   i32,
+    frames:   *GifFrame,
+    n_frames: usize,
+}
+
+fn free_gif(g: Gif) {
+    i: usize = 0
+    while i < g.n_frames {
+        p: *u8 = g.frames[i].pixels
+        if p != null { free(p) }
+        i += 1
+    }
+    if g.frames != null { free(@bitcast(*u8, g.frames)) }
+}
+
+# gif_decode_code: walk `code`'s dictionary chain (root codes' prefix is
+# the 0xFFFF sentinel) into `stack`, in forward output order. Returns the
+# byte count written. `code` must already be a defined table entry
+# (caller handles the one code that legitimately isn't yet: see the
+# "KwKwK" case in gif_lzw_decode).
+fn gif_decode_code(code: u32, prefix: *u16, suffix: *u8, stack: *u8) -> usize {
+    cur: u32 = code
+    n: usize = 0
+    while true {
+        stack[n] = suffix[cur]
+        n += 1
+        p: u16 = prefix[cur]
+        if p == 0xFFFFu16 { break }
+        cur = @u32(p)
+    }
+    lo: usize = 0
+    hi: usize = n - 1
+    while lo < hi {
+        tmp: u8 = stack[lo]
+        stack[lo] = stack[hi]
+        stack[hi] = tmp
+        lo += 1
+        hi -= 1
+    }
+    ret n
+}
+
+# gif_lzw_decode: decode a GIF-flavor LZW stream (already concatenated
+# across its sub-block boundaries — see load_gif) into exactly
+# `want_len` color-table indices, or fewer if the stream runs out first
+# (a corrupt/truncated frame; callers treat a short result as an error).
+fn gif_lzw_decode(data: *u8, data_len: usize, min_code_size: u32, want_len: usize) -> *u8 {
+    clear_code: u32 = 1u32 << min_code_size
+    end_code: u32 = clear_code + 1u32
+
+    prefix: [4096]u16 = undef
+    suffix: [4096]u8 = undef
+    i: u32 = 0
+    while i < clear_code {
+        prefix[i] = 0xFFFFu16
+        suffix[i] = @u8(i)
+        i += 1
+    }
+
+    next_code: u32 = end_code + 1u32
+    code_size: u32 = min_code_size + 1u32
+
+    out: *u8 = malloc(want_len)
+    out_len: usize = 0
+
+    bitpos: usize = 0
+    total_bits: usize = data_len * 8
+
+    prev_code: u32 = 0xFFFFFFFFu32
+    stack: [4096]u8 = undef
+
+    while out_len < want_len {
+        if bitpos + @usize(code_size) > total_bits { break }
+
+        code: u32 = 0
+        b: u32 = 0
+        while b < code_size {
+            byte_idx: usize = (bitpos + @usize(b)) / 8
+            bit_idx: u32 = @u32((bitpos + @usize(b)) % 8)
+            bit: u32 = (@u32((data + byte_idx).*) >> bit_idx) & 1u32
+            code = code | (bit << b)
+            b += 1
+        }
+        bitpos += @usize(code_size)
+
+        if code == clear_code {
+            next_code = end_code + 1u32
+            code_size = min_code_size + 1u32
+            prev_code = 0xFFFFFFFFu32
+            continue
+        }
+        if code == end_code { break }
+
+        n: usize = 0
+        first_byte: u8 = 0
+        if code < next_code {
+            n = gif_decode_code(code, &prefix[0], &suffix[0], &stack[0])
+            first_byte = stack[0]
+        } elif code == next_code && prev_code != 0xFFFFFFFFu32 {
+            # KwKwK: the one code that's legitimately not in the table
+            # yet — the string this step is about to define, referenced
+            # one code early. Value: previous string + its own first byte.
+            n = gif_decode_code(prev_code, &prefix[0], &suffix[0], &stack[0])
+            first_byte = stack[0]
+            stack[n] = first_byte
+            n += 1
+        } else {
+            break # invalid/corrupt code — stop rather than read garbage
+        }
+
+        copy_n: usize = n
+        if out_len + copy_n > want_len { copy_n = want_len - out_len }
+        memcpy(out + out_len, &stack[0], copy_n)
+        out_len += copy_n
+
+        if prev_code != 0xFFFFFFFFu32 && next_code < 4096u32 {
+            prefix[next_code] = @u16(prev_code)
+            suffix[next_code] = first_byte
+            next_code += 1u32
+            if next_code == (1u32 << code_size) && code_size < 12u32 {
+                code_size += 1u32
+            }
+        }
+        prev_code = code
+    }
+
+    ret out
+}
+
+fn gif_clear_region(canvas: *u8, canvas_w: i32, x: i32, y: i32, w: i32, h: i32) {
+    row: i32 = 0
+    while row < h {
+        off: usize = (@usize(y + row) * @usize(canvas_w) + @usize(x)) * 4
+        memset(canvas + off, 0, @usize(w) * 4)
+        row += 1
+    }
+}
+
+fn gif_copy_region(dst: *u8, src: *u8, canvas_w: i32, x: i32, y: i32, w: i32, h: i32) {
+    row: i32 = 0
+    while row < h {
+        off: usize = (@usize(y + row) * @usize(canvas_w) + @usize(x)) * 4
+        memcpy(dst + off, src + off, @usize(w) * 4)
+        row += 1
+    }
+}
+
+# gif_composite_frame: blend a decoded frame's color-table indices onto
+# `canvas` at (x, y) — pixels matching `transparent_idx` (-1 = no
+# transparency in this frame) leave the canvas pixel underneath alone,
+# which is exactly what lets a small, mostly-transparent frame update
+# only part of the canvas each tick.
+fn gif_composite_frame(canvas: *u8, canvas_w: i32, canvas_h: i32, x: i32, y: i32, w: i32, h: i32,
+                        indices: *u8, n_indices: usize, table: *u8, transparent_idx: i32) {
+    row: i32 = 0
+    while row < h {
+        col: i32 = 0
+        while col < w {
+            src_i: usize = @usize(row) * @usize(w) + @usize(col)
+            if src_i < n_indices {
+                idx: u8 = indices[src_i]
+                cx: i32 = x + col
+                cy: i32 = y + row
+                if @i32(idx) != transparent_idx && cx >= 0 && cy >= 0 && cx < canvas_w && cy < canvas_h {
+                    dst_off: usize = (@usize(cy) * @usize(canvas_w) + @usize(cx)) * 4
+                    tbl_off: usize = @usize(idx) * 3
+                    (canvas + dst_off).* = (table + tbl_off).*
+                    (canvas + dst_off + 1).* = (table + tbl_off + 1).*
+                    (canvas + dst_off + 2).* = (table + tbl_off + 2).*
+                    (canvas + dst_off + 3).* = 255u8
+                }
+            }
+            col += 1
+        }
+        row += 1
+    }
+}
+
+fn load_gif(path: str) -> !Gif {
+    data: str = file.read_all(path)
+    if data.len < 13 { ret @err(1) }
+
+    sig: *u8 = data.data
+    is_gif: bool = sig.* == 71u8 && (sig+1).* == 73u8 && (sig+2).* == 70u8 && (sig+3).* == 56u8
+        && ((sig+4).* == 55u8 || (sig+4).* == 57u8) && (sig+5).* == 97u8
+    if !is_gif { ret @err(1) } # not a GIF ("GIF87a"/"GIF89a")
+
+    width: i32  = @i32(read_le16(data.data + 6))
+    height: i32 = @i32(read_le16(data.data + 8))
+    if width <= 0 || height <= 0 { ret @err(2) }
+
+    lsd_packed: u8 = (data.data + 10).*
+    has_gct: bool = (lsd_packed & 0x80u8) != 0u8
+    gct_size: u32 = 1u32 << (@u32(lsd_packed & 0x07u8) + 1u32)
+    pos: usize = 13
+
+    gct: [768]u8 = undef # up to 256 entries * 3 bytes (RGB)
+    if has_gct {
+        n: usize = @usize(gct_size) * 3
+        if pos + n > data.len { ret @err(2) }
+        memcpy(&gct[0], data.data + pos, n)
+        pos += n
+    }
+
+    canvas_len: usize = @usize(width) * @usize(height) * 4
+    canvas: *u8 = malloc(canvas_len)
+    memset(canvas, 0, canvas_len)
+    saved: *u8 = malloc(canvas_len) # snapshot for disposal method 3
+
+    frames_cap: usize = 8
+    frames: *GifFrame = @alo(GifFrame, frames_cap)
+    n_frames: usize = 0
+
+    # Graphic Control Extension state, pending until the *next* image
+    # descriptor consumes it
+    gce_delay_ms: i32 = 100
+    gce_transparent_idx: i32 = -1
+    gce_disposal: u32 = 0
+
+    # the *previous* frame's region + disposal, applied to `canvas` right
+    # before compositing the next one
+    have_prev: bool = false
+    prev_disposal: u32 = 0
+    prev_x: i32 = 0
+    prev_y: i32 = 0
+    prev_w: i32 = 0
+    prev_h: i32 = 0
+
+    done: bool = false
+    while !done && pos < data.len {
+        introducer: u8 = (data.data + pos).*
+
+        if introducer == 0x3Bu8 { # trailer
+            done = true
+        } elif introducer == 0x21u8 { # extension
+            pos += 1
+            if pos >= data.len { break }
+            label: u8 = (data.data + pos).*
+            pos += 1
+            if label == 0xF9u8 && pos + 5 <= data.len { # Graphic Control Extension
+                gce_packed: u8 = (data.data + pos + 1).*
+                gce_disposal = @u32((gce_packed >> 2u8) & 0x07u8)
+                has_transparent: bool = (gce_packed & 0x01u8) != 0u8
+                delay100: u32 = read_le16(data.data + pos + 2)
+                trans_idx: u8 = (data.data + pos + 4).*
+                gce_delay_ms = @i32(delay100) * 10
+                gce_transparent_idx = if has_transparent { @i32(trans_idx) } else { -1 }
+                pos += 5 # block size byte + 4 data bytes
+                pos += 1 # block terminator — GCE has no further sub-blocks
+                # to skip, unlike Application/Comment/Plain Text below, so
+                # it's fully consumed here rather than falling into that loop.
+            } else {
+                if label == 0x01u8 && pos + 13 <= data.len {
+                    pos += 13 # Plain Text Extension's fixed-size block, before its sub-blocks
+                }
+                # skip this extension's data sub-blocks (Application,
+                # Comment, or Plain Text's actual text data)
+                while pos < data.len {
+                    sz: u8 = (data.data + pos).*
+                    pos += 1
+                    if sz == 0u8 { break }
+                    pos += @usize(sz)
+                }
+            }
+        } elif introducer == 0x2Cu8 { # image descriptor
+            pos += 1
+            if pos + 9 > data.len { break }
+            img_x: i32 = @i32(read_le16(data.data + pos))
+            img_y: i32 = @i32(read_le16(data.data + pos + 2))
+            img_w: i32 = @i32(read_le16(data.data + pos + 4))
+            img_h: i32 = @i32(read_le16(data.data + pos + 6))
+            id_packed: u8 = (data.data + pos + 8).*
+            pos += 9
+
+            has_lct: bool = (id_packed & 0x80u8) != 0u8
+            interlaced: bool = (id_packed & 0x40u8) != 0u8
+            if interlaced {
+                free(canvas)
+                free(saved)
+                free_gif(Gif{.width=width, .height=height, .frames=frames, .n_frames=n_frames})
+                ret @err(3) # interlaced GIF not supported
+            }
+
+            lct_size: u32 = 1u32 << (@u32(id_packed & 0x07u8) + 1u32)
+            active_table: *u8 = &gct[0]
+            if has_lct {
+                active_table = data.data + pos
+                pos += @usize(lct_size) * 3
+            }
+
+            if pos >= data.len { break }
+            min_code_size: u8 = (data.data + pos).*
+            pos += 1
+
+            lzw_cap: usize = 256
+            lzw: *u8 = malloc(lzw_cap)
+            lzw_len: usize = 0
+            while pos < data.len {
+                sz: u8 = (data.data + pos).*
+                pos += 1
+                if sz == 0u8 { break }
+                n: usize = @usize(sz)
+                if lzw_len + n > lzw_cap {
+                    lzw_cap = (lzw_len + n) * 2 + 256
+                    lzw = realloc(lzw, lzw_cap)
+                }
+                if pos + n > data.len { n = data.len - pos }
+                memcpy(lzw + lzw_len, data.data + pos, n)
+                lzw_len += n
+                pos += n
+            }
+
+            if have_prev {
+                if prev_disposal == 2u32 {
+                    gif_clear_region(canvas, width, prev_x, prev_y, prev_w, prev_h)
+                } elif prev_disposal == 3u32 {
+                    gif_copy_region(canvas, saved, width, prev_x, prev_y, prev_w, prev_h)
+                }
+            }
+            gif_copy_region(saved, canvas, width, img_x, img_y, img_w, img_h)
+
+            idx_len: usize = @usize(img_w) * @usize(img_h)
+            indices: *u8 = gif_lzw_decode(lzw, lzw_len, @u32(min_code_size), idx_len)
+            free(lzw)
+
+            gif_composite_frame(canvas, width, height, img_x, img_y, img_w, img_h,
+                                 indices, idx_len, active_table, gce_transparent_idx)
+            free(indices)
+
+            if n_frames >= frames_cap {
+                frames_cap *= 2
+                frames = @realo(frames, GifFrame, frames_cap)
+            }
+            frame_pixels: *u8 = malloc(canvas_len)
+            memcpy(frame_pixels, canvas, canvas_len)
+            frames[n_frames] = GifFrame{.pixels=frame_pixels, .delay_ms=gce_delay_ms}
+            n_frames += 1
+
+            prev_disposal = gce_disposal
+            prev_x = img_x
+            prev_y = img_y
+            prev_w = img_w
+            prev_h = img_h
+            have_prev = true
+            gce_delay_ms = 100
+            gce_transparent_idx = -1
+            gce_disposal = 0
+        } else {
+            pos += 1 # unrecognized byte — skip rather than loop forever
+        }
+    }
+
+    free(canvas)
+    free(saved)
+
+    if n_frames == 0 {
+        free(@bitcast(*u8, frames))
+        ret @err(4)
+    }
+
+    g: Gif = Gif{.width=width, .height=height, .frames=frames, .n_frames=n_frames}
+    ret @ok(g)
 }

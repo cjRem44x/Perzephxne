@@ -1,0 +1,43 @@
+# std/video's ffmpeg-backed decode path against tests/run/video_fixtures/
+# testsrc.mp4 (see its own CREDITS.md — ffmpeg's own `testsrc` lavfi
+# pattern, not a real video). Deliberately avoids asserting an exact
+# decoded-frame count or exact pixel values: H.264 decoder buffering
+# (how many frames of latency a given libavcodec build introduces before
+# the first frame comes out of avcodec_receive_frame) is a real,
+# legitimate source of cross-version variance this test shouldn't be
+# flaky against — it checks structural invariants instead (dimensions,
+# strictly increasing presentation timestamps, real non-zero pixel
+# content, eventual end-of-stream), all of which any correct decoder
+# guarantees regardless of its specific buffering depth.
+
+import(video = "std/video")
+
+fn main() -> i32 {
+    v, err: !video.Video = video.open("tests/run/video_fixtures/testsrc.mp4")
+    if err != 0 { @pf("open failed: {err}\n") ret 1 }
+    @pf("w={v.width} h={v.height}\n")
+
+    n: i32 = 0
+    last_pts: i64 = -1
+    monotonic: bool = true
+    while n < 30 {
+        ok: bool = v.decode_next_frame()
+        if !ok { break }
+        if v.pts <= last_pts { monotonic = false }
+        last_pts = v.pts
+        n += 1
+    }
+    @pf("decoded_at_least_10={n >= 10} monotonic={monotonic} eof={v.eof}\n")
+
+    total: usize = @usize(v.width) * @usize(v.height) * 3
+    i: usize = 0
+    has_content: bool = false
+    while i < total {
+        if (v.rgb + i).* != 0u8 { has_content = true }
+        i += 1
+    }
+    @pf("has_content={has_content}\n")
+
+    v.close()
+    ret 0
+}

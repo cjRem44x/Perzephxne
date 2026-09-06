@@ -1,0 +1,56 @@
+# std/image's GIF decoder — cross-checked pixel-for-pixel against
+# Pillow's independent decoder while writing it (not shipped here, just
+# how these fixtures were verified correct). Covers three things a real
+# animated GIF actually exercises: disposal method 1 ("leave in place" —
+# two_color.gif, moving_dot.gif), disposal method 2 ("restore to
+# background" isn't directly exercised here since Pillow's simple save
+# path defaults to 1, but the same compositing code path is what
+# moving_dot.gif's 3 frames rely on), and transparency (transparency.gif —
+# a fully-opaque frame followed by a mostly-transparent one that must
+# leave the first frame's background showing through everywhere except
+# its one opaque pixel).
+
+import(img = "std/image")
+
+fn check_frame(g: img.Gif, fi: usize, x: i32, y: i32, want_r: u8, want_g: u8, want_b: u8) {
+    f: img.GifFrame = g.frames[fi]
+    off: usize = (@usize(y) * @usize(g.width) + @usize(x)) * 4
+    p: *u8 = f.pixels + off
+    ok: bool = p[0] == want_r && p[1] == want_g && p[2] == want_b
+    @pf("frame {fi} ({x},{y}): got {p[0]},{p[1]},{p[2]} want {want_r},{want_g},{want_b} ok={ok}\n")
+}
+
+fn main() -> i32 {
+    g1, err1: !img.Gif = img.load_gif("tests/run/gif_fixtures/two_color.gif")
+    if err1 != 0 { @pf("two_color.gif load failed: {err1}\n") ret 1 }
+    @pf("two_color: {g1.width}x{g1.height} frames={g1.n_frames}\n")
+    check_frame(g1, 0, 0, 0, 252u8, 0u8, 0u8)
+    check_frame(g1, 1, 0, 0, 0u8, 0u8, 170u8)
+    @pf("delays: {g1.frames[0].delay_ms} {g1.frames[1].delay_ms}\n")
+
+    g2, err2: !img.Gif = img.load_gif("tests/run/gif_fixtures/moving_dot.gif")
+    if err2 != 0 { @pf("moving_dot.gif load failed: {err2}\n") ret 1 }
+    @pf("moving_dot: {g2.width}x{g2.height} frames={g2.n_frames}\n")
+    # the red dot moves along the diagonal, one pixel per frame, over a
+    # persistent green background disposal=1 must keep between frames
+    check_frame(g2, 0, 0, 0, 255u8, 0u8, 0u8)
+    check_frame(g2, 0, 7, 7, 0u8, 200u8, 0u8)
+    check_frame(g2, 1, 1, 0, 255u8, 0u8, 0u8)
+    check_frame(g2, 1, 0, 0, 0u8, 200u8, 0u8)
+    check_frame(g2, 2, 2, 0, 255u8, 0u8, 0u8)
+    check_frame(g2, 2, 1, 0, 0u8, 200u8, 0u8)
+
+    g3, err3: !img.Gif = img.load_gif("tests/run/gif_fixtures/transparency.gif")
+    if err3 != 0 { @pf("transparency.gif load failed: {err3}\n") ret 1 }
+    @pf("transparency: {g3.width}x{g3.height} frames={g3.n_frames}\n")
+    # frame 0 is solid blue; frame 1 is transparent everywhere except one
+    # opaque yellow pixel, so blue must still show through elsewhere
+    check_frame(g3, 0, 0, 0, 0u8, 0u8, 200u8)
+    check_frame(g3, 1, 0, 0, 255u8, 255u8, 0u8)
+    check_frame(g3, 1, 3, 3, 0u8, 0u8, 200u8)
+
+    img.free_gif(g1)
+    img.free_gif(g2)
+    img.free_gif(g3)
+    ret 0
+}
