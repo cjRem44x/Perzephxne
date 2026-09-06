@@ -417,7 +417,10 @@ mdbook serve book/
 
 Beta. The compiler (`compiler/przp`) targets x86-64 Linux. Core language
 features and the shipped Core/Stdlib are documented and covered by regressions.
-There is no external dependency resolver yet; `[deps]` is reserved.
+`przp add <name>[@ref]` fetches a git-hosted dependency and pins it in
+`przp.lock` — deliberately MVP-scoped (exact-ref pinning only, no semver
+ranges, no global cache, no `przp update` yet); see
+[Build System § Dependencies](book/src/build-system.md#dependencies).
 
 Next product work:
 
@@ -425,7 +428,6 @@ Next product work:
 - broaden edge-case regressions around generics, failable destructuring, and unsafe pointer operations
 - keep command/import/manifest diagnostics moving toward consistent source-located errors
 - audit runtime and linker assumptions before expanding platform support
-- add `przp version` later, when versioning matters for release flow
 
 ## License
 
