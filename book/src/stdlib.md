@@ -225,6 +225,8 @@ Create and extract `.zip` archives, via [libzip](https://libzip.org) — an exte
 
 Zipping a directory names its entries relative to the directory's own parent, so zipping `photos` produces entries like `photos/a.png` — the same convention `zip -r archive.zip photos` uses, and what `unzip_path` expects to recreate the tree under the destination.
 
+`unzip_path` rejects (silently skips, without failing the whole extraction) any entry whose name is an absolute path or contains a `..` segment, so an untrusted `.zip` can't write outside `dest_dir` ("Zip Slip", CWE-22).
+
 ```
 import(zip = "std/zip")
 

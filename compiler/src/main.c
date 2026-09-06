@@ -1781,6 +1781,31 @@ static int read_manifest(Manifest *m) {
                 fclose(f);
                 return -1;
             }
+            /* package_name is spliced verbatim into shell command lines
+               in multiple places (compile_file's `-o <name>` clang
+               invocation; cmd_run's `./<name>` launch; cmd_test's
+               `<name>_test` binary path, itself later run the same way)
+               — exactly the same "verbatim into a system() call" shape
+               [build].link's own entries have, just for a different
+               field, so it needs the identical character allowlist: a
+               real package name is only ever [A-Za-z0-9_.-], and
+               anything else is either a mistake or a shell-metacharacter
+               injection attempt (e.g. "x; rm -rf ~"), confirmed
+               exploitable via a crafted przp.toml before this check
+               existed. Also rejects a leading '.' or '/'-containing
+               name that could otherwise escape the current directory
+               (the "-." combination isn't itself unsafe, but simplicity
+               here beats a narrower carve-out no real package name
+               needs). */
+            for (const char *p = m->package_name; *p; p++) {
+                if (!isalnum((unsigned char)*p) && *p != '_' && *p != '-' && *p != '.') {
+                    fprintf(stderr, "przp.toml:%d: error: [package].name has an invalid "
+                                    "character — package names may only contain letters, "
+                                    "digits, '_', '-', or '.'\n", line_no);
+                    fclose(f);
+                    return -1;
+                }
+            }
         } else if (section == SEC_PACKAGE && !strcmp(key, "version")) {
             if (!parse_quoted_value(val, m->version, sizeof(m->version))) {
                 fprintf(stderr, "przp.toml:%d: error: [package].version must be a quoted string\n", line_no);
@@ -1801,6 +1826,24 @@ static int read_manifest(Manifest *m) {
                         line_no, MANIFEST_MAX_LINK_LIBS);
                 fclose(f);
                 return -1;
+            }
+            /* link_libs is spliced verbatim into a `-l<name>` clang flag,
+               which itself ends up in a system() command line (see
+               compile_file) — a real library name is only ever
+               [A-Za-z0-9_.-], so anything else is either a mistake or a
+               shell-metacharacter injection attempt (e.g. "m; rm -rf ~"),
+               and must be rejected outright rather than passed through. */
+            for (int i = 0; i < n; i++) {
+                for (const char *p = m->link_libs[i]; *p; p++) {
+                    if (!isalnum((unsigned char)*p) && *p != '_' && *p != '-' && *p != '.') {
+                        fprintf(stderr, "przp.toml:%d: error: [build].link entry '%s' has an "
+                                        "invalid character — library names may only contain "
+                                        "letters, digits, '_', '-', or '.'\n",
+                                line_no, m->link_libs[i]);
+                        fclose(f);
+                        return -1;
+                    }
+                }
             }
             m->n_link_libs = n;
         } else if (section == SEC_DEPS) {

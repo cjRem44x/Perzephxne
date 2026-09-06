@@ -66,10 +66,10 @@ Supported fields:
 
 | Field | Required | Description |
 |---|---:|---|
-| `[package].name` | yes | Package name. Used as the default `przp build`/`przp run` binary name. |
+| `[package].name` | yes | Package name. Used as the default `przp build`/`przp run` binary name, and as the test binary name for `przp test`. May only contain letters, digits, `_`, `-`, or `.` — it's spliced verbatim into shell commands `build`/`run`/`test` each run, so anything else is rejected at parse time. |
 | `[package].version` | no | Package version metadata. |
 | `[build].entry` | no | Entry source file. Defaults to `src/main.przp`. |
-| `[build].link` | no | Array of system library names to link against — each entry becomes a `-l<name>` flag on the final link step (`link = ["X11", "GL"]` links `-lX11 -lGL`). For linking against `extern fn` declarations backed by libraries the OS already ships (no bundled `.so`/`.a` of your own). Building the same file with `przp sac` instead of a project needs the identical flags passed directly on the command line (`przp sac ... -lX11 -lGL`) — see `sac`'s own row above. |
+| `[build].link` | no | Array of system library names to link against — each entry becomes a `-l<name>` flag on the final link step (`link = ["X11", "GL"]` links `-lX11 -lGL`). For linking against `extern fn` declarations backed by libraries the OS already ships (no bundled `.so`/`.a` of your own). Each entry may only contain letters, digits, `_`, `-`, or `.` — anything else is rejected before it reaches the link command. Building the same file with `przp sac` instead of a project needs the identical flags passed directly on the command line (`przp sac ... -lX11 -lGL`) — see `sac`'s own row above. |
 | `[deps].<name>` | no | A git tag, branch, or commit for the dependency named `<name>` — see [Dependencies](#dependencies). |
 
 Only `[package]`, `[build]`, and `[deps]` are recognized. Manifest values are quoted strings (or, for `[build].link`, an array of quoted strings on one line); malformed assignments, unknown sections, and invalid string/array values are reported as `przp.toml:line: error: ...`. A `[deps]` key must be a plain identifier (letters, digits, underscore, not starting with a digit) and its value a valid git ref (letters, digits, `.`, `_`, `-`, `/`) — both are checked at parse time, not just by `przp add`, since `przp.toml`/`przp.lock` can arrive from someone else's project.
