@@ -426,3 +426,7 @@ Next product work:
 - keep command/import/manifest diagnostics moving toward consistent source-located errors
 - audit runtime and linker assumptions before expanding platform support
 - add `przp version` later, when versioning matters for release flow
+
+## License
+
+MIT — see [LICENSE](LICENSE).
