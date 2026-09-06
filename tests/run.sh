@@ -645,6 +645,33 @@ run_cli_fail() {
     fi
 }
 
+# run_cli_ok: the success-path mirror of run_cli_fail — expects exit 0
+# and $expected as a substring of stdout, for commands like `przp
+# version` that don't need a project/manifest at all.
+run_cli_ok() {
+    local name="$1"
+    local expected="$2"
+    shift 2
+    local stdout="$TMP/out/$name.cli.stdout"
+    local stderr="$TMP/err/$name.cli.stderr"
+
+    printf 'cli   %s\n' "$name"
+    if ! "$@" >"$stdout" 2>"$stderr"; then
+        printf 'FAIL  %s: expected command success\n' "$name" >&2
+        sed -n '1,120p' "$stderr" >&2
+        failures=$((failures + 1))
+        return
+    fi
+
+    if ! grep -F "$expected" "$stdout" >/dev/null; then
+        printf 'FAIL  %s: stdout did not contain expected text\n' "$name" >&2
+        printf 'expected:\n%s\n' "$expected" >&2
+        printf 'actual:\n' >&2
+        sed -n '1,120p' "$stdout" >&2
+        failures=$((failures + 1))
+    fi
+}
+
 run_cli_fail_in_dir() {
     local name="$1"
     local expected="$2"
@@ -1205,6 +1232,10 @@ run_cli_fail sac_no_files "przp sac: no input files" "$PRZP" sac
 run_cli_fail sac_missing_file "przp: cannot open 'tests/no_such_file.przp'" "$PRZP" sac tests/no_such_file.przp
 run_cli_fail_in_dir build_no_manifest "przp build: no przp.toml found" "$TMP/no_manifest_build" "$PRZP" build
 run_cli_fail_in_dir run_no_manifest "przp run: no przp.toml found" "$TMP/no_manifest_run" "$PRZP" run
+
+run_cli_ok version_cmd    "przp 0.1.0" "$PRZP" version
+run_cli_ok version_dashes "przp 0.1.0" "$PRZP" --version
+run_cli_ok version_short  "przp 0.1.0" "$PRZP" -v
 
 for src in "$ROOT"/tests/fail/*.przp; do
     [ -e "$src" ] || continue

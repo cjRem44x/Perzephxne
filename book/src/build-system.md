@@ -18,6 +18,7 @@
 | `przp sac <files> -o=Name` | Stand-Alone Compiler — compile one or more files without a project |
 | `przp sac <files> --release -o=Name` | Stand-alone optimized build |
 | `przp sac <files> -lX11 -lGL -lz -o=Name` | Any argument that isn't a `.przp` file (or `-o=`/`--release`) passes straight through to the final link step — this is `sac`'s equivalent of `[build].link` below, since there's no `przp.toml` to put it in. Needed the moment a file imports `std/graphics`/`std/gdev`/`std/image`/`std/audio`/`std/video` — see those modules' own sections in [Graphics](./graphics.md) for exactly which flags each one needs. Omitting them fails with `undefined reference to` errors for every symbol the missing library would have provided, which reads like a missing-library problem even when the library is installed — it's a missing-flag problem; `sac` never auto-links anything just because a library happens to be present on the system. |
+| `przp version` (or `--version`/`-v`) | Print the compiler's own version (`przp 0.1.0`) and exit — no project/manifest needed, the one other command besides `sac` that works outside a project directory. This is `przp` the tool's own version, distinct from `[package].version` below (free-form metadata for a project using it). |
 
 ## Build Modes
 

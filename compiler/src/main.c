@@ -23,6 +23,13 @@
 /* explicit POSIX declaration for readlink (required under -std=c11 -Wpedantic) */
 extern ssize_t readlink(const char *path, char *buf, size_t bufsiz);
 
+/* The compiler/language's own version — bumped by hand alongside a
+   release tag (see book/src/status-next.md's Release UX note). There is
+   no per-project version negotiation here: this is `przp` the tool's
+   own version, distinct from `[package].version` in a project's own
+   przp.toml, which is just free-form metadata for that project. */
+#define PRZP_VERSION "0.1.0"
+
 /* ── Utilities ────────────────────────────────────────────────────────────── */
 
 static char *read_file_or_null(const char *path, char *err, size_t errsz) {
@@ -2512,6 +2519,17 @@ static void cmd_test(int argc, char **argv) {
     exit(n_fail > 0 ? 1 : 0);
 }
 
+/* przp version[--version]/[-v]: prints PRZP_VERSION and exits 0 — no
+   project/manifest needed (unlike every other command here except sac),
+   since this is a question about the tool itself, not anything it's
+   about to build. Any extra arguments are silently ignored rather than
+   erroring, matching how a version flag behaves everywhere else. */
+static void cmd_version(int argc, char **argv) {
+    (void)argc; (void)argv;
+    printf("przp %s\n", PRZP_VERSION);
+    exit(0);
+}
+
 /* ── Entry point ──────────────────────────────────────────────────────────── */
 
 static void usage(void) {
@@ -2528,12 +2546,17 @@ static void usage(void) {
         "  add <name>[@ref]      Fetch a przp_dep_<name> dependency and record it\n"
         "                        in przp.toml/przp.lock\n"
         "  sac <files> [-o=Out]  Compile individual files\n"
+        "  version                Print the przp version\n"
     );
     exit(1);
 }
 
 int main(int argc, char **argv) {
     if (argc < 2) usage();
+    /* --version/-v are accepted as top-level flags too, the common CLI
+       convention alongside the `version` subcommand — checked before
+       stdlib_root_init since neither needs it resolved. */
+    if (!strcmp(argv[1], "--version") || !strcmp(argv[1], "-v")) cmd_version(0, NULL);
     stdlib_root_init(argv[0]);
 
     const char *cmd = argv[1];
@@ -2546,6 +2569,7 @@ int main(int argc, char **argv) {
     if (!strcmp(cmd, "test"))  cmd_test(argc, argv);
     if (!strcmp(cmd, "add"))   cmd_add(argc, argv);
     if (!strcmp(cmd, "sac"))   cmd_sac(argc, argv);
+    if (!strcmp(cmd, "version")) cmd_version(argc, argv);
 
     fprintf(stderr, "przp: unknown command '%s'\n", cmd);
     usage();
