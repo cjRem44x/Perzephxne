@@ -15,8 +15,8 @@
         <link rel="icon" href="favicon-de23e50b.svg">
         <link rel="shortcut icon" href="favicon-8114d1fc.png">
         <link rel="stylesheet" href="css/variables-8adf115d.css">
-        <link rel="stylesheet" href="css/general-0392ca55.css">
-        <link rel="stylesheet" href="css/chrome-fc474251.css">
+        <link rel="stylesheet" href="css/general-e96d0476.css">
+        <link rel="stylesheet" href="css/chrome-d279d366.css">
         <link rel="stylesheet" href="css/print-9e4910d8.css" media="print">
 
         <!-- Fonts -->
@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-c0c4162d.js";
+            window.path_to_searchindex_js = "searchindex-709b874e.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-4e58bc13.js"></script>
@@ -234,7 +234,7 @@ link  = ["X11", "GL"]
 <tr><th>Field</th><th style="text-align: right">Required</th><th>Description</th></tr>
 </thead>
 <tbody>
-<tr><td><code>[package].name</code></td><td style="text-align: right">yes</td><td>Package name. Used as the default <code>przp build</code>/<code>przp run</code> binary name.</td></tr>
+<tr><td><code>[package].name</code></td><td style="text-align: right">yes</td><td>Package name. Used as the default <code>przp build</code>/<code>przp run</code> binary name, and as the test binary name for <code>przp test</code>. May only contain letters, digits, <code>_</code>, <code>-</code>, or <code>.</code> — it’s spliced verbatim into shell commands <code>build</code>/<code>run</code>/<code>test</code> each run, so anything else is rejected at parse time.</td></tr>
 <tr><td><code>[package].version</code></td><td style="text-align: right">no</td><td>Package version metadata.</td></tr>
 <tr><td><code>[build].entry</code></td><td style="text-align: right">no</td><td>Entry source file. Defaults to <code>src/main.przp</code>.</td></tr>
 <tr><td><code>[build].link</code></td><td style="text-align: right">no</td><td>Array of system library names to link against — each entry becomes a <code>-l&lt;name&gt;</code> flag on the final link step (<code>link = ["X11", "GL"]</code> links <code>-lX11 -lGL</code>). For linking against <code>extern fn</code> declarations backed by libraries the OS already ships (no bundled <code>.so</code>/<code>.a</code> of your own). Each entry may only contain letters, digits, <code>_</code>, <code>-</code>, or <code>.</code> — anything else is rejected before it reaches the link command.</td></tr>
@@ -317,7 +317,7 @@ przp init
 
         <script src="clipboard-1626706a.min.js"></script>
         <script src="highlight-abc7f01d.js"></script>
-        <script src="book-c22b7243.js"></script>
+        <script src="book-609e4cb8.js"></script>
 
         <!-- Custom JS scripts -->
 

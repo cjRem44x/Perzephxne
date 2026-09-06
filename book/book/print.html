@@ -16,8 +16,8 @@
         <link rel="icon" href="favicon-de23e50b.svg">
         <link rel="shortcut icon" href="favicon-8114d1fc.png">
         <link rel="stylesheet" href="css/variables-8adf115d.css">
-        <link rel="stylesheet" href="css/general-0392ca55.css">
-        <link rel="stylesheet" href="css/chrome-fc474251.css">
+        <link rel="stylesheet" href="css/general-e96d0476.css">
+        <link rel="stylesheet" href="css/chrome-d279d366.css">
         <link rel="stylesheet" href="css/print-9e4910d8.css" media="print">
 
         <!-- Fonts -->
@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-c0c4162d.js";
+            window.path_to_searchindex_js = "searchindex-709b874e.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-4e58bc13.js"></script>
@@ -311,7 +311,7 @@ link  = ["X11", "GL"]
 <tr><th>Field</th><th style="text-align: right">Required</th><th>Description</th></tr>
 </thead>
 <tbody>
-<tr><td><code>[package].name</code></td><td style="text-align: right">yes</td><td>Package name. Used as the default <code>przp build</code>/<code>przp run</code> binary name.</td></tr>
+<tr><td><code>[package].name</code></td><td style="text-align: right">yes</td><td>Package name. Used as the default <code>przp build</code>/<code>przp run</code> binary name, and as the test binary name for <code>przp test</code>. May only contain letters, digits, <code>_</code>, <code>-</code>, or <code>.</code> — it’s spliced verbatim into shell commands <code>build</code>/<code>run</code>/<code>test</code> each run, so anything else is rejected at parse time.</td></tr>
 <tr><td><code>[package].version</code></td><td style="text-align: right">no</td><td>Package version metadata.</td></tr>
 <tr><td><code>[build].entry</code></td><td style="text-align: right">no</td><td>Entry source file. Defaults to <code>src/main.przp</code>.</td></tr>
 <tr><td><code>[build].link</code></td><td style="text-align: right">no</td><td>Array of system library names to link against — each entry becomes a <code>-l&lt;name&gt;</code> flag on the final link step (<code>link = ["X11", "GL"]</code> links <code>-lX11 -lGL</code>). For linking against <code>extern fn</code> declarations backed by libraries the OS already ships (no bundled <code>.so</code>/<code>.a</code> of your own). Each entry may only contain letters, digits, <code>_</code>, <code>-</code>, or <code>.</code> — anything else is rejected before it reaches the link command.</td></tr>
@@ -2953,6 +2953,7 @@ r: f64 = m.sqrt(2.0)
 <li><strong>Nested-import local-variable collision</strong> — a 3+-level-deep import chain (file A imports B, B imports C) could mis-rewrite an unrelated local variable inside C’s own function body if its name happened to match a top-level item name declared in B. <code>mangle_items</code> merges an already-mangled imported module’s items into the importer’s own item list <em>before</em> the importer’s own alias-rewrite pass runs, so that pass’s name-match set ended up including names with no relation to the code it was walking, and the rewrite itself had no notion of lexical scope to tell a local apart from an item reference. Fixed by collecting each function’s own locals (<code>LocalNames</code> in <code>main.c</code>) and always letting a local name shadow an outer item for that whole function body. Covered by <code>tests/run/local_name_collision.przp</code>.</li>
 <li><strong>Zip Slip (path traversal) in <code>std/zip.unzip_path</code></strong> (CWE-22) — extraction joined an archive entry’s name onto <code>dest_dir</code> with zero validation, so an entry named e.g. <code>../../etc/whatever</code> could write outside <code>dest_dir</code> entirely. Confirmed exploitable with a crafted <code>.zip</code>. Fixed by rejecting (skipping, not extracting) any entry that’s an absolute path or contains a <code>..</code> path segment — see <code>is_safe_entry_name</code> in <code>zip.przp</code>. Covered by <code>tests/zip/traversal</code>.</li>
 <li><strong>Shell command injection via <code>przp.toml</code>’s <code>[build].link</code></strong> (CWE-78) — each <code>link = [...]</code> entry was spliced verbatim into a <code>-l&lt;name&gt;</code> clang flag, itself part of a <code>system()</code> call, with no character validation — a manifest entry like <code>"m; rm -rf ~"</code> executed arbitrary shell commands the moment <code>przp build</code>/<code>run</code>/<code>test</code> ran. Confirmed exploitable. Fixed by rejecting any <code>link</code> entry containing a character outside <code>[A-Za-z0-9_.-]</code> before it’s ever used. Covered by <code>tests/project-fail/malicious_manifest_link</code>.</li>
+<li><strong>The same shell command injection, via <code>[package].name</code> this time</strong> (CWE-78) — found immediately after auditing the fix above for other manifest fields reaching a <code>system()</code> call unsanitized: <code>package_name</code> is spliced verbatim into <code>-o &lt;name&gt;</code> on <code>compile_file</code>’s own clang invocation (<code>przp build</code>), into <code>./&lt;name&gt;</code> on <code>cmd_run</code>’s launch of the freshly built binary, and into <code>&lt;name&gt;_test</code>’s path on <code>cmd_test</code> (itself later run the same <code>./&lt;path&gt;</code> way) — three separate call sites, none validated, all reachable from the exact same untrusted-manifest trust boundary as <code>[build].link</code>. Confirmed exploitable with <code>name = "x; touch /tmp/pwned; echo"</code> before the fix (a plain <code>przp build</code> against the malicious manifest created the file). Fixed with the identical <code>[A-Za-z0-9_.-]</code> allowlist, applied at manifest-parse time so every consumer (<code>build</code>/<code>run</code>/<code>test</code>) is covered by one check rather than three. Covered by <code>tests/project-fail/malicious_manifest_name</code>.</li>
 </ul>
 <h2 id="documentation-rule"><a class="header" href="#documentation-rule">Documentation Rule</a></h2>
 <p>Any compiler feature that is added or changed should update both the book source and the generated <code>book/book</code> output in the same change. The book should remain the user-facing source of truth for the current language.</p>
@@ -3377,7 +3378,7 @@ fn main() -&gt; i32 {
 
         <script src="clipboard-1626706a.min.js"></script>
         <script src="highlight-abc7f01d.js"></script>
-        <script src="book-c22b7243.js"></script>
+        <script src="book-609e4cb8.js"></script>
 
         <!-- Custom JS scripts -->
 
