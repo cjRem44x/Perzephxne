@@ -1,0 +1,67 @@
+import(c = "std/collections")
+
+struct Cmd {
+    desc: str,
+    run:  fn(),
+}
+
+fn do_help()  { @pf("-> help\n") }
+fn do_build() { @pf("-> build\n") }
+fn do_run()   { @pf("-> run\n") }
+
+fn main() {
+    cmds: c.HashMap<str, Cmd> = c.HashMap<str, Cmd>.new(c.hash_str, c.eq_str)
+    cmds.put("help",  Cmd{.desc = "Show help",      .run = do_help})
+    cmds.put("build", Cmd{.desc = "Build project",  .run = do_build})
+    cmds.put("run",   Cmd{.desc = "Run project",    .run = do_run})
+    cmds.put("build", Cmd{.desc = "Build (v2)",     .run = do_build})
+    for i => 0..cmds.len_of() {
+        @pf("{cmds.key_at(i)}: {cmds.val_at(i).desc}\n")
+    }
+    cmd, err: !Cmd = cmds.get("run")
+    if err == 0 { cmd.run() }
+    x2, e2: !Cmd = cmds.get("deploy")
+    hh: bool = cmds.has("help")
+    @pf("deploy err={e2} has(help)={hh}\n")
+    r1: bool = cmds.remove("help")
+    r2: bool = cmds.remove("help")
+    @pf("remove(help)={r1} again={r2} len={cmds.len_of()}\n")
+    for i => 0..cmds.len_of() { @pf("{cmds.key_at(i)} ") }
+    @pf("\n")
+    cmds.free_map()
+
+    m: c.HashMap<i64, i64> = c.HashMap<i64, i64>.new(c.hash_i64, c.eq_i64)
+    N: i64 = 2000
+    k: i64 = 0
+    while k < N {
+        m.put(k, k * k)
+        k = k + 1
+    }
+    bad: i64 = 0
+    k = 0
+    while k < N {
+        v, e: !i64 = m.get(k)
+        if e != 0 || v != k * k { bad = bad + 1 }
+        k = k + 1
+    }
+    @pf("len={m.len_of()} bad={bad}\n")
+    k = 0
+    while k < N {
+        if k % 2 == 0 { m.remove(k) }
+        k = k + 1
+    }
+    ordered: bool = true
+    for i => 0..m.len_of() { if m.key_at(i) != @i64(i) * 2 + 1 { ordered = false } }
+    x10, eg: !i64 = m.get(10)
+    v11, e11: !i64 = m.get(11)
+    @pf("after remove len={m.len_of()} ordered={ordered} get10err={eg} get11={v11}\n")
+    m.clear()
+    m.put(-5, 1)
+    a: bool = m.has(-5)
+    b: bool = m.has(1)
+    @pf("cleared len={m.len_of()} has(-5)={a} has(1)={b}\n")
+    m.free_map()
+    m.put(3, 9)
+    @pf("reuse len={m.len_of()}\n")
+    m.free_map()
+}

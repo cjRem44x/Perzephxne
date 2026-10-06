@@ -1,0 +1,27 @@
+# A global constant table of structs holding str literals and fn refs —
+# the command-table pattern (strings nested inside a global initializer).
+struct Cmd {
+    key:  str,
+    desc: str,
+    run:  fn(),
+}
+
+fn do_help()  { @pf("running help\n") }
+fn do_build() { @pf("running build\n") }
+
+CMDS: [2]Cmd : [
+    Cmd{.key = "help",  .desc = "Show help",     .run = do_help},
+    Cmd{.key = "build", .desc = "Build project", .run = do_build},
+]
+
+NAMES: [3]str : ["a", "bb", "ccc"]
+
+fn main() {
+    for c => CMDS { @pf("{c.key} ({c.key.len}): {c.desc}\n") }
+    for c => CMDS {
+        if c.key == "build" { c.run() }
+    }
+    CMDS[0].run()
+    for n => NAMES { @pf("{n}={n.len} ") }
+    @pf("\n")
+}

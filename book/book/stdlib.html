@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-4e875fdd.js";
+            window.path_to_searchindex_js = "searchindex-bc13b60d.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-4e58bc13.js"></script>
@@ -445,7 +445,8 @@ f: str = fmt.fixed(3.14159, 2)    # "3.14"
 @pf("{h} {p} {f}\n")
 </code></pre>
 <h2 id="stdcollections"><a class="header" href="#stdcollections"><code>std/collections</code></a></h2>
-<p>The current collection module provides a growable <code>Vec</code> of <code>i64</code> values.</p>
+<p>A growable <code>Vec</code> of <code>i64</code> values, and a generic, insertion-ordered <code>HashMap&lt;K, V&gt;</code>.</p>
+<h3 id="vec"><a class="header" href="#vec"><code>Vec</code></a></h3>
 <div class="table-wrapper">
 <table>
 <thead>
@@ -473,6 +474,78 @@ v.push(20)
 v.push(30)
 @pf("{v.len_of()} {v.get(1)}\n")   # 3 20
 v.free_vec()
+</code></pre>
+<h3 id="hashmapk-v"><a class="header" href="#hashmapk-v"><code>HashMap&lt;K, V&gt;</code></a></h3>
+<p>Perzephxne has no traits, so a map is given its key type’s hash and equality functions when it’s created. The module ships them for the common key types:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Key type</th><th>Pass to <code>new</code></th></tr>
+</thead>
+<tbody>
+<tr><td><code>str</code></td><td><code>hash_str, eq_str</code></td></tr>
+<tr><td><code>i32</code> / <code>i64</code></td><td><code>hash_i32, eq_i32</code> / <code>hash_i64, eq_i64</code></td></tr>
+<tr><td><code>u32</code> / <code>u64</code> / <code>usize</code></td><td><code>hash_u32, eq_u32</code> / <code>hash_u64, eq_u64</code> / <code>hash_usize, eq_usize</code></td></tr>
+</tbody>
+</table>
+</div>
+<p>Any other key type works with your own pair of functions matching <code>fn(K) -&gt; u64</code> and <code>fn(K, K) -&gt; bool</code> — two keys that are <code>eq</code> must hash to the same value.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Symbol</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>HashMap&lt;K, V&gt;.new(hash, eq)</code></td><td>create an empty map</td></tr>
+<tr><td><code>put(self, key, val)</code></td><td>insert, or overwrite the value of an existing key</td></tr>
+<tr><td><code>get(self, key) -&gt; !V</code></td><td>the value; error code <code>1</code> if the key is absent</td></tr>
+<tr><td><code>has(self, key) -&gt; bool</code></td><td>true if the key is present</td></tr>
+<tr><td><code>remove(self, key) -&gt; bool</code></td><td>delete the key; <code>false</code> if it was absent. O(len), since it keeps the remaining order</td></tr>
+<tr><td><code>len_of(self)</code> / <code>is_empty(self)</code></td><td>number of entries / true if none</td></tr>
+<tr><td><code>key_at(self, i)</code> / <code>val_at(self, i)</code></td><td>the <code>i</code>-th entry in insertion order, <code>0 &lt;= i &lt; len_of()</code>; no bounds check</td></tr>
+<tr><td><code>clear(self)</code></td><td>remove every entry, keeping capacity</td></tr>
+<tr><td><code>free_map(self)</code></td><td>release heap memory; the map is empty and reusable afterwards</td></tr>
+</tbody>
+</table>
+</div>
+<p>Entries iterate in the order their keys were first inserted (overwriting a key’s value doesn’t move it). Lookups and inserts are O(1) on average: an open-addressing index sits over a dense, ordered entry array, rebuilt as it fills past 3/4.</p>
+<p>Values can be anything, including structs holding function pointers — a command table keyed by name:</p>
+<pre><code>import(c = "std/collections")
+
+struct Cmd {
+    desc: str,
+    run:  fn(),
+}
+
+fn do_help()  { @pf("usage: tool &lt;cmd&gt;\n") }
+fn do_build() { @pf("building...\n") }
+
+fn main() {
+    cmds: c.HashMap&lt;str, Cmd&gt; = c.HashMap&lt;str, Cmd&gt;.new(c.hash_str, c.eq_str)
+    cmds.put("help",  Cmd{.desc = "Show help",     .run = do_help})
+    cmds.put("build", Cmd{.desc = "Build project", .run = do_build})
+
+    for i =&gt; 0..cmds.len_of() {                  # listed in insertion order
+        @pf("{cmds.key_at(i)}: {cmds.val_at(i).desc}\n")
+    }
+
+    cmd, err: !Cmd = cmds.get("build")
+    if err == 0 {
+        cmd.run()                                # building...
+    } else {
+        @pf("unknown command\n")
+    }
+    cmds.free_map()
+}
+</code></pre>
+<p>Every function stored this way must share one signature (here <code>fn()</code>), and closures aren’t supported — see <a href="./functions.html#first-class-functions">Functions § First-Class Functions</a>.</p>
+<p>Integer keys, e.g. counting occurrences:</p>
+<pre><code>counts: c.HashMap&lt;i64, i64&gt; = c.HashMap&lt;i64, i64&gt;.new(c.hash_i64, c.eq_i64)
+for x =&gt; [3, 1, 3, 3] {
+    n, err: !i64 = counts.get(x)
+    counts.put(x, n + 1)        # n is 0 when absent
+}
+v, e: !i64 = counts.get(3)       # 3
 </code></pre>
 <h2 id="stdatomic"><a class="header" href="#stdatomic"><code>std/atomic</code></a></h2>
 <p>Atomic operations on <code>i64</code> values. Operations use sequentially consistent ordering.</p>

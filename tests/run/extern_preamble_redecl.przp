@@ -1,0 +1,11 @@
+# User extern declarations of C functions the compiler's preamble already
+# declares must not produce a duplicate LLVM `declare`.
+extern fn memcmp(a: *u8, b: *u8, n: usize) -> i32
+extern fn getpid() -> i32
+
+fn main() {
+    a: str = "abc"
+    b: str = "abd"
+    r: i32 = memcmp(a.data, b.data, 3)
+    @pf("{r < 0} {getpid() > 0}\n")
+}

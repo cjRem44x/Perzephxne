@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-4e875fdd.js";
+            window.path_to_searchindex_js = "searchindex-bc13b60d.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-4e58bc13.js"></script>
@@ -2055,7 +2055,7 @@ buf: [256]u8  # all zeros
 MASK:    u32   : 0xFF00FF00
 PREFIX:  str   : "api/v2/"
 </code></pre>
-<p>A constant initializer isn’t limited to a single literal — struct and array literals count too, built recursively from other constants, and a bare function name is a valid constant for a fn-pointer-typed field (handy for building a fixed table of operations, like <code>std/graphics/gl</code>’s <code>GL_BACKEND</code>):</p>
+<p>A constant initializer isn’t limited to a single literal — struct and array literals count too, built recursively from other constants (including string literals nested inside them), and a bare function name is a valid constant for a fn-pointer-typed field (handy for building a fixed table of operations, like <code>std/graphics/gl</code>’s <code>GL_BACKEND</code>):</p>
 <pre><code>struct Vec2 { x: f32, y: f32 }
 ORIGIN: Vec2 : Vec2{.x=0.0, .y=0.0}
 
@@ -2063,6 +2063,22 @@ struct Ops { double: fn(i32) -&gt; i32 }
 fn doubler(x: i32) -&gt; i32 { ret x * 2 }
 MY_OPS: Ops : Ops{.double = doubler}
 </code></pre>
+<p>Together that makes a fixed command table a plain global:</p>
+<pre><code>struct Cmd { key: str, desc: str, run: fn() }
+
+fn do_help()  { @pf("help\n") }
+fn do_build() { @pf("build\n") }
+
+CMDS: [2]Cmd : [
+    Cmd{.key = "help",  .desc = "Show help",     .run = do_help},
+    Cmd{.key = "build", .desc = "Build project", .run = do_build},
+]
+
+fn main() {
+    for c =&gt; CMDS { @pf("{c.key}: {c.desc}\n") }
+}
+</code></pre>
+<p>For lookup by key as the table grows (or one built at runtime), see <code>HashMap</code> in <a href="#stdcollections"><code>std/collections</code></a>.</p>
 <p>Anything else — a function call, a reference to another variable, an arithmetic expression on a non-constant — isn’t a compile-time constant and is a compile error rather than a silently zero-initialized global.</p>
 <h2 id="mutable-globals"><a class="header" href="#mutable-globals">Mutable Globals</a></h2>
 <p>Mutable globals persist for the lifetime of the process:</p>
@@ -2639,7 +2655,8 @@ f: str = fmt.fixed(3.14159, 2)    # "3.14"
 @pf("{h} {p} {f}\n")
 </code></pre>
 <h2 id="stdcollections"><a class="header" href="#stdcollections"><code>std/collections</code></a></h2>
-<p>The current collection module provides a growable <code>Vec</code> of <code>i64</code> values.</p>
+<p>A growable <code>Vec</code> of <code>i64</code> values, and a generic, insertion-ordered <code>HashMap&lt;K, V&gt;</code>.</p>
+<h3 id="vec"><a class="header" href="#vec"><code>Vec</code></a></h3>
 <div class="table-wrapper">
 <table>
 <thead>
@@ -2667,6 +2684,78 @@ v.push(20)
 v.push(30)
 @pf("{v.len_of()} {v.get(1)}\n")   # 3 20
 v.free_vec()
+</code></pre>
+<h3 id="hashmapk-v"><a class="header" href="#hashmapk-v"><code>HashMap&lt;K, V&gt;</code></a></h3>
+<p>Perzephxne has no traits, so a map is given its key type’s hash and equality functions when it’s created. The module ships them for the common key types:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Key type</th><th>Pass to <code>new</code></th></tr>
+</thead>
+<tbody>
+<tr><td><code>str</code></td><td><code>hash_str, eq_str</code></td></tr>
+<tr><td><code>i32</code> / <code>i64</code></td><td><code>hash_i32, eq_i32</code> / <code>hash_i64, eq_i64</code></td></tr>
+<tr><td><code>u32</code> / <code>u64</code> / <code>usize</code></td><td><code>hash_u32, eq_u32</code> / <code>hash_u64, eq_u64</code> / <code>hash_usize, eq_usize</code></td></tr>
+</tbody>
+</table>
+</div>
+<p>Any other key type works with your own pair of functions matching <code>fn(K) -&gt; u64</code> and <code>fn(K, K) -&gt; bool</code> — two keys that are <code>eq</code> must hash to the same value.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Symbol</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>HashMap&lt;K, V&gt;.new(hash, eq)</code></td><td>create an empty map</td></tr>
+<tr><td><code>put(self, key, val)</code></td><td>insert, or overwrite the value of an existing key</td></tr>
+<tr><td><code>get(self, key) -&gt; !V</code></td><td>the value; error code <code>1</code> if the key is absent</td></tr>
+<tr><td><code>has(self, key) -&gt; bool</code></td><td>true if the key is present</td></tr>
+<tr><td><code>remove(self, key) -&gt; bool</code></td><td>delete the key; <code>false</code> if it was absent. O(len), since it keeps the remaining order</td></tr>
+<tr><td><code>len_of(self)</code> / <code>is_empty(self)</code></td><td>number of entries / true if none</td></tr>
+<tr><td><code>key_at(self, i)</code> / <code>val_at(self, i)</code></td><td>the <code>i</code>-th entry in insertion order, <code>0 &lt;= i &lt; len_of()</code>; no bounds check</td></tr>
+<tr><td><code>clear(self)</code></td><td>remove every entry, keeping capacity</td></tr>
+<tr><td><code>free_map(self)</code></td><td>release heap memory; the map is empty and reusable afterwards</td></tr>
+</tbody>
+</table>
+</div>
+<p>Entries iterate in the order their keys were first inserted (overwriting a key’s value doesn’t move it). Lookups and inserts are O(1) on average: an open-addressing index sits over a dense, ordered entry array, rebuilt as it fills past 3/4.</p>
+<p>Values can be anything, including structs holding function pointers — a command table keyed by name:</p>
+<pre><code>import(c = "std/collections")
+
+struct Cmd {
+    desc: str,
+    run:  fn(),
+}
+
+fn do_help()  { @pf("usage: tool &lt;cmd&gt;\n") }
+fn do_build() { @pf("building...\n") }
+
+fn main() {
+    cmds: c.HashMap&lt;str, Cmd&gt; = c.HashMap&lt;str, Cmd&gt;.new(c.hash_str, c.eq_str)
+    cmds.put("help",  Cmd{.desc = "Show help",     .run = do_help})
+    cmds.put("build", Cmd{.desc = "Build project", .run = do_build})
+
+    for i =&gt; 0..cmds.len_of() {                  # listed in insertion order
+        @pf("{cmds.key_at(i)}: {cmds.val_at(i).desc}\n")
+    }
+
+    cmd, err: !Cmd = cmds.get("build")
+    if err == 0 {
+        cmd.run()                                # building...
+    } else {
+        @pf("unknown command\n")
+    }
+    cmds.free_map()
+}
+</code></pre>
+<p>Every function stored this way must share one signature (here <code>fn()</code>), and closures aren’t supported — see <a href="#first-class-functions">Functions § First-Class Functions</a>.</p>
+<p>Integer keys, e.g. counting occurrences:</p>
+<pre><code>counts: c.HashMap&lt;i64, i64&gt; = c.HashMap&lt;i64, i64&gt;.new(c.hash_i64, c.eq_i64)
+for x =&gt; [3, 1, 3, 3] {
+    n, err: !i64 = counts.get(x)
+    counts.put(x, n + 1)        # n is 0 when absent
+}
+v, e: !i64 = counts.get(3)       # 3
 </code></pre>
 <h2 id="stdatomic"><a class="header" href="#stdatomic"><code>std/atomic</code></a></h2>
 <p>Atomic operations on <code>i64</code> values. Operations use sequentially consistent ordering.</p>
@@ -2993,7 +3082,7 @@ r: f64 = m.sqrt(2.0)
 <tr><td>Release UX</td><td><code>przp version</code> (also <code>--version</code>/<code>-v</code>) prints the compiler’s own version (<code>przp 0.1.0</code>, <code>PRZP_VERSION</code> in <code>main.c</code>) — bumped by hand alongside a release tag; there’s no automated version-bump tooling yet, and no <code>[package].version</code> cross-check (that field is free-form per-project metadata, unrelated to <code>przp</code> the tool’s own version).</td></tr>
 <tr><td><code>any</code> type</td><td>Reserved keyword. Runtime-tagged values (boxing, type IDs, <code>when</code> dispatch on types) are designed but not implemented; removed from the reference until they exist.</td></tr>
 <tr><td>Generic return-type substitution through a compound type-application, still open</td><td>A generic function’s return-type annotation that wraps the type parameter in another generic type application — e.g. <code>fn wrap&lt;T&gt;(x: T) -&gt; Box&lt;*T&gt;</code> — does not substitute correctly even after the <code>gen_type_str</code>/<code>type_to_str</code> fix above: <code>subst_mangled</code>’s substitution is a string search for the type parameter’s name delimited by <code>__</code> (e.g. <code>"__T"</code>) inside the already-flattened mangled name, but <code>type_to_str</code>’s own pointer/slice/array cases join with a single underscore (<code>Box&lt;*T&gt;</code> mangles to <code>"Box__ptr_T"</code>, where the delimiter immediately before the bare <code>T</code> is <code>_ptr_</code> not <code>__</code>), so the search never matches and the substitution silently no-ops. The deeper issue is architectural: the parser flattens a generic type application into one opaque mangled string at parse time, discarding the structure sema would need to substitute into it correctly; a real fix means preserving that structure through to substitution time rather than patching the string-matching. Confirmed via <code>wrap&lt;i32&gt;(5)</code> giving <code>error: cannot initialize 'Box__ptr_i32' with value of type 'Box__ptr_T'</code>. Deferred rather than fixed in the generic-inference change above, which was scoped to call-site inference only.</td></tr>
-<tr><td>Function calls returning a struct/array by value can’t have fields or elements chained directly, still open</td><td>Every aggregate-typed expression (<code>EXPR_IDENT</code>, <code>EXPR_FIELD</code>, <code>EXPR_INDEX</code>, <code>EXPR_STRUCT_LIT</code>, <code>EXPR_SMARTDEREF</code>) is represented in codegen as a <em>pointer</em> to the aggregate so chained access (<code>.field</code>, <code>[i]</code>) can GEP directly — but a plain function call returning a struct/array by value (<code>EXPR_CALL</code>) never joined that convention, so <code>make_point(1, 1).x</code> fails to compile with a raw LLVM type mismatch (“defined with type ‘%Point’ but expected ‘ptr’”). Confirmed with a minimal, generics-unrelated repro. A fix was attempted (spilling the call’s by-value result into a fresh alloca and returning its pointer, mirroring every other aggregate-typed expression) but reverted after it broke 8 existing tests (<code>field_aggregate_ptr_convention</code>, <code>struct_abi</code>, <code>struct_abi_no_import</code>, <code>std_audio</code>, <code>std_audio_control</code>, <code>std_sync</code>, <code>diamond_import</code>, <code>array_size_across_import</code>) — every existing <code>EXPR_CALL</code> consumer across codegen currently assumes a <em>value</em>, not a pointer, for an aggregate-typed call result, so fixing this needs the same kind of full-consumer audit the <code>EXPR_FIELD</code> allowlist bug above got, not a local change at the call site.</td></tr>
+<tr><td>Function calls returning an array by value, still open</td><td><code>f().field</code> on a struct-returning call now works (see the fix below — spilled locally inside field access only, so no other <code>EXPR_CALL</code> consumer changed). Still open: returning a fixed array by value at all (<code>fn arr() -&gt; [3]i32 { ret [4, 5, 6] }</code> fails with “‘%t0’ defined with type ‘ptr’ but expected ‘[3 x i32]’”), and so <code>arr()[i]</code> can’t be exercised yet. History, for the struct case: every aggregate-typed expression (<code>EXPR_IDENT</code>, <code>EXPR_FIELD</code>, <code>EXPR_INDEX</code>, <code>EXPR_STRUCT_LIT</code>, <code>EXPR_SMARTDEREF</code>) is represented in codegen as a <em>pointer</em> to the aggregate so chained access (<code>.field</code>, <code>[i]</code>) can GEP directly — but a plain function call returning a struct/array by value (<code>EXPR_CALL</code>) never joined that convention, so <code>make_point(1, 1).x</code> fails to compile with a raw LLVM type mismatch (“defined with type ‘%Point’ but expected ‘ptr’”). Confirmed with a minimal, generics-unrelated repro. A fix was attempted (spilling the call’s by-value result into a fresh alloca and returning its pointer, mirroring every other aggregate-typed expression) but reverted after it broke 8 existing tests (<code>field_aggregate_ptr_convention</code>, <code>struct_abi</code>, <code>struct_abi_no_import</code>, <code>std_audio</code>, <code>std_audio_control</code>, <code>std_sync</code>, <code>diamond_import</code>, <code>array_size_across_import</code>) — every existing <code>EXPR_CALL</code> consumer across codegen currently assumes a <em>value</em>, not a pointer, for an aggregate-typed call result, so fixing this needs the same kind of full-consumer audit the <code>EXPR_FIELD</code> allowlist bug above got, not a local change at the call site.</td></tr>
 <tr><td><code>std/video</code>’s scope and known limitations</td><td>MP4/etc video decode (<code>std/video</code>, see <a href="#graphics--design-sketch-layers-1-2-implemented-gdev-2d-core-in-progress">Graphics</a>) is video-only — an embedded audio track is entirely ignored (decoding it needs <code>libswresample</code> + <code>std/audio</code> ALSA wiring, not attempted) — and read-only (no encode/mux; that’s still <code>gmed</code>-scoped and unbuilt). Playback timing assumes a fixed average frame rate rather than each frame’s own presentation timestamp, so a variable-frame-rate source will drift against real time the longer it plays — a deliberate simplification, not a bug, but worth knowing before relying on this for anything timing-sensitive. More structurally: since this compiler has no C-header importer, <code>std/video</code> reads a handful of ffmpeg struct fields via hardcoded byte offsets (captured via <code>offsetof</code> against this system’s real ffmpeg 6.1 headers, not guessed) rather than a real struct layout — a linked ffmpeg whose major version doesn’t match the one those offsets came from is silently unsafe, with no compile-time detection possible.</td></tr>
 <tr><td>Window resize can’t be pixel-verified under Xvfb+swrast, still open</td><td><code>Window.resize</code>/<code>set_fullscreen</code>’s GL-rendering-after-resize path (see <a href="#graphics--design-sketch-layers-1-2-implemented-gdev-2d-core-in-progress">Graphics</a>) can’t get the same pixel read-back verification the rest of <code>tests/gl</code> uses: under this project’s own Xvfb + software-GL (llvmpipe/swrast, no GPU) test environment, <code>XResizeWindow</code> on a window with a bound GLX context breaks rendering entirely — confirmed even with zero GL-side handling involved, a bare <code>XResizeWindow</code> call and nothing else already does it. This is an environment limitation, not a bug in <code>resize</code> itself (which does the standard thing: <code>XResizeWindow</code>/<code>XMoveResizeWindow</code>, <code>glViewport</code>, <code>glOrtho</code>, a fresh <code>glXMakeCurrent</code>) — a real GPU-backed X server is expected to handle this normally, the same way any other GLX application resizing its window does. <code>tests/gl/window_resize</code> verifies what <em>is</em> checkable here (the real X11-level resize via <code>XGetWindowAttributes</code>). Revisit if this project ever gets a non-Xvfb GL test environment.</td></tr>
 <tr><td>astro_blaster reported stutter, still open</td><td>A stutter reported during rapid fire in <code>examples/games/astro_blaster</code> survived three rounds of fixes to <code>std/audio</code> (non-blocking writes, an <code>snd_pcm_avail_update</code> pre-check, then a full background-thread rewrite) and reproduces with audio skipped entirely (<code>przp run --no-audio</code>) — so it isn’t audio. <code>std/gdev</code>’s own frame timer (<code>get_frame_time</code>, real wall-clock via <code>os.monotonic_ms</code>) never recorded a frame over 33ms during a session where the stutter was reported, which is the actually strange part: whatever’s happening either isn’t visible on that clock at all (input-latency-shaped, not render-loop-shaped) or is smaller than the 33ms threshold currently logged. The diagnostic (<code>[STALL]</code> logging in <code>main.przp</code>) is still in place for whoever picks this back up.</td></tr>
@@ -3002,6 +3091,18 @@ r: f64 = m.sqrt(2.0)
 </div>
 <h2 id="bugs-found-and-fixed-along-the-way"><a class="header" href="#bugs-found-and-fixed-along-the-way">Bugs Found and Fixed Along the Way</a></h2>
 <ul>
+<li>
+<p><strong>String literals nested inside a global constant were rejected</strong> — <code>emit_const_init</code> handled <code>str</code> only as a whole top-level global, so an array or struct initializer containing one (<code>CMDS: [2]Cmd : [Cmd{.key = "help", ...}]</code>) failed with “global initializer must be a compile-time constant”, even though function references in the same initializer were already accepted. Fixed by emitting the same <code>{ ptr, i64 }</code> constant for a nested <code>EXPR_STR</code>. Covered by <code>tests/run/global_const_str_table.przp</code>.</p>
+</li>
+<li>
+<p><strong><code>ret @err(code)</code> left the value half of the result uninitialized</strong> — <code>errors.md</code> documents it as zero on failure, but codegen built the <code>{ T, i32 }</code> result from <code>undef</code>, so reading the value after an error (or assigning a failable to a plain <code>T</code>) yielded stack garbage. Fixed by starting from <code>zeroinitializer</code>. Covered by <code>tests/run/err_value_zero.przp</code>.</p>
+</li>
+<li>
+<p><strong><code>f().field</code> on a struct-returning call didn’t compile</strong> — field access GEPs from a pointer, but a call yields the struct as an SSA value (“defined with type ‘%P’ but expected ‘ptr’”). Fixed by spilling the call result to a stack slot inside <code>EXPR_FIELD</code> only. An earlier attempt changed what <code>EXPR_CALL</code> itself returns and broke every consumer expecting a value, so this one leaves that alone. Covered by <code>tests/run/call_result_field.przp</code>.</p>
+</li>
+<li>
+<p><strong>A user <code>extern fn</code> for a C function the preamble already declares produced a duplicate LLVM <code>declare</code></strong> — the preamble’s skip list was missing <code>memcmp</code>, <code>strerror</code>, <code>__errno_location</code>, <code>time</code>, <code>getpid</code>, <code>putchar</code>, <code>tcgetattr</code> and <code>tcsetattr</code>, so e.g. <code>extern fn memcmp(...)</code> failed with “invalid redefinition of function”. Fixed by syncing the list with what the preamble emits. Covered by <code>tests/run/extern_preamble_redecl.przp</code>.</p>
+</li>
 <li>
 <p><strong>Nested-import local-variable collision</strong> — a 3+-level-deep import chain (file A imports B, B imports C) could mis-rewrite an unrelated local variable inside C’s own function body if its name happened to match a top-level item name declared in B. <code>mangle_items</code> merges an already-mangled imported module’s items into the importer’s own item list <em>before</em> the importer’s own alias-rewrite pass runs, so that pass’s name-match set ended up including names with no relation to the code it was walking, and the rewrite itself had no notion of lexical scope to tell a local apart from an item reference. Fixed by collecting each function’s own locals (<code>LocalNames</code> in <code>main.c</code>) and always letting a local name shadow an outer item for that whole function body. Covered by <code>tests/run/local_name_collision.przp</code>.</p>
 </li>

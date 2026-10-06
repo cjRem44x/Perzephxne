@@ -1,0 +1,11 @@
+help: Show help
+build: Build (v2)
+run: Run project
+-> run
+deploy err=1 has(help)=1
+remove(help)=1 again=0 len=2
+build run 
+len=2000 bad=0
+after remove len=1000 ordered=1 get10err=1 get11=121
+cleared len=1 has(-5)=1 has(1)=0
+reuse len=1
