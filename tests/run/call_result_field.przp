@@ -1,0 +1,14 @@
+struct P { a: i32, b: str }
+struct Q { v: i32 }
+impl Q {
+    fn mk(self: *Q) -> P { ret P{.a = self.v, .b = "hi"} }
+}
+fn mk() -> P { ret P{.a = 7, .b = "yo"} }
+fn main() {
+    @pf("{mk().a} {mk().b}\n")
+    x: i32 = mk().a
+    q: Q = Q{.v = 3}
+    y: i32 = q.mk().a
+    @pf("{x} {y}\n")
+    @pf("{q.mk().b}\n")
+}

@@ -394,7 +394,7 @@ compiler changes and `book/book` after book source changes.
 | `std/os` | env, paths, exit, process execution |
 | `std/file` | file read/write, append, exists, delete, size |
 | `std/fmt` | string formatting and padding utilities |
-| `std/collections` | dynamic array (Vec) |
+| `std/collections` | dynamic array (Vec), generic insertion-ordered HashMap |
 | `std/atomic` | atomic load/store/add/sub/cas/inc/dec on i64 |
 | `std/sync` | mutex and read-write lock wrappers |
 | `std/crypto` | djb2, fnv1a, sha256 hashing; xor_encrypt |

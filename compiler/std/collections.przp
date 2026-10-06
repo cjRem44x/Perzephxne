@@ -1,4 +1,4 @@
-# std/collections — dynamic array (Vec) and basic data structures
+# std/collections — dynamic array (Vec) and generic HashMap<K, V>
 
 extern fn malloc(n: usize) -> *u8
 extern fn realloc(p: *u8, n: usize) -> *u8
@@ -80,3 +80,203 @@ impl Vec {
         self.len = 0
     }
 }
+
+# ── HashMap<K, V> ────────────────────────────────────────────────────────────
+# Insertion-ordered hash map. There are no traits, so the map is given its
+# key's hash and equality functions at construction (hash_str/eq_str etc.
+# below cover the common key types).
+#
+# Layout: entries live densely in insertion order; `slots` is an
+# open-addressing (linear probing) index into them, -1 = empty, sized to a
+# power of two and kept at most 3/4 full.
+
+struct MapEntry<K, V> {
+    key:  K
+    val:  V
+    hash: u64
+}
+
+struct HashMap<K, V> {
+    entries: *MapEntry<K, V>
+    len:     usize
+    ecap:    usize
+    slots:   *i64
+    scap:    usize
+    hash:    fn(K) -> u64
+    eq:      fn(K, K) -> bool
+}
+
+impl HashMap<K, V> {
+    # new: empty map using the given key hash/equality functions
+    fn new(hash: fn(K) -> u64, eq: fn(K, K) -> bool) -> HashMap<K, V> {
+        ret HashMap<K, V>{.entries = null, .len = 0, .ecap = 0,
+                          .slots = null, .scap = 0, .hash = hash, .eq = eq}
+    }
+
+    # free_map: release heap memory; the map is empty and reusable afterwards
+    fn free_map(self: *HashMap<K, V>) {
+        if self.entries != null { @free(self.entries) }
+        if self.slots != null { @free(self.slots) }
+        self.entries = null
+        self.slots = null
+        self.len = 0
+        self.ecap = 0
+        self.scap = 0
+    }
+
+    # index_of: entry index of key, or -1 if absent
+    fn index_of(self: *HashMap<K, V>, key: K) -> i64 {
+        if self.scap == 0 { ret -1 }
+        h: u64 = self.hash(key)
+        mask: u64 = @u64(self.scap - 1)
+        i: u64 = h & mask
+        while true {
+            e: i64 = self.slots[@usize(i)]
+            if e == -1 { ret -1 }
+            ent: MapEntry<K, V> = self.entries[@usize(e)]
+            if ent.hash == h {
+                if self.eq(ent.key, key) { ret e }
+            }
+            i = (i + 1) & mask
+        }
+        ret -1
+    }
+
+    # place: record entry index e (with hash h) in the slot table
+    fn place(self: *HashMap<K, V>, h: u64, e: usize) {
+        mask: u64 = @u64(self.scap - 1)
+        i: u64 = h & mask
+        while self.slots[@usize(i)] != -1 {
+            i = (i + 1) & mask
+        }
+        self.slots[@usize(i)] = @i64(e)
+    }
+
+    # reindex: rebuild the slot table with `cap` slots from the entries
+    fn reindex(self: *HashMap<K, V>, cap: usize) {
+        if self.slots != null { @free(self.slots) }
+        self.slots = @alo(i64, cap)
+        self.scap = cap
+        for i => 0..cap { self.slots[i] = -1 }
+        for j => 0..self.len { self.place(self.entries[j].hash, j) }
+    }
+
+    # put: insert key → val, or overwrite the value if key is already present
+    fn put(self: *HashMap<K, V>, key: K, val: V) {
+        idx: i64 = self.index_of(key)
+        if idx >= 0 {
+            self.entries[@usize(idx)].val = val
+            ret
+        }
+        if self.len == self.ecap {
+            nc: usize = self.ecap * 2 + 8
+            if self.entries == null {
+                self.entries = @alo(MapEntry<K, V>, nc)
+            } else {
+                self.entries = @realo(self.entries, MapEntry<K, V>, nc)
+            }
+            self.ecap = nc
+        }
+        if (self.len + 1) * 4 > self.scap * 3 {
+            nslots: usize = 16
+            if self.scap > 0 { nslots = self.scap * 2 }
+            self.reindex(nslots)
+        }
+        h: u64 = self.hash(key)
+        self.entries[self.len] = MapEntry<K, V>{.key = key, .val = val, .hash = h}
+        self.place(h, self.len)
+        self.len = self.len + 1
+    }
+
+    # get: the value for key; error code 1 if key is absent
+    fn get(self: *HashMap<K, V>, key: K) -> !V {
+        idx: i64 = self.index_of(key)
+        if idx < 0 { ret @err(1) }
+        ret @ok(self.entries[@usize(idx)].val)
+    }
+
+    # has: true if key is present
+    fn has(self: *HashMap<K, V>, key: K) -> bool {
+        ret self.index_of(key) >= 0
+    }
+
+    # remove: delete key, keeping the remaining entries' order; O(len).
+    # Returns false if key was absent.
+    fn remove(self: *HashMap<K, V>, key: K) -> bool {
+        idx: i64 = self.index_of(key)
+        if idx < 0 { ret false }
+        i: usize = @usize(idx)
+        while i + 1 < self.len {
+            self.entries[i] = self.entries[i + 1]
+            i = i + 1
+        }
+        self.len = self.len - 1
+        self.reindex(self.scap)
+        ret true
+    }
+
+    # len_of: number of entries
+    fn len_of(self: *HashMap<K, V>) -> usize {
+        ret self.len
+    }
+
+    # is_empty: true if the map has no entries
+    fn is_empty(self: *HashMap<K, V>) -> bool {
+        ret self.len == 0
+    }
+
+    # key_at / val_at: the i-th entry in insertion order, 0 <= i < len_of()
+    # (no bounds check)
+    fn key_at(self: *HashMap<K, V>, i: usize) -> K {
+        ret self.entries[i].key
+    }
+
+    fn val_at(self: *HashMap<K, V>, i: usize) -> V {
+        ret self.entries[i].val
+    }
+
+    # clear: remove every entry, keeping allocated capacity
+    fn clear(self: *HashMap<K, V>) {
+        self.len = 0
+        for i => 0..self.scap { self.slots[i] = -1 }
+    }
+}
+
+# ── Key helpers for HashMap.new ──────────────────────────────────────────────
+
+extern fn memcmp(a: *u8, b: *u8, n: usize) -> i32
+
+# hash_str: FNV-1a over the string's bytes
+fn hash_str(s: str) -> u64 {
+    h: u64 = 0xcbf29ce484222325
+    i: usize = 0
+    while i < s.len {
+        h = h ^ @u64((s.data + i).*)
+        h = h * 0x100000001b3
+        i = i + 1
+    }
+    ret h
+}
+
+fn eq_str(a: str, b: str) -> bool {
+    if a.len != b.len { ret false }
+    ret memcmp(a.data, b.data, a.len) == 0
+}
+
+# mix64: splitmix64 finalizer, so sequential integer keys spread across slots
+fn mix64(x: u64) -> u64 {
+    x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9
+    x = (x ^ (x >> 27)) * 0x94d049bb133111eb
+    ret x ^ (x >> 31)
+}
+
+fn hash_i32(x: i32) -> u64 { ret mix64(@u64(x)) }
+fn eq_i32(a: i32, b: i32) -> bool { ret a == b }
+fn hash_i64(x: i64) -> u64 { ret mix64(@u64(x)) }
+fn eq_i64(a: i64, b: i64) -> bool { ret a == b }
+fn hash_u32(x: u32) -> u64 { ret mix64(@u64(x)) }
+fn eq_u32(a: u32, b: u32) -> bool { ret a == b }
+fn hash_u64(x: u64) -> u64 { ret mix64(x) }
+fn eq_u64(a: u64, b: u64) -> bool { ret a == b }
+fn hash_usize(x: usize) -> u64 { ret mix64(@u64(x)) }
+fn eq_usize(a: usize, b: usize) -> bool { ret a == b }

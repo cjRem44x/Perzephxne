@@ -1,0 +1,15 @@
+# ret @err(code) must zero the value half of the result (errors.md: "zero on failure")
+fn f64v() -> !i64 { ret @err(1) }
+fn f32v() -> !i32 { ret @err(7) }
+fn ff() -> !f64 { ret @err(2) }
+struct P { a: i32, b: i32 }
+fn fp() -> !P { ret @err(3) }
+fn main() {
+    a, e1: !i64 = f64v()
+    b, e2: !i32 = f32v()
+    c, e3: !f64 = ff()
+    p, e4: !P = fp()
+    @pf("{a} {e1} | {b} {e2} | {c} {e3} | {p.a} {p.b} {e4}\n")
+    z: i64 = f64v()
+    @pf("plain={z}\n")
+}

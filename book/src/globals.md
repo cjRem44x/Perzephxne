@@ -48,7 +48,7 @@ MASK:    u32   : 0xFF00FF00
 PREFIX:  str   : "api/v2/"
 ```
 
-A constant initializer isn't limited to a single literal — struct and array literals count too, built recursively from other constants, and a bare function name is a valid constant for a fn-pointer-typed field (handy for building a fixed table of operations, like `std/graphics/gl`'s `GL_BACKEND`):
+A constant initializer isn't limited to a single literal — struct and array literals count too, built recursively from other constants (including string literals nested inside them), and a bare function name is a valid constant for a fn-pointer-typed field (handy for building a fixed table of operations, like `std/graphics/gl`'s `GL_BACKEND`):
 
 ```
 struct Vec2 { x: f32, y: f32 }
@@ -58,6 +58,26 @@ struct Ops { double: fn(i32) -> i32 }
 fn doubler(x: i32) -> i32 { ret x * 2 }
 MY_OPS: Ops : Ops{.double = doubler}
 ```
+
+Together that makes a fixed command table a plain global:
+
+```
+struct Cmd { key: str, desc: str, run: fn() }
+
+fn do_help()  { @pf("help\n") }
+fn do_build() { @pf("build\n") }
+
+CMDS: [2]Cmd : [
+    Cmd{.key = "help",  .desc = "Show help",     .run = do_help},
+    Cmd{.key = "build", .desc = "Build project", .run = do_build},
+]
+
+fn main() {
+    for c => CMDS { @pf("{c.key}: {c.desc}\n") }
+}
+```
+
+For lookup by key as the table grows (or one built at runtime), see `HashMap` in [`std/collections`](./stdlib.md#stdcollections).
 
 Anything else — a function call, a reference to another variable, an arithmetic expression on a non-constant — isn't a compile-time constant and is a compile error rather than a silently zero-initialized global.
 

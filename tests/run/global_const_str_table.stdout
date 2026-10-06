@@ -1,0 +1,5 @@
+help (4): Show help
+build (5): Build project
+running build
+running help
+a=1 bb=2 ccc=3 

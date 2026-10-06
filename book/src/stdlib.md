@@ -265,7 +265,9 @@ f: str = fmt.fixed(3.14159, 2)    # "3.14"
 
 ## `std/collections`
 
-The current collection module provides a growable `Vec` of `i64` values.
+A growable `Vec` of `i64` values, and a generic, insertion-ordered `HashMap<K, V>`.
+
+### `Vec`
 
 | Symbol | Description |
 |---|---|
@@ -289,6 +291,77 @@ v.push(20)
 v.push(30)
 @pf("{v.len_of()} {v.get(1)}\n")   # 3 20
 v.free_vec()
+```
+
+### `HashMap<K, V>`
+
+Perzephxne has no traits, so a map is given its key type's hash and equality functions when it's created. The module ships them for the common key types:
+
+| Key type | Pass to `new` |
+|---|---|
+| `str` | `hash_str, eq_str` |
+| `i32` / `i64` | `hash_i32, eq_i32` / `hash_i64, eq_i64` |
+| `u32` / `u64` / `usize` | `hash_u32, eq_u32` / `hash_u64, eq_u64` / `hash_usize, eq_usize` |
+
+Any other key type works with your own pair of functions matching `fn(K) -> u64` and `fn(K, K) -> bool` — two keys that are `eq` must hash to the same value.
+
+| Symbol | Description |
+|---|---|
+| `HashMap<K, V>.new(hash, eq)` | create an empty map |
+| `put(self, key, val)` | insert, or overwrite the value of an existing key |
+| `get(self, key) -> !V` | the value; error code `1` if the key is absent |
+| `has(self, key) -> bool` | true if the key is present |
+| `remove(self, key) -> bool` | delete the key; `false` if it was absent. O(len), since it keeps the remaining order |
+| `len_of(self)` / `is_empty(self)` | number of entries / true if none |
+| `key_at(self, i)` / `val_at(self, i)` | the `i`-th entry in insertion order, `0 <= i < len_of()`; no bounds check |
+| `clear(self)` | remove every entry, keeping capacity |
+| `free_map(self)` | release heap memory; the map is empty and reusable afterwards |
+
+Entries iterate in the order their keys were first inserted (overwriting a key's value doesn't move it). Lookups and inserts are O(1) on average: an open-addressing index sits over a dense, ordered entry array, rebuilt as it fills past 3/4.
+
+Values can be anything, including structs holding function pointers — a command table keyed by name:
+
+```
+import(c = "std/collections")
+
+struct Cmd {
+    desc: str,
+    run:  fn(),
+}
+
+fn do_help()  { @pf("usage: tool <cmd>\n") }
+fn do_build() { @pf("building...\n") }
+
+fn main() {
+    cmds: c.HashMap<str, Cmd> = c.HashMap<str, Cmd>.new(c.hash_str, c.eq_str)
+    cmds.put("help",  Cmd{.desc = "Show help",     .run = do_help})
+    cmds.put("build", Cmd{.desc = "Build project", .run = do_build})
+
+    for i => 0..cmds.len_of() {                  # listed in insertion order
+        @pf("{cmds.key_at(i)}: {cmds.val_at(i).desc}\n")
+    }
+
+    cmd, err: !Cmd = cmds.get("build")
+    if err == 0 {
+        cmd.run()                                # building...
+    } else {
+        @pf("unknown command\n")
+    }
+    cmds.free_map()
+}
+```
+
+Every function stored this way must share one signature (here `fn()`), and closures aren't supported — see [Functions § First-Class Functions](./functions.md#first-class-functions).
+
+Integer keys, e.g. counting occurrences:
+
+```
+counts: c.HashMap<i64, i64> = c.HashMap<i64, i64>.new(c.hash_i64, c.eq_i64)
+for x => [3, 1, 3, 3] {
+    n, err: !i64 = counts.get(x)
+    counts.put(x, n + 1)        # n is 0 when absent
+}
+v, e: !i64 = counts.get(3)       # 3
 ```
 
 ## `std/atomic`

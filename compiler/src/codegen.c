@@ -2399,7 +2399,9 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                 char fail_llt[256];
                 snprintf(fail_llt, sizeof(fail_llt), "{ %s, i32 }", val_llt);
                 int f1 = new_tmp(cg);
-                emit(cg, "  %%t%d = insertvalue %s undef, i32 %s, 1\n", f1, fail_llt, code.buf);
+                /* zeroinitializer, not undef: the value half of a failure is
+                   documented as zero (errors.md), and callers read it */
+                emit(cg, "  %%t%d = insertvalue %s zeroinitializer, i32 %s, 1\n", f1, fail_llt, code.buf);
                 if (out_ty && cg->cur_fn_ret_ty && cg->cur_fn_ret_ty->kind == TY_FAILABLE) {
                     *out_ty = cg->cur_fn_ret_ty;
                 }
@@ -3533,6 +3535,15 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                     obj_ty = obj_ty->ptr.inner;
             } else {
                 obj = cg_expr(cg, e->field.obj, &obj_ty);
+            }
+            /* f().field: a call returns the struct as an SSA aggregate, not the
+               alloca pointer the GEP below needs — spill it to a stack slot. */
+            if (e->field.obj->kind == EXPR_CALL && obj_ty && obj_ty->kind == TY_NAMED
+                    && find_struct(cg, obj_ty->named.name)) {
+                int slot = new_tmp(cg);
+                emit_alloca(cg, "  %%t%d = alloca %%%s\n", slot, obj_ty->named.name);
+                emit(cg, "  store %%%s %s, ptr %%t%d\n", obj_ty->named.name, obj.buf, slot);
+                obj = val_tmp(slot);
             }
             /* auto-deref: *Struct.field or ^Struct.field */
             if (obj_ty && obj_ty->kind == TY_PTR && obj_ty->ptr.inner
@@ -5688,6 +5699,8 @@ static const char *g_preamble_decls[] = {
     "atoi", "atol", "atof", "strtol", "strtod",
     "strcmp", "strlen", "rand", "srand",
     "malloc", "realloc", "free", "exit", "fgets",
+    "memcmp", "strerror", "__errno_location", "time", "getpid",
+    "putchar", "tcgetattr", "tcsetattr",
     NULL
 };
 static int is_preamble_decl(const char *name) {
@@ -6063,6 +6076,16 @@ static void emit_const_init(CG *cg, Expr *e, Type *ty) {
         case EXPR_BOOL:  emit(cg, "%d", e->bval); return;
         case EXPR_NULL:  emit(cg, "null"); return;
         case EXPR_UNDEF: emit(cg, "undef"); return;
+        case EXPR_STR: {
+            /* nested str (array element / struct field): same { ptr, len }
+               layout cg_global emits for a top-level str global */
+            if (!ty || ty->kind != TY_STR) break;
+            size_t slen = strlen(e->sval);
+            int sid = intern_str(cg, e->sval);
+            emit(cg, "{ ptr getelementptr inbounds ([%zu x i8], ptr @.str.%d, i32 0, i32 0), i64 %zu }",
+                 slen + 1, sid, slen);
+            return;
+        }
         case EXPR_UNOP: {
             /* a negative literal (-12) parses as UNOP_NEG over a positive
                EXPR_INT/EXPR_FLOAT, not a single literal node — fold that
