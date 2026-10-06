@@ -1,0 +1,41 @@
+# HashMap.put_all: one value under several alias keys
+import(c = "std/collections")
+
+struct Entry {
+    desc: str,
+    run:  fn(),
+}
+
+fn greet() { @pf("hey there\n") }
+fn quit()  { @pf("bye\n") }
+
+fn main() {
+    m: c.HashMap<str, Entry> = c.HashMap<str, Entry>.new(c.hash_str, c.eq_str)
+    m.put_all(["hello", "hi", "whats up"], Entry{.desc = "Greet", .run = greet})
+    m.put_all(["exit", "quit", "qqq"], Entry{.desc = "Exit", .run = quit})
+    @pf("{m.len_of()} keys\n")
+    for k => ["whats up", "hi", "qqq", "nope"] {
+        e, err: !Entry = m.get(k)
+        if err == 0 {
+            e.run()
+        } else {
+            @pf("unknown: {k}\n")
+        }
+    }
+
+    names: [2]str = ["a", "b"]
+    n: c.HashMap<str, i64> = c.HashMap<str, i64>.new(c.hash_str, c.eq_str)
+    n.put_all(names, 7)
+    n.put_all(names[0..1], 9)
+    a, ea: !i64 = n.get("a")
+    b, eb: !i64 = n.get("b")
+    @pf("a={a} b={b}\n")
+
+    ints: c.HashMap<i32, str> = c.HashMap<i32, str>.new(c.hash_i32, c.eq_i32)
+    ints.put_all([1, 2, 3], "small")
+    s, es: !str = ints.get(2)
+    @pf("2={s} len={ints.len_of()}\n")
+    m.free_map()
+    n.free_map()
+    ints.free_map()
+}
