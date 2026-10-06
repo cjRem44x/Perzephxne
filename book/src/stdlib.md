@@ -309,6 +309,7 @@ Any other key type works with your own pair of functions matching `fn(K) -> u64`
 |---|---|
 | `HashMap<K, V>.new(hash, eq)` | create an empty map |
 | `put(self, key, val)` | insert, or overwrite the value of an existing key |
+| `put_all(self, keys, val)` | `put` the same value under every key in `keys` (any array or slice of `K`) — for aliases |
 | `get(self, key) -> !V` | the value; error code `1` if the key is absent |
 | `has(self, key) -> bool` | true if the key is present |
 | `remove(self, key) -> bool` | delete the key; `false` if it was absent. O(len), since it keeps the remaining order |
@@ -351,7 +352,31 @@ fn main() {
 }
 ```
 
-Every function stored this way must share one signature (here `fn()`), and closures aren't supported — see [Functions § First-Class Functions](./functions.md#first-class-functions).
+Every function stored this way must share one signature (here `fn()`), and closures aren't supported — see [Functions § First-Class Functions](./functions.md#first-class-functions). Store the function itself (`.run = do_build`), not a call (`do_build()` would run it immediately and store its result).
+
+#### Aliases with `put_all`
+
+To make several keys reach the same value, give `put_all` an array of them:
+
+```
+cmds.put_all(["exit", "quit", "qqq"], Cmd{.desc = "Exit the program", .run = do_quit})
+cmds.put_all(["hello", "hi", "whats up"], Cmd{.desc = "Say hello", .run = do_hello})
+
+cmd, err: !Cmd = cmds.get("qqq")    # same entry as "exit" and "quit"
+```
+
+Each alias is its own entry, so `len_of()` counts all of them and a `key_at`/`val_at` listing shows the description once per alias. `keys` can be an array literal, a fixed array, or a slice (`names[0..2]`). An integer array literal is typed `[N]i32`, so with `i64`/`u64` keys pass a typed array instead (`ids: [3]i64 = [1, 2, 3]`).
+
+This is also the map-side counterpart of `when`'s `|` patterns, for matching a string against several alternatives directly:
+
+```
+when input {
+    "exit" | "quit" | "qqq" => do_quit()
+    _                       => @pf("unknown\n")
+}
+```
+
+`|` only means "any of" inside a `when` arm; elsewhere it's bitwise OR, so an `if` uses `s == "exit" || s == "quit"`.
 
 Integer keys, e.g. counting occurrences:
 

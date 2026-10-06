@@ -188,6 +188,11 @@ impl HashMap<K, V> {
         self.len = self.len + 1
     }
 
+    # put_all: put the same value under every key in keys (aliases)
+    fn put_all(self: *HashMap<K, V>, keys: []K, val: V) {
+        for k => keys { self.put(k, val) }
+    }
+
     # get: the value for key; error code 1 if key is absent
     fn get(self: *HashMap<K, V>, key: K) -> !V {
         idx: i64 = self.index_of(key)

@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-e454e8a5.js";
+            window.path_to_searchindex_js = "searchindex-255c2f85.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-4e58bc13.js"></script>
@@ -498,6 +498,7 @@ v.free_vec()
 <tbody>
 <tr><td><code>HashMap&lt;K, V&gt;.new(hash, eq)</code></td><td>create an empty map</td></tr>
 <tr><td><code>put(self, key, val)</code></td><td>insert, or overwrite the value of an existing key</td></tr>
+<tr><td><code>put_all(self, keys, val)</code></td><td><code>put</code> the same value under every key in <code>keys</code> (any array or slice of <code>K</code>) — for aliases</td></tr>
 <tr><td><code>get(self, key) -&gt; !V</code></td><td>the value; error code <code>1</code> if the key is absent</td></tr>
 <tr><td><code>has(self, key) -&gt; bool</code></td><td>true if the key is present</td></tr>
 <tr><td><code>remove(self, key) -&gt; bool</code></td><td>delete the key; <code>false</code> if it was absent. O(len), since it keeps the remaining order</td></tr>
@@ -538,7 +539,22 @@ fn main() {
     cmds.free_map()
 }
 </code></pre>
-<p>Every function stored this way must share one signature (here <code>fn()</code>), and closures aren’t supported — see <a href="./functions.html#first-class-functions">Functions § First-Class Functions</a>.</p>
+<p>Every function stored this way must share one signature (here <code>fn()</code>), and closures aren’t supported — see <a href="./functions.html#first-class-functions">Functions § First-Class Functions</a>. Store the function itself (<code>.run = do_build</code>), not a call (<code>do_build()</code> would run it immediately and store its result).</p>
+<h4 id="aliases-with-put_all"><a class="header" href="#aliases-with-put_all">Aliases with <code>put_all</code></a></h4>
+<p>To make several keys reach the same value, give <code>put_all</code> an array of them:</p>
+<pre><code>cmds.put_all(["exit", "quit", "qqq"], Cmd{.desc = "Exit the program", .run = do_quit})
+cmds.put_all(["hello", "hi", "whats up"], Cmd{.desc = "Say hello", .run = do_hello})
+
+cmd, err: !Cmd = cmds.get("qqq")    # same entry as "exit" and "quit"
+</code></pre>
+<p>Each alias is its own entry, so <code>len_of()</code> counts all of them and a <code>key_at</code>/<code>val_at</code> listing shows the description once per alias. <code>keys</code> can be an array literal, a fixed array, or a slice (<code>names[0..2]</code>). An integer array literal is typed <code>[N]i32</code>, so with <code>i64</code>/<code>u64</code> keys pass a typed array instead (<code>ids: [3]i64 = [1, 2, 3]</code>).</p>
+<p>This is also the map-side counterpart of <code>when</code>’s <code>|</code> patterns, for matching a string against several alternatives directly:</p>
+<pre><code>when input {
+    "exit" | "quit" | "qqq" =&gt; do_quit()
+    _                       =&gt; @pf("unknown\n")
+}
+</code></pre>
+<p><code>|</code> only means “any of” inside a <code>when</code> arm; elsewhere it’s bitwise OR, so an <code>if</code> uses <code>s == "exit" || s == "quit"</code>.</p>
 <p>Integer keys, e.g. counting occurrences:</p>
 <pre><code>counts: c.HashMap&lt;i64, i64&gt; = c.HashMap&lt;i64, i64&gt;.new(c.hash_i64, c.eq_i64)
 for x =&gt; [3, 1, 3, 3] {
