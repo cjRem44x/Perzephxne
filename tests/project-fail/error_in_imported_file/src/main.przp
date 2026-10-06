@@ -1,0 +1,5 @@
+import(cmds = "cmds")
+
+fn main() {
+    c: cmds.Cmd = cmds.build()
+}

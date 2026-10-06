@@ -1,0 +1,5 @@
+struct Cmd { run: fn() }
+
+fn build() -> Cmd {
+    ret Cmd{.run = nope}
+}

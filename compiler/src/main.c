@@ -244,6 +244,20 @@ static int names_generic_match(const char *name, const char *orig_name) {
     return !strncmp(name, orig_name, olen) && name[olen] == '_' && name[olen + 1] == '_';
 }
 
+/* Flattened generic names whose type arguments were renamed by the
+   mangle_items call currently running (old → new). The parser bakes a
+   generic application into one string ("HashMap__str__Cmd"), so renaming
+   the argument item ("Cmd" → "alias__Cmd") also has to rename every
+   occurrence of that string; checked before the normal prefix match. */
+static const char **g_gen_old, **g_gen_new;
+static size_t g_gen_n;
+
+static const char *gen_rename(const char *name) {
+    for (size_t i = 0; i < g_gen_n; i++)
+        if (!strcmp(name, g_gen_old[i])) return g_gen_new[i];
+    return NULL;
+}
+
 /* Forward declaration: rw_type's TY_ARRAY case needs to rewrite an array
    size expression the same way a function body's own EXPR_IDENT
    references do (see that case below); rw_ident_expr's own definition
@@ -257,7 +271,9 @@ static void rw_ident_expr(Expr *e, const char **orig, size_t n_orig,
 static void rw_type(Type *ty, const char **orig, size_t n, const char *alias, Arena *a) {
     if (!ty) return;
     switch (ty->kind) {
-        case TY_NAMED:
+        case TY_NAMED: {
+            const char *rn = gen_rename(ty->named.name);
+            if (rn) { ty->named.name = rn; break; }
             for (size_t i = 0; i < n; i++) {
                 if (names_generic_match(ty->named.name, orig[i])) {
                     char *buf = arena_alloc(a, strlen(alias) + 2 + strlen(ty->named.name) + 1);
@@ -267,6 +283,7 @@ static void rw_type(Type *ty, const char **orig, size_t n, const char *alias, Ar
                 }
             }
             break;
+        }
         case TY_PTR: case TY_SMART_PTR: case TY_SLICE: case TY_FAILABLE:
             rw_type(ty->ptr.inner, orig, n, alias, a);
             break;
@@ -556,6 +573,10 @@ static void rw_ident_expr(Expr *e, const char **orig, size_t n_orig,
     switch (e->kind) {
         case EXPR_IDENT: {
             if (ln && is_local_name(ln, e->ident.name)) break;
+            {
+                const char *rn = gen_rename(e->ident.name);
+                if (rn) { e->ident.name = rn; break; }
+            }
             for (size_t i = 0; i < n_orig; i++) {
                 if (names_generic_match(e->ident.name, orig[i])) {
                     char buf[512];
@@ -596,8 +617,10 @@ static void rw_ident_expr(Expr *e, const char **orig, size_t n_orig,
         case EXPR_FIELD:
             rw_ident_expr(e->field.obj, orig, n_orig, alias, a, ln);
             break;
-        case EXPR_STRUCT_LIT:
-            for (size_t i = 0; i < n_orig; i++) {
+        case EXPR_STRUCT_LIT: {
+            const char *rn = gen_rename(e->struct_lit.ty_name);
+            if (rn) e->struct_lit.ty_name = rn;
+            for (size_t i = 0; !rn && i < n_orig; i++) {
                 if (names_generic_match(e->struct_lit.ty_name, orig[i])) {
                     char buf[512];
                     snprintf(buf, sizeof(buf), "%s__%s", alias, e->struct_lit.ty_name);
@@ -608,6 +631,7 @@ static void rw_ident_expr(Expr *e, const char **orig, size_t n_orig,
             for (size_t i = 0; i < e->struct_lit.fields.len; i++)
                 rw_ident_expr(e->struct_lit.fields.data[i].val, orig, n_orig, alias, a, ln);
             break;
+        }
         case EXPR_ARRAY_LIT:
         case EXPR_TUPLE: /* EXPR_TUPLE reuses the array_lit field (parser.c) */
             for (size_t i = 0; i < e->array_lit.len; i++)
@@ -661,6 +685,9 @@ static void mangle_items(Module *mod, const char *alias, Arena *arena) {
        rewrite those the same way item names below get rewritten, or sema
        looks for a template/instantiation under a name that no longer
        exists once this module's items are all prefixed with alias__. */
+    g_gen_old = arena_alloc(arena, (mod->gen_insts.len + 1) * sizeof(char *));
+    g_gen_new = arena_alloc(arena, (mod->gen_insts.len + 1) * sizeof(char *));
+    g_gen_n = 0;
     for (size_t i = 0; i < mod->gen_insts.len; i++) {
         GenInst *gi = &mod->gen_insts.data[i];
         for (size_t j = 0; j < n_all_orig; j++) {
@@ -670,6 +697,27 @@ static void mangle_items(Module *mod, const char *alias, Arena *arena) {
                 gi->base = arena_strdup(arena, b);
                 break;
             }
+        }
+        /* a type argument naming one of this module's own items
+           (HashMap<str, Cmd>) is renamed too, so the flattened name has to be
+           rebuilt from the renamed parts — the same way the parser built it */
+        int args_changed = 0;
+        for (size_t k = 0; k < gi->n_args; k++) {
+            const char *before = type_to_str(gi->args[k], arena);
+            rw_type(gi->args[k], all_orig, n_all_orig, alias, arena);
+            if (strcmp(before, type_to_str(gi->args[k], arena))) args_changed = 1;
+        }
+        if (args_changed) {
+            char m[512];
+            snprintf(m, sizeof(m), "%s", gi->base);
+            for (size_t k = 0; k < gi->n_args; k++) {
+                size_t cl = strlen(m);
+                snprintf(m + cl, sizeof(m) - cl, "__%s", type_to_str(gi->args[k], arena));
+            }
+            g_gen_old[g_gen_n] = gi->mangled;
+            gi->mangled = arena_strdup(arena, m);
+            g_gen_new[g_gen_n++] = gi->mangled;
+            continue;
         }
         for (size_t j = 0; j < n_all_orig; j++) {
             if (names_generic_match(gi->mangled, all_orig[j])) {
@@ -767,6 +815,7 @@ static void mangle_items(Module *mod, const char *alias, Arena *arena) {
             }
         }
     }
+    g_gen_n = 0;
 }
 
 /* An import alias (or, for expand_mod_items's same-file use, a mod block's
@@ -1046,11 +1095,18 @@ static void merge_items(Module *mod, Module *imp) {
        breaks the moment something else imports it, since the concrete
        instantiation is never requested in the merged module sema sees. */
     if (imp->gen_insts.len) {
-        size_t new_gi_len = mod->gen_insts.len + imp->gen_insts.len;
-        GenInst *new_gi = arena_alloc(mod->arena, new_gi_len * sizeof(GenInst));
+        GenInst *new_gi = arena_alloc(mod->arena,
+            (mod->gen_insts.len + imp->gen_insts.len) * sizeof(GenInst));
         memcpy(new_gi, mod->gen_insts.data, mod->gen_insts.len * sizeof(GenInst));
-        memcpy(new_gi + mod->gen_insts.len, imp->gen_insts.data,
-               imp->gen_insts.len * sizeof(GenInst));
+        size_t new_gi_len = mod->gen_insts.len;
+        /* skip instances already requested under the same name — both modules
+           naming e.g. HashMap<str, cmds.Cmd> would otherwise instantiate it twice */
+        for (size_t i = 0; i < imp->gen_insts.len; i++) {
+            int dup = 0;
+            for (size_t j = 0; j < new_gi_len && !dup; j++)
+                dup = !strcmp(new_gi[j].mangled, imp->gen_insts.data[i].mangled);
+            if (!dup) new_gi[new_gi_len++] = imp->gen_insts.data[i];
+        }
         mod->gen_insts.data = new_gi;
         mod->gen_insts.len  = new_gi_len;
     }
@@ -1206,7 +1262,7 @@ static int load_imports(Module *mod, const char *src_path, const char *src,
             }
             record_dep_file(full);
             error_init(full, imp_src);
-            Module *imp = parse(imp_src, (uint32_t)(n_loading + 1), arena);
+            Module *imp = parse(imp_src, error_register_file(full, imp_src), arena);
             stamp_test_files(imp, full, arena);
             expand_mod_items(imp, arena);
 
@@ -1346,7 +1402,7 @@ static int merge_tests_dir(Module *mod, const char *tests_dir, Arena *arena) {
         }
         record_dep_file(full);
         error_init(full, tsrc);
-        Module *extra = parse(tsrc, 0, arena);
+        Module *extra = parse(tsrc, error_register_file(full, tsrc), arena);
         stamp_test_files(extra, full, arena);
         expand_mod_items(extra, arena);
 
@@ -1381,7 +1437,7 @@ static int compile_file(const char *src_path, const char *out_path, int release,
     arena_init(&arena);
 
     error_init(src_path, src);
-    Module *mod = parse(src, 0, &arena);
+    Module *mod = parse(src, error_register_file(src_path, src), &arena);
     stamp_test_files(mod, src_path, &arena);
     expand_mod_items(mod, &arena);
 
@@ -1476,7 +1532,7 @@ static void cmd_sac(int argc, char **argv) {
         exit(1);
     }
     error_init(files[0], srcs[0]);
-    Module *mod = parse(srcs[0], 0, &arena);
+    Module *mod = parse(srcs[0], error_register_file(files[0], srcs[0]), &arena);
     stamp_test_files(mod, files[0], &arena);
     expand_mod_items(mod, &arena);
     const char *loading[1] = { files[0] };
@@ -1497,7 +1553,7 @@ static void cmd_sac(int argc, char **argv) {
             exit(1);
         }
         error_init(files[fi], srcs[fi]);
-        Module *extra = parse(srcs[fi], 0, &arena);
+        Module *extra = parse(srcs[fi], error_register_file(files[fi], srcs[fi]), &arena);
         stamp_test_files(extra, files[fi], &arena);
         expand_mod_items(extra, &arena);
         const char *extra_loading[1] = { files[fi] };

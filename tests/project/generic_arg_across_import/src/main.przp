@@ -1,0 +1,9 @@
+import(collec = "std/collections", cmds = "cmds")
+
+fn main() {
+    m: collec.HashMap<str, cmds.Cmd> = cmds.build()
+    for i => 0..m.len_of() { @pf("{m.key_at(i)} - {m.val_at(i).desc}\n") }
+    c, err: !cmds.Cmd = m.get("quit")
+    if err == 0 { c.run() }
+    for k => cmds.CMDS { k.run() }
+}
