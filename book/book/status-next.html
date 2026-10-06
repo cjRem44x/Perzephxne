@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-bc13b60d.js";
+            window.path_to_searchindex_js = "searchindex-e454e8a5.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-4e58bc13.js"></script>
@@ -215,6 +215,12 @@
 </div>
 <h2 id="bugs-found-and-fixed-along-the-way"><a class="header" href="#bugs-found-and-fixed-along-the-way">Bugs Found and Fixed Along the Way</a></h2>
 <ul>
+<li>
+<p><strong>A generic type argument naming a module’s own type broke once that module was imported</strong> — a module using <code>HashMap&lt;str, Cmd&gt;</code> with its own <code>Cmd</code> had <code>Cmd</code> renamed to <code>cmds__Cmd</code> on import, but the parser had already flattened the application into the single name <code>HashMap__str__Cmd</code>, which kept the stale argument. The importer’s <code>HashMap&lt;str, cmds.Cmd&gt;</code> then named a different type (“cannot assign ‘collec__HashMap__str__cmds__Cmd’ to ‘collec__HashMap__str__Cmd’”). Fixed in <code>mangle_items</code> by renaming each generic instance’s type arguments, rebuilding its flattened name the way the parser does, and applying that rename everywhere the old name appears; imported generic instances are now also de-duplicated by name when merged, since both modules request the same one. Covered by <code>tests/project/generic_arg_across_import</code>.</p>
+</li>
+<li>
+<p><strong>Errors inside an imported file were reported against the main file</strong> — spans carried a <code>file_id</code> but nothing mapped it back to a file, so every sema/codegen error printed the main file’s name and a line from the main file’s source. Fixed with a small file registry in <code>error.c</code>: each parsed file is registered and spans report against their own file. Covered by <code>tests/project-fail/error_in_imported_file</code>.</p>
+</li>
 <li>
 <p><strong>String literals nested inside a global constant were rejected</strong> — <code>emit_const_init</code> handled <code>str</code> only as a whole top-level global, so an array or struct initializer containing one (<code>CMDS: [2]Cmd : [Cmd{.key = "help", ...}]</code>) failed with “global initializer must be a compile-time constant”, even though function references in the same initializer were already accepted. Fixed by emitting the same <code>{ ptr, i64 }</code> constant for a nested <code>EXPR_STR</code>. Covered by <code>tests/run/global_const_str_table.przp</code>.</p>
 </li>

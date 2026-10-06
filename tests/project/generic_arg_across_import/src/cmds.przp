@@ -1,0 +1,24 @@
+# A module builds HashMap<str, Cmd> with its own Cmd; the importer names
+# the same type as HashMap<str, cmds.Cmd> — both must resolve to one type.
+import(collec = "std/collections")
+
+struct Cmd {
+    desc: str,
+    run:  fn(),
+}
+
+fn terminate() { @pf("bye\n") }
+fn greet() { @pf("hello\n") }
+
+CMDS: [2]Cmd : [
+    Cmd{.desc = "Say hello", .run = greet},
+    Cmd{.desc = "Exit",      .run = terminate},
+]
+
+fn build() -> collec.HashMap<str, Cmd> {
+    m: collec.HashMap<str, Cmd> = collec.HashMap<str, Cmd>.new(collec.hash_str, collec.eq_str)
+    m.put("greet", Cmd{.desc = "Say hello", .run = greet})
+    f: fn() = terminate
+    m.put("quit", Cmd{.desc = "Exit", .run = f})
+    ret m
+}

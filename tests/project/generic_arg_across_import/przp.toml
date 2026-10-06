@@ -1,0 +1,3 @@
+[package]
+name = "generic_arg_across_import"
+version = "0.1.0"
