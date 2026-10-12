@@ -501,6 +501,67 @@ run_gl_case() {
     fi
 }
 
+# run_gui_case: an interactive GL program driven by xdotool. drive.sh
+# receives the window title (the case name) and types/clicks into it;
+# the program prints what it observed and exits on its own.
+run_gui_case() {
+    local src_dir="$1"
+    local name
+    name="$(basename "$src_dir")"
+    local bin="$TMP/bin/$name.gui"
+    local actual="$TMP/out/$name.gui.stdout"
+    local compile_err="$TMP/err/$name.gui.compile.stderr"
+    local run_err="$TMP/err/$name.gui.run.stderr"
+
+    printf 'gui   %s\n' "$name"
+    if ! PRZP_STDLIB="$STDLIB" "$PRZP" sac "$src_dir/main.przp" -lX11 -lGL -lz -o="$bin" \
+            >"$TMP/out/$name.gui.compile.stdout" 2>"$compile_err"; then
+        printf 'FAIL  %s: gui compile failed\n' "$name" >&2
+        sed -n '1,120p' "$compile_err" >&2
+        failures=$((failures + 1))
+        return
+    fi
+    DISPLAY="$X11_DISPLAY" timeout 20 "$bin" >"$actual" 2>"$run_err" &
+    local app=$!
+    DISPLAY="$X11_DISPLAY" timeout 20 bash "$src_dir/drive.sh" "$name" >/dev/null 2>&1
+    if ! wait "$app"; then
+        printf 'FAIL  %s: gui run failed\n' "$name" >&2
+        sed -n '1,120p' "$run_err" >&2
+        failures=$((failures + 1))
+        return
+    fi
+    if ! diff -u "$src_dir/stdout" "$actual"; then
+        printf 'FAIL  %s: gui stdout mismatch\n' "$name" >&2
+        failures=$((failures + 1))
+    fi
+}
+
+# run_example_demo: build examples/games/text_adventure and run its
+# self-playing --demo (no audio), comparing the printed transcript
+run_example_demo() {
+    local dir="$ROOT/examples/games/text_adventure"
+    local actual="$TMP/out/text_adventure_demo.stdout"
+    printf 'demo  text_adventure\n'
+    if ! (cd "$dir" && PRZP_STDLIB="$STDLIB" "$PRZP" build -o="$TMP/bin/text_adventure") \
+            >"$TMP/out/text_adventure.build" 2>&1; then
+        printf 'FAIL  text_adventure: build failed\n' >&2
+        sed -n '1,60p' "$TMP/out/text_adventure.build" >&2
+        failures=$((failures + 1))
+        return
+    fi
+    if ! (cd "$dir" && DISPLAY="$X11_DISPLAY" timeout 30 "$TMP/bin/text_adventure" --demo --no-audio) \
+            >"$actual" 2>"$TMP/err/text_adventure.run.stderr"; then
+        printf 'FAIL  text_adventure: demo run failed\n' >&2
+        sed -n '1,60p' "$TMP/err/text_adventure.run.stderr" >&2
+        failures=$((failures + 1))
+        return
+    fi
+    if ! diff -u "$ROOT/tests/examples/text_adventure_demo.stdout" "$actual"; then
+        printf 'FAIL  text_adventure: transcript mismatch\n' >&2
+        failures=$((failures + 1))
+    fi
+}
+
 # run_gl_video_case: run_gl_case plus ffmpeg's libavformat/libavcodec/
 # libavutil/libswscale link flags, for the one tests/gl case
 # (video_sprite) that also needs std/video — gated separately below on
@@ -1134,7 +1195,7 @@ for src in "$ROOT"/tests/run/*.przp; do
     # std_image_gif needs -lz (std/image's uncompress() extern) — run via
     # run_lz_case below instead of the plain no-extra-links case here.
     case "$(basename "$src")" in
-        std_image_gif.przp|std_audio.przp|std_audio_control.przp|std_video_decode.przp) continue ;;
+        std_image_gif.przp|std_audio.przp|std_audio_control.przp|std_audio_mixer.przp|std_video_decode.przp) continue ;;
     esac
     run_success_case "$src"
 done
@@ -1148,6 +1209,7 @@ fi
 if ldconfig -p 2>/dev/null | grep -q "libasound\.so" && ldconfig -p 2>/dev/null | grep -q "libmpg123\.so"; then
     run_audio_case "$ROOT/tests/run/std_audio.przp"
     run_audio_case "$ROOT/tests/run/std_audio_control.przp"
+    run_audio_case "$ROOT/tests/run/std_audio_mixer.przp"
 else
     printf 'skip  std_audio: libasound/libmpg123 not installed\n'
 fi
@@ -1199,6 +1261,20 @@ if run_x11_setup; then
             [ "$(basename "$dir")" = "video_sprite" ] && continue
             run_gl_case "$dir"
         done
+        if command -v xdotool >/dev/null 2>&1; then
+            for dir in "$ROOT"/tests/gui/*; do
+                [ -d "$dir" ] || continue
+                run_gui_case "$dir"
+            done
+        else
+            printf 'skip  gui tests: xdotool not installed\n'
+        fi
+        if [ "$HAVE_FFMPEG" = "1" ] && ldconfig -p 2>/dev/null | grep -q "libasound\.so" \
+                && ldconfig -p 2>/dev/null | grep -q "libmpg123\.so"; then
+            run_example_demo
+        else
+            printf 'skip  text_adventure demo: ffmpeg/ALSA/mpg123 libraries not installed\n'
+        fi
         if [ "$HAVE_FFMPEG" = "1" ]; then
             run_gl_video_case "$ROOT/tests/gl/video_sprite"
         else

@@ -1,0 +1,133 @@
+# ui — text styles, word wrap, and positioned/sized/colored text fields.
+#
+# Fonts are bitmap atlases (see tools/make_font_atlas.py at the repo root
+# to make one from any monospace TTF). A Style picks the font face, the
+# size (a scale on the atlas's glyph cells) and the color.
+
+import(gfx = "std/graphics", c = "std/collections", s = "std/str")
+
+# palette
+BG:      gfx.Color : gfx.Color{.r = 12,  .g = 14,  .b = 20,  .a = 255}
+PANEL:   gfx.Color : gfx.Color{.r = 20,  .g = 24,  .b = 32,  .a = 255}
+BORDER:  gfx.Color : gfx.Color{.r = 70,  .g = 80,  .b = 100, .a = 255}
+TEXT:    gfx.Color : gfx.Color{.r = 205, .g = 210, .b = 215, .a = 255}
+DIM:     gfx.Color : gfx.Color{.r = 120, .g = 128, .b = 140, .a = 255}
+AMBER:   gfx.Color : gfx.Color{.r = 255, .g = 190, .b = 80,  .a = 255}
+CYAN:    gfx.Color : gfx.Color{.r = 110, .g = 210, .b = 230, .a = 255}
+GREEN:   gfx.Color : gfx.Color{.r = 120, .g = 220, .b = 120, .a = 255}
+RED:     gfx.Color : gfx.Color{.r = 240, .g = 100, .b = 100, .a = 255}
+MAGENTA: gfx.Color : gfx.Color{.r = 220, .g = 140, .b = 240, .a = 255}
+
+GLYPH_W: i32 : 13
+GLYPH_H: i32 : 24
+
+struct Fonts {
+    regular: gfx.Font,
+    bold:    gfx.Font,
+}
+
+fn load_fonts() -> !Fonts {
+    r, e1: !gfx.Font = gfx.Font.load("src/assets/fonts/dejavu_mono.png", GLYPH_W, GLYPH_H, 32)
+    if e1 != 0 { ret @err(e1) }
+    b, e2: !gfx.Font = gfx.Font.load("src/assets/fonts/dejavu_mono_bold.png", GLYPH_W, GLYPH_H, 32)
+    if e2 != 0 { ret @err(e2) }
+    ret @ok(Fonts{.regular = r, .bold = b})
+}
+
+# Style: which face, how big (1.0 = the atlas's own 13x24 cells), what color
+struct Style {
+    bold:  bool,
+    scale: f32,
+    color: gfx.Color,
+}
+
+fn style(bold: bool, scale: f32, color: gfx.Color) -> Style {
+    ret Style{.bold = bold, .scale = scale, .color = color}
+}
+
+fn char_w(st: Style) -> f32 { ret @f32(GLYPH_W) * st.scale }
+fn line_h(st: Style) -> f32 { ret @f32(GLYPH_H) * st.scale }
+
+fn draw_text(fonts: *Fonts, text: str, x: f32, y: f32, st: Style) {
+    if st.bold {
+        gfx.draw_text(fonts.bold, text, x, y, st.scale, st.color)
+    } else {
+        gfx.draw_text(fonts.regular, text, x, y, st.scale, st.color)
+    }
+}
+
+# draw_frame: a filled box with a 1px border
+fn draw_frame(r: gfx.Rectangle, fill: gfx.Color, border: gfx.Color) {
+    gfx.draw_rectangle(r.x, r.y, r.w, r.h, border)
+    gfx.draw_rectangle(r.x + 1.0, r.y + 1.0, r.w - 2.0, r.h - 2.0, fill)
+}
+
+# wrap: split `text` into lines of at most `width` characters, breaking at
+# spaces (a word longer than a whole line is split). Spacing inside a line
+# and leading indentation are kept; the spaces where a line breaks are
+# dropped. Appends to `out`.
+fn wrap(text: str, width: usize, out: *c.List<str>) {
+    w: usize = width
+    if w < 1 { w = 1 }
+    line: s.StrBuf = s.StrBuf.new()
+    defer line.free_buf()
+    i: usize = 0
+    n: usize = text.len
+    first: bool = true
+    while i < n {
+        gap_start: usize = i
+        while i < n && (text.data + i).* == 32u8 { i += 1 }
+        if i >= n { break }
+        gap: usize = i - gap_start
+        start: usize = i
+        while i < n && (text.data + i).* != 32u8 { i += 1 }
+        wlen: usize = i - start
+        word: str = @str_raw(text.data + start, wlen)
+        if line.len == 0 && !first { gap = 0 }
+        if line.len > 0 && line.len + gap + wlen > w {
+            out.push(line.to_str())
+            line.clear()
+            gap = 0
+        }
+        while wlen > w {
+            if line.len > 0 {
+                out.push(line.to_str())
+                line.clear()
+            }
+            out.push(s.slice(word, 0, w))
+            word = @str_raw(word.data + w, wlen - w)
+            wlen = wlen - w
+            gap = 0
+        }
+        for k => 0..gap { line.push_byte(32u8) }
+        line.push(word)
+        first = false
+    }
+    if line.len > 0 || text.len == 0 { out.push(line.to_str()) }
+}
+
+# TextField: text placed in a rectangle with a style, word-wrapped to the
+# rectangle's width and clipped to its height
+struct TextField {
+    rect:  gfx.Rectangle,
+    style: Style,
+    text:  str,
+}
+
+fn draw_field(fonts: *Fonts, f: TextField) {
+    cols: usize = @usize(f.rect.w / char_w(f.style))
+    lines: c.List<str> = c.List<str>.new()
+    defer lines.free_list()
+    wrap(f.text, cols, &lines)
+    lh: f32 = line_h(f.style)
+    y: f32 = f.rect.y
+    for ln => lines.items() {
+        if y + lh > f.rect.y + f.rect.h { break }
+        draw_text(fonts, ln, f.rect.x, y, f.style)
+        y += lh
+    }
+    for i => 0..lines.len_of() {
+        g, ge: !str = lines.get(i)
+        @free(g.data)
+    }
+}

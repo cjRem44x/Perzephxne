@@ -1,0 +1,54 @@
+{
+  "title": "The Lantern Keep",
+  "start": "gate",
+  "intro": [
+    "Rain has stopped. The old keep looms above you, dark except for one window high in the tower.",
+    "Legend says whoever reaches that window can leave this world behind.",
+    "Type 'help' to see what you can do."
+  ],
+  "rooms": {
+    "gate": {
+      "name": "Outer Gate",
+      "media": "src/assets/gate.png",
+      "text": "You stand before the outer gate of the keep. The portcullis is rusted open just enough to squeeze through. The sky burns orange behind the battlements.",
+      "exits": { "north": "courtyard" },
+      "items": []
+    },
+    "courtyard": {
+      "name": "Courtyard",
+      "media": "src/assets/courtyard.png",
+      "text": "A quiet courtyard under a sky full of stars. An old stone well sits in the middle. A door leads east into the library; a dark hall lies to the north.",
+      "exits": { "south": "gate", "east": "library", "north": "hall" },
+      "items": ["lantern"]
+    },
+    "library": {
+      "name": "Library",
+      "media": "src/assets/library.gif",
+      "dark": true,
+      "dark_text": "It is pitch black. You can feel shelves of books around you, but you can't see a thing.",
+      "text": "Shelves of crumbling books reach up into the dark. A single candle flickers on the reading desk.",
+      "exits": { "west": "courtyard" },
+      "items": ["key"]
+    },
+    "hall": {
+      "name": "Great Hall",
+      "media": "src/assets/hall.png",
+      "text": "A long hall lit by two guttering torches. At the far end, a heavy oak door with a brass lock guards the tower stairs.",
+      "exits": { "south": "courtyard", "up": "tower" },
+      "locked": { "exit": "up", "key": "key", "text": "The oak door is locked. There must be a key somewhere." },
+      "items": []
+    },
+    "tower": {
+      "name": "Tower Top",
+      "media": "src/assets/tower.mp4",
+      "text": "At the top of the stairs, the window opens onto a swirling, impossible sky. It pulls at you gently.",
+      "exits": { "down": "hall" },
+      "ending": "You step through the window and fall upward into the light. THE END.",
+      "items": []
+    }
+  },
+  "items": {
+    "lantern": "A brass lantern, still half full of oil. It would light up a dark room.",
+    "key": "A heavy brass key, warm to the touch."
+  }
+}

@@ -315,6 +315,28 @@ static int intern_str(CG *cg, const char *val) {
 
 /* ── Type → LLVM IR string ───────────────────────────────────────────────── */
 
+/* intern_llt: a stable copy of an LLVM type string. llvm_type used to hand
+   out rotating static buffers, which callers holding a result across other
+   llvm_type calls (a call's return type while its arguments are evaluated,
+   a function's return type across its body) silently saw overwritten. */
+static const char *intern_llt(const char *s) {
+    static char **tab = NULL;
+    static size_t n = 0, cap = 0;
+    for (size_t i = 0; i < n; i++)
+        if (!strcmp(tab[i], s)) return tab[i];
+    if (n == cap) {
+        cap = cap ? cap * 2 : 64;
+        tab = realloc(tab, cap * sizeof(char *));
+        if (!tab) { perror("realloc"); exit(1); }
+    }
+    size_t len = strlen(s) + 1;
+    char *copy = malloc(len);
+    if (!copy) { perror("malloc"); exit(1); }
+    memcpy(copy, s, len);
+    tab[n++] = copy;
+    return copy;
+}
+
 static const char *llvm_type(Type *ty) {
     if (!ty) return "void";
     switch (ty->kind) {
@@ -334,46 +356,33 @@ static const char *llvm_type(Type *ty) {
         case TY_SMART_PTR: return "ptr";
         case TY_SLICE:     return "{ ptr, i64 }";
         case TY_FAILABLE: {
-            static char fbufs[8][256];
-            static int  fbi = 0;
-            int my_fslot = (fbi + 1) % 8;
-            fbi = my_fslot;
-            const char *inner_llt = llvm_type(ty->ptr.inner);
-            snprintf(fbufs[my_fslot], sizeof(fbufs[my_fslot]), "{ %s, i32 }", inner_llt);
-            return fbufs[my_fslot];
+            char buf[512];
+            snprintf(buf, sizeof(buf), "{ %s, i32 }", llvm_type(ty->ptr.inner));
+            return intern_llt(buf);
         }
         case TY_ARRAY: {
-            static char abufs[16][256];
-            static int  abi = 0;
-            int my_aslot = (abi + 1) % 16;
-            abi = my_aslot;
+            char buf[512];
             int64_t n = 0;
             if (ty->array.size && ty->array.size->kind == EXPR_INT)
                 n = (int64_t)ty->array.size->ival;
             const char *elem = ty->array.inner ? llvm_type(ty->array.inner) : "i8";
-            snprintf(abufs[my_aslot], sizeof(abufs[my_aslot]), "[%" PRId64 " x %s]", n, elem);
-            return abufs[my_aslot];
+            snprintf(buf, sizeof(buf), "[%" PRId64 " x %s]", n, elem);
+            return intern_llt(buf);
         }
         case TY_NAMED: {
-            /* Round-robin static buffers — safe for up to 8 concurrent uses */
-            static char bufs[8][128];
-            static int  bi = 0;
-            bi = (bi + 1) % 8;
-            snprintf(bufs[bi], sizeof(bufs[bi]), "%%%s", ty->named.name);
-            return bufs[bi];
+            char buf[512];
+            snprintf(buf, sizeof(buf), "%%%s", ty->named.name);
+            return intern_llt(buf);
         }
         case TY_TUPLE: {
-            static char tbufs[8][512];
-            static int  tbi = 0;
-            tbi = (tbi + 1) % 8;
-            char *buf = tbufs[tbi];
-            int pos = snprintf(buf, 512, "{ ");
+            char buf[1024];
+            int pos = snprintf(buf, sizeof(buf), "{ ");
             for (size_t i = 0; i < ty->tuple.elems.len; i++) {
-                if (i > 0) pos += snprintf(buf + pos, 512 - pos, ", ");
-                pos += snprintf(buf + pos, 512 - pos, "%s", llvm_type(ty->tuple.elems.data[i]));
+                if (i > 0) pos += snprintf(buf + pos, sizeof(buf) - pos, ", ");
+                pos += snprintf(buf + pos, sizeof(buf) - pos, "%s", llvm_type(ty->tuple.elems.data[i]));
             }
-            snprintf(buf + pos, 512 - pos, " }");
-            return buf;
+            snprintf(buf + pos, sizeof(buf) - pos, " }");
+            return intern_llt(buf);
         }
         default:           return "ptr";
     }

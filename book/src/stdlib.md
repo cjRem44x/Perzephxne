@@ -291,7 +291,7 @@ f: str = fmt.fixed(3.14159, 2)    # "3.14"
 
 ## `std/collections`
 
-A growable `Vec` of `i64` values, and a generic, insertion-ordered `HashMap<K, V>`.
+A growable `Vec` of `i64` values, generic `List<T>` (also a stack) and `Queue<T>`, and a generic, insertion-ordered `HashMap<K, V>`.
 
 ### `Vec`
 
@@ -317,6 +317,57 @@ v.push(20)
 v.push(30)
 @pf("{v.len_of()} {v.get(1)}\n")   # 3 20
 v.free_vec()
+```
+
+### `List<T>` (and stacks)
+
+A growable array of any element type. `push`/`pop`/`peek` make it a stack.
+
+| Symbol | Description |
+|---|---|
+| `List<T>.new()` | empty list |
+| `push(self, v)` | append (push onto the stack) |
+| `pop(self) -> !T` | remove and return the last element; error `1` if empty |
+| `peek(self) -> !T` | the last element; error `1` if empty |
+| `get(self, i) -> !T` / `set(self, i, v) -> bool` | read / overwrite element `i`; error `1` / `false` if out of range |
+| `insert(self, i, v) -> bool` | put `v` at index `i` (`0..len`), shifting the rest up |
+| `remove_at(self, i) -> !T` | delete element `i`, shifting the rest down |
+| `items(self) -> []T` | the elements as a slice, for `for x => list.items()`; valid until the list next grows |
+| `len_of(self)` / `is_empty(self)` / `clear(self)` | size / empty check / remove all, keeping capacity |
+| `free_list(self)` | release the memory |
+
+```
+import(c = "std/collections")
+
+struct Item { name: str, weight: i32 }
+
+inv: c.List<Item> = c.List<Item>.new()
+inv.push(Item{.name = "lamp", .weight = 2})
+inv.push(Item{.name = "key", .weight = 1})
+for it => inv.items() { @pf("{it.name} ") }    # lamp key
+
+undo: c.List<str> = c.List<str>.new()           # as a stack
+undo.push("move north")
+last, err: !str = undo.pop()                     # "move north"
+```
+
+### `Queue<T>`
+
+First-in, first-out, as a growable ring buffer: `push` adds to the back, `pop` takes from the front, both O(1).
+
+| Symbol | Description |
+|---|---|
+| `Queue<T>.new()` | empty queue |
+| `push(self, v)` | add to the back |
+| `pop(self) -> !T` / `peek(self) -> !T` | remove and return / look at the front; error `1` if empty |
+| `get(self, i) -> !T` | the `i`-th element from the front |
+| `len_of(self)` / `is_empty(self)` / `clear(self)` / `free_queue(self)` | size, empty check, remove all, release |
+
+```
+events: c.Queue<str> = c.Queue<str>.new()
+events.push("door opens")
+events.push("wind howls")
+first, e: !str = events.pop()    # "door opens"
 ```
 
 ### `HashMap<K, V>`

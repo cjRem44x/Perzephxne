@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-1dc3a998.js";
+            window.path_to_searchindex_js = "searchindex-eddecc83.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-4e58bc13.js"></script>
@@ -473,7 +473,7 @@ f: str = fmt.fixed(3.14159, 2)    # "3.14"
 @pf("{h} {p} {f}\n")
 </code></pre>
 <h2 id="stdcollections"><a class="header" href="#stdcollections"><code>std/collections</code></a></h2>
-<p>A growable <code>Vec</code> of <code>i64</code> values, and a generic, insertion-ordered <code>HashMap&lt;K, V&gt;</code>.</p>
+<p>A growable <code>Vec</code> of <code>i64</code> values, generic <code>List&lt;T&gt;</code> (also a stack) and <code>Queue&lt;T&gt;</code>, and a generic, insertion-ordered <code>HashMap&lt;K, V&gt;</code>.</p>
 <h3 id="vec"><a class="header" href="#vec"><code>Vec</code></a></h3>
 <div class="table-wrapper">
 <table>
@@ -502,6 +502,61 @@ v.push(20)
 v.push(30)
 @pf("{v.len_of()} {v.get(1)}\n")   # 3 20
 v.free_vec()
+</code></pre>
+<h3 id="listt-and-stacks"><a class="header" href="#listt-and-stacks"><code>List&lt;T&gt;</code> (and stacks)</a></h3>
+<p>A growable array of any element type. <code>push</code>/<code>pop</code>/<code>peek</code> make it a stack.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Symbol</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>List&lt;T&gt;.new()</code></td><td>empty list</td></tr>
+<tr><td><code>push(self, v)</code></td><td>append (push onto the stack)</td></tr>
+<tr><td><code>pop(self) -&gt; !T</code></td><td>remove and return the last element; error <code>1</code> if empty</td></tr>
+<tr><td><code>peek(self) -&gt; !T</code></td><td>the last element; error <code>1</code> if empty</td></tr>
+<tr><td><code>get(self, i) -&gt; !T</code> / <code>set(self, i, v) -&gt; bool</code></td><td>read / overwrite element <code>i</code>; error <code>1</code> / <code>false</code> if out of range</td></tr>
+<tr><td><code>insert(self, i, v) -&gt; bool</code></td><td>put <code>v</code> at index <code>i</code> (<code>0..len</code>), shifting the rest up</td></tr>
+<tr><td><code>remove_at(self, i) -&gt; !T</code></td><td>delete element <code>i</code>, shifting the rest down</td></tr>
+<tr><td><code>items(self) -&gt; []T</code></td><td>the elements as a slice, for <code>for x =&gt; list.items()</code>; valid until the list next grows</td></tr>
+<tr><td><code>len_of(self)</code> / <code>is_empty(self)</code> / <code>clear(self)</code></td><td>size / empty check / remove all, keeping capacity</td></tr>
+<tr><td><code>free_list(self)</code></td><td>release the memory</td></tr>
+</tbody>
+</table>
+</div>
+<pre><code>import(c = "std/collections")
+
+struct Item { name: str, weight: i32 }
+
+inv: c.List&lt;Item&gt; = c.List&lt;Item&gt;.new()
+inv.push(Item{.name = "lamp", .weight = 2})
+inv.push(Item{.name = "key", .weight = 1})
+for it =&gt; inv.items() { @pf("{it.name} ") }    # lamp key
+
+undo: c.List&lt;str&gt; = c.List&lt;str&gt;.new()           # as a stack
+undo.push("move north")
+last, err: !str = undo.pop()                     # "move north"
+</code></pre>
+<h3 id="queuet"><a class="header" href="#queuet"><code>Queue&lt;T&gt;</code></a></h3>
+<p>First-in, first-out, as a growable ring buffer: <code>push</code> adds to the back, <code>pop</code> takes from the front, both O(1).</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Symbol</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>Queue&lt;T&gt;.new()</code></td><td>empty queue</td></tr>
+<tr><td><code>push(self, v)</code></td><td>add to the back</td></tr>
+<tr><td><code>pop(self) -&gt; !T</code> / <code>peek(self) -&gt; !T</code></td><td>remove and return / look at the front; error <code>1</code> if empty</td></tr>
+<tr><td><code>get(self, i) -&gt; !T</code></td><td>the <code>i</code>-th element from the front</td></tr>
+<tr><td><code>len_of(self)</code> / <code>is_empty(self)</code> / <code>clear(self)</code> / <code>free_queue(self)</code></td><td>size, empty check, remove all, release</td></tr>
+</tbody>
+</table>
+</div>
+<pre><code>events: c.Queue&lt;str&gt; = c.Queue&lt;str&gt;.new()
+events.push("door opens")
+events.push("wind howls")
+first, e: !str = events.pop()    # "door opens"
 </code></pre>
 <h3 id="hashmapk-v"><a class="header" href="#hashmapk-v"><code>HashMap&lt;K, V&gt;</code></a></h3>
 <p>Perzephxne has no traits, so a map is given its key type’s hash and equality functions when it’s created. The module ships them for the common key types:</p>

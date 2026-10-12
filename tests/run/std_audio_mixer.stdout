@@ -1,0 +1,11 @@
+playing=2
+mix: 32767 30200 300 0 0
+playing after=0
+loop: 100 200 300 100 200 300 100
+music vol: 100 150 50
+master vol: 200 300 100
+music playing=0
+started=15 playing=15
+after stop=0
+mono->stereo @2x: 1 1 3 3 5 5 0 0
+stereo->mono: 20 -20 0

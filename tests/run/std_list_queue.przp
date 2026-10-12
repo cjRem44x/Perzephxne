@@ -1,0 +1,57 @@
+# std/collections List<T> (as list and stack) and Queue<T> (incl. wrap-around growth)
+import(c = "std/collections")
+
+struct Item {
+    name:   str,
+    weight: i32,
+}
+
+fn main() {
+    inv: c.List<Item> = c.List<Item>.new()
+    inv.push(Item{.name = "lamp", .weight = 2})
+    inv.push(Item{.name = "key", .weight = 1})
+    inv.insert(0, Item{.name = "map", .weight = 1})
+    for it => inv.items() { @pf("{it.name}:{it.weight} ") }
+    @pf("len={inv.len_of()}\n")
+    gone, ge: !Item = inv.remove_at(1)
+    top, te: !Item = inv.peek()
+    @pf("removed={gone.name} top={top.name}\n")
+    last, le: !Item = inv.get(5)
+    @pf("oob err={le} set_oob={inv.set(9, top)}\n")
+    inv.free_list()
+
+    st: c.List<str> = c.List<str>.new()
+    for w => ["north", "east", "south"] { st.push(w) }
+    while !st.is_empty() {
+        w, e: !str = st.pop()
+        @pf("{w} ")
+    }
+    x, xe: !str = st.pop()
+    @pf("| empty pop err={xe}\n")
+    st.free_list()
+
+    big: c.List<i64> = c.List<i64>.new()
+    for i => 0..100000 { big.push(@i64(i)) }
+    sum: i64 = 0
+    for v => big.items() { sum += v }
+    @pf("sum={sum}\n")
+    big.free_list()
+
+    q: c.Queue<str> = c.Queue<str>.new()
+    for i => 0..20 { q.push(@fmt("msg{i}")) }
+    for i => 0..15 {
+        m, me: !str = q.pop()
+        @free(m.data)
+    }
+    for i => 20..30 { q.push(@fmt("msg{i}")) }
+    front, fe: !str = q.peek()
+    third, the: !str = q.get(2)
+    @pf("queue len={q.len_of()} front={front} third={third}\n")
+    while !q.is_empty() {
+        m2, me2: !str = q.pop()
+        @pf("{m2} ")
+        @free(m2.data)
+    }
+    @pf("\n")
+    q.free_queue()
+}
