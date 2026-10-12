@@ -1,0 +1,16 @@
+# Method-call args are widened to the declared param type, sign-correctly.
+struct W { x: i64 }
+impl W {
+    fn set(self: *W, v: i64) { self.x = v }
+}
+fn f(v: i64) -> i64 { ret v }
+fn main() {
+    a: i64 = f(-42)
+    w: W = W{.x = 0}
+    w.set(-42)
+    n: i32 = -5
+    b: i64 = f(n)
+    w2: W = W{.x = 0}
+    w2.set(n)
+    @pf("{a} {w.x} {b} {w2.x}\n")
+}

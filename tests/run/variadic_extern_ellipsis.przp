@@ -1,0 +1,9 @@
+# `...` in an extern fn parameter list (lexed as `..` + `.`).
+extern fn snprintf(buf: *u8, n: usize, fmt: *u8, ...) -> i32
+fn main() {
+    buf: *u8 = @alo(u8, 64)
+    n: i32 = snprintf(buf, 64, "%d-%s-%.2f", 42, "x", 1.5)
+    out: str = @str_raw(buf, @usize(n))
+    @pf("{out}\n")
+    @free(buf)
+}

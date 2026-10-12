@@ -1,0 +1,46 @@
+# std/csv: quoting, CRLF, blank lines, ragged rows, header lookup, errors, TSV, writer round trip
+import(csv = "std/csv", file = "std/file")
+
+fn main() {
+    path: str = "/tmp/przp_std_csv_test.csv"
+    file.write_all(path, "name,age,city\r\nAda,36,\"London, UK\"\r\n\r\n\"Bob \"\"B\"\" Smith\",41,\"multi\nline\"\nCy,,\nshort\n")
+    t, err: !csv.Table = csv.read_file(path)
+    file.remove_file(path)
+    if err != 0 {
+        @pf("read failed: {err}\n")
+        ret
+    }
+    @pf("rows={t.num_rows()}\n")
+    for r => 0..t.num_rows() {
+        @pf("row {r} ({t.num_cols(r)}):")
+        for cell => t.row(r) { @pf(" [{cell}]") }
+        @pf("\n")
+    }
+    city, e1: !str = t.field(1, "city")
+    age, e2: !str = t.field(2, "age")
+    n, e3: !i64 = @i64(age)
+    zip, e4: !str = t.field(1, "zip")
+    oob, e5: !str = t.get(4, 1)
+    @pf("city={city} age+1={n + 1} zip_err={e4} oob_err={e5}\n")
+    t.free_table()
+
+    bad, be: !csv.Table = csv.parse("a,b\n1,\"open\n2,3\n")
+    @pf("unterminated err={be}\n")
+    miss, me: !csv.Table = csv.read_file("/nonexistent/przp_nope.csv")
+    @pf("missing err={me}\n")
+
+    tsv, te: !csv.Table = csv.parse_with("x\ty\n1\t2", 9u8)
+    v, ve: !str = tsv.get(1, 1)
+    @pf("tsv rows={tsv.num_rows()} y={v}\n")
+    tsv.free_table()
+
+    line: str = csv.format_row(["plain", "with, comma", "say \"hi\"", "two\nlines", ""])
+    @pf("{line}\n")
+    back, be2: !csv.Table = csv.parse(line)
+    for cell => back.row(0) { @pf("<{cell}>") }
+    @pf(" cols={back.num_cols(0)}\n")
+    back.free_table()
+
+    empty, ee: !csv.Table = csv.parse("")
+    @pf("empty rows={empty.num_rows()} err={ee}\n")
+}

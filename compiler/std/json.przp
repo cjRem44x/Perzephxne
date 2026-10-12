@@ -1,0 +1,746 @@
+# std/json — parse, navigate and write JSON
+#
+#   doc: json.Doc = json.parse(text)
+#   if !doc.ok() { @pf("{doc.err}\n") }
+#   name, e: !str = doc.root().get("user").get("name").as_str()
+#   doc.free_doc()
+#
+# A parsed document is a flat array of nodes; a Value is a small handle
+# (document pointer + node index) into it, valid until free_doc(). Looking
+# up a key or index that isn't there gives a Value whose kind() is
+# Kind.Missing, so lookups chain safely and the as_* call at the end
+# reports the failure.
+
+import(s = "std/str", file = "std/file")
+
+extern fn memcmp(a: *u8, b: *u8, n: usize) -> i32
+extern fn strtod(p: *u8, end: *u8) -> f64
+extern fn snprintf(buf: *u8, n: usize, fmt: *u8, ...) -> i32
+
+enum Kind { Missing, Null, Bool, Num, Str, Arr, Obj }
+
+MAX_DEPTH: i32 : 512
+
+struct Node {
+    kind:    Kind
+    b:       bool
+    num:     f64
+    s:       str     # Str value (owned)
+    key:     str     # member key when the parent is an object (owned)
+    has_key: bool
+    first:   i64     # first child, -1 if none
+    last:    i64     # last child, -1 if none
+    next:    i64     # next sibling, -1 if none
+    count:   usize   # number of children
+    kids:    usize   # where this container's children start in Doc.kids
+}
+
+struct Doc {
+    nodes:   *Node
+    len:     usize
+    cap:     usize
+    kids:    *i64    # each container's children, contiguous, for O(1) at(i)
+    nkids:   usize
+    kcap:    usize
+    err:     str     # "" when parsing succeeded
+    err_own: bool
+}
+
+struct Value {
+    doc: *Doc
+    idx: i64
+}
+
+struct Parser {
+    text:       str
+    pos:        usize
+    line:       i32
+    line_start: usize
+    depth:      i32
+    doc:        *Doc
+    failed:     bool
+}
+
+fn str_eq(a: str, b: str) -> bool {
+    if a.len != b.len { ret false }
+    if a.len == 0 { ret true }
+    ret memcmp(a.data, b.data, a.len) == 0
+}
+
+impl Doc {
+    fn add_node(self: *Doc, k: Kind) -> i64 {
+        if self.len == self.cap {
+            nc: usize = self.cap * 2 + 32
+            if self.nodes == null {
+                self.nodes = @alo(Node, nc)
+            } else {
+                self.nodes = @realo(self.nodes, Node, nc)
+            }
+            self.cap = nc
+        }
+        self.nodes[self.len] = Node{.kind = k, .b = false, .num = 0.0, .s = "",
+                                    .key = "", .has_key = false,
+                                    .first = -1, .last = -1, .next = -1, .count = 0, .kids = 0}
+        self.len = self.len + 1
+        ret @i64(self.len - 1)
+    }
+
+    fn add_child(self: *Doc, parent: i64, child: i64) {
+        p: usize = @usize(parent)
+        if self.nodes[p].first < 0 {
+            self.nodes[p].first = child
+        } else {
+            self.nodes[@usize(self.nodes[p].last)].next = child
+        }
+        self.nodes[p].last = child
+        self.nodes[p].count = self.nodes[p].count + 1
+    }
+
+    # seal: copy a finished container's children into the contiguous index
+    fn seal(self: *Doc, parent: i64) {
+        p: usize = @usize(parent)
+        n: usize = self.nodes[p].count
+        if self.nkids + n > self.kcap {
+            nc: usize = self.kcap * 2 + 64
+            while nc < self.nkids + n { nc = nc * 2 }
+            if self.kids == null {
+                self.kids = @alo(i64, nc)
+            } else {
+                self.kids = @realo(self.kids, i64, nc)
+            }
+            self.kcap = nc
+        }
+        self.nodes[p].kids = self.nkids
+        c: i64 = self.nodes[p].first
+        while c >= 0 {
+            self.kids[self.nkids] = c
+            self.nkids = self.nkids + 1
+            c = self.nodes[@usize(c)].next
+        }
+    }
+
+    # ok: true if parsing succeeded
+    fn ok(self: *Doc) -> bool {
+        ret self.err.len == 0
+    }
+
+    # root: the top-level value (Kind.Missing if parsing failed)
+    fn root(self: *Doc) -> Value {
+        if self.err.len > 0 || self.len == 0 { ret Value{.doc = self, .idx = -1} }
+        ret Value{.doc = self, .idx = 0}
+    }
+
+    # free_doc: release the document; every Value into it becomes invalid
+    fn free_doc(self: *Doc) {
+        for i => 0..self.len {
+            if self.nodes[i].kind == Kind.Str { @free(self.nodes[i].s.data) }
+            if self.nodes[i].has_key { @free(self.nodes[i].key.data) }
+        }
+        if self.nodes != null { @free(self.nodes) }
+        if self.kids != null { @free(self.kids) }
+        if self.err_own { @free(self.err.data) }
+        self.kids = null
+        self.nkids = 0
+        self.kcap = 0
+        self.nodes = null
+        self.len = 0
+        self.cap = 0
+        self.err = ""
+        self.err_own = false
+    }
+}
+
+# ── Parsing ──────────────────────────────────────────────────────────────────
+
+impl Parser {
+    fn peek(self: *Parser) -> u8 {
+        if self.pos >= self.text.len { ret 0u8 }
+        ret (self.text.data + self.pos).*
+    }
+
+    fn fail(self: *Parser, msg: str) -> i64 {
+        if !self.failed {
+            self.failed = true
+            col: usize = self.pos - self.line_start + 1
+            self.doc.err = @fmt("line {self.line}, column {col}: {msg}")
+            self.doc.err_own = true
+        }
+        ret -1
+    }
+
+    fn skip_ws(self: *Parser) {
+        while self.pos < self.text.len {
+            c: u8 = self.peek()
+            if c == 10u8 {
+                self.line = self.line + 1
+                self.line_start = self.pos + 1
+            } else if c != 32u8 && c != 9u8 && c != 13u8 {
+                ret
+            }
+            self.pos = self.pos + 1
+        }
+    }
+
+    fn literal(self: *Parser, word: str) -> bool {
+        if self.pos + word.len > self.text.len { ret false }
+        if memcmp(self.text.data + self.pos, word.data, word.len) != 0 { ret false }
+        self.pos = self.pos + word.len
+        ret true
+    }
+
+    fn hex4(self: *Parser) -> i64 {
+        if self.pos + 4 > self.text.len { ret -1 }
+        v: i64 = 0
+        for i => 0..4 {
+            c: u8 = (self.text.data + self.pos + i).*
+            d: i64 = -1
+            if c >= 48u8 && c <= 57u8 { d = @i64(c) - 48 }
+            if c >= 97u8 && c <= 102u8 { d = @i64(c) - 87 }
+            if c >= 65u8 && c <= 70u8 { d = @i64(c) - 55 }
+            if d < 0 { ret -1 }
+            v = v * 16 + d
+        }
+        self.pos = self.pos + 4
+        ret v
+    }
+
+    # parse_string: at the opening quote; returns false (after fail) on error
+    fn parse_string(self: *Parser, out: *str) -> bool {
+        self.pos = self.pos + 1
+        b: s.StrBuf = s.StrBuf.new()
+        defer b.free_buf()
+        while true {
+            if self.pos >= self.text.len {
+                self.fail("unterminated string")
+                ret false
+            }
+            c: u8 = self.peek()
+            if c == 34u8 {
+                self.pos = self.pos + 1
+                out.* = b.to_str()
+                ret true
+            }
+            if c < 32u8 {
+                self.fail("control character in string")
+                ret false
+            }
+            if c != 92u8 {
+                b.push_byte(c)
+                self.pos = self.pos + 1
+                continue
+            }
+            self.pos = self.pos + 1
+            e: u8 = self.peek()
+            self.pos = self.pos + 1
+            when e {
+                34u8  => b.push_byte(34u8)
+                92u8  => b.push_byte(92u8)
+                47u8  => b.push_byte(47u8)
+                98u8  => b.push_byte(8u8)
+                102u8 => b.push_byte(12u8)
+                110u8 => b.push_byte(10u8)
+                114u8 => b.push_byte(13u8)
+                116u8 => b.push_byte(9u8)
+                117u8 => {
+                    cp: i64 = self.hex4()
+                    if cp < 0 {
+                        self.fail("invalid \\u escape")
+                        ret false
+                    }
+                    if cp >= 0xD800 && cp <= 0xDBFF {
+                        lo: i64 = -1
+                        if self.peek() == 92u8 && self.pos + 1 < self.text.len
+                                && (self.text.data + self.pos + 1).* == 117u8 {
+                            save: usize = self.pos
+                            self.pos = self.pos + 2
+                            lo = self.hex4()
+                            if lo < 0xDC00 || lo > 0xDFFF {
+                                self.pos = save
+                                lo = -1
+                            }
+                        }
+                        if lo >= 0 {
+                            cp = 0x10000 + (cp - 0xD800) * 1024 + (lo - 0xDC00)
+                        } else {
+                            cp = 0xFFFD
+                        }
+                    } else if cp >= 0xDC00 && cp <= 0xDFFF {
+                        cp = 0xFFFD
+                    }
+                    push_utf8(&b, cp)
+                }
+                _ => {
+                    self.pos = self.pos - 1
+                    self.fail("invalid escape")
+                    ret false
+                }
+            }
+        }
+        ret false
+    }
+
+    fn parse_number(self: *Parser) -> i64 {
+        start: usize = self.pos
+        if self.peek() == 45u8 { self.pos = self.pos + 1 }
+        c: u8 = self.peek()
+        if c == 48u8 {
+            self.pos = self.pos + 1
+        } else if c >= 49u8 && c <= 57u8 {
+            while self.peek() >= 48u8 && self.peek() <= 57u8 { self.pos = self.pos + 1 }
+        } else {
+            ret self.fail("invalid number")
+        }
+        if self.peek() == 46u8 {
+            self.pos = self.pos + 1
+            if self.peek() < 48u8 || self.peek() > 57u8 { ret self.fail("invalid number") }
+            while self.peek() >= 48u8 && self.peek() <= 57u8 { self.pos = self.pos + 1 }
+        }
+        if self.peek() == 101u8 || self.peek() == 69u8 {
+            self.pos = self.pos + 1
+            if self.peek() == 43u8 || self.peek() == 45u8 { self.pos = self.pos + 1 }
+            if self.peek() < 48u8 || self.peek() > 57u8 { ret self.fail("invalid number") }
+            while self.peek() >= 48u8 && self.peek() <= 57u8 { self.pos = self.pos + 1 }
+        }
+        n: usize = self.pos - start
+        tmp: *u8 = @alo(u8, n + 1)
+        @memcpy(tmp, self.text.data + start, n)
+        term: *u8 = tmp + n
+        term.* = 0u8
+        v: f64 = strtod(tmp, null)
+        @free(tmp)
+        idx: i64 = self.doc.add_node(Kind.Num)
+        self.doc.nodes[@usize(idx)].num = v
+        ret idx
+    }
+
+    fn parse_value(self: *Parser) -> i64 {
+        self.skip_ws()
+        if self.pos >= self.text.len { ret self.fail("unexpected end of input") }
+        c: u8 = self.peek()
+        if c == 123u8 || c == 91u8 {
+            if self.depth >= MAX_DEPTH { ret self.fail("nesting too deep") }
+            self.depth = self.depth + 1
+            r: i64 = -1
+            if c == 123u8 { r = self.parse_object() } else { r = self.parse_array() }
+            self.depth = self.depth - 1
+            ret r
+        }
+        if c == 34u8 {
+            v: str = ""
+            if !self.parse_string(&v) { ret -1 }
+            idx: i64 = self.doc.add_node(Kind.Str)
+            self.doc.nodes[@usize(idx)].s = v
+            ret idx
+        }
+        if c == 45u8 || (c >= 48u8 && c <= 57u8) { ret self.parse_number() }
+        if self.literal("true") {
+            t: i64 = self.doc.add_node(Kind.Bool)
+            self.doc.nodes[@usize(t)].b = true
+            ret t
+        }
+        if self.literal("false") { ret self.doc.add_node(Kind.Bool) }
+        if self.literal("null") { ret self.doc.add_node(Kind.Null) }
+        ret self.fail("unexpected character")
+    }
+
+    fn parse_array(self: *Parser) -> i64 {
+        arr: i64 = self.doc.add_node(Kind.Arr)
+        self.pos = self.pos + 1
+        self.skip_ws()
+        if self.peek() == 93u8 {
+            self.pos = self.pos + 1
+            self.doc.seal(arr)
+            ret arr
+        }
+        while true {
+            v: i64 = self.parse_value()
+            if v < 0 { ret -1 }
+            self.doc.add_child(arr, v)
+            self.skip_ws()
+            c: u8 = self.peek()
+            if c == 44u8 {
+                self.pos = self.pos + 1
+            } else if c == 93u8 {
+                self.pos = self.pos + 1
+                self.doc.seal(arr)
+                ret arr
+            } else {
+                ret self.fail("expected ',' or ']'")
+            }
+        }
+        ret -1
+    }
+
+    fn parse_object(self: *Parser) -> i64 {
+        obj: i64 = self.doc.add_node(Kind.Obj)
+        self.pos = self.pos + 1
+        self.skip_ws()
+        if self.peek() == 125u8 {
+            self.pos = self.pos + 1
+            self.doc.seal(obj)
+            ret obj
+        }
+        while true {
+            self.skip_ws()
+            if self.peek() != 34u8 { ret self.fail("expected string key") }
+            k: str = ""
+            if !self.parse_string(&k) { ret -1 }
+            self.skip_ws()
+            if self.peek() != 58u8 {
+                @free(k.data)
+                ret self.fail("expected ':'")
+            }
+            self.pos = self.pos + 1
+            v: i64 = self.parse_value()
+            if v < 0 {
+                @free(k.data)
+                ret -1
+            }
+            self.doc.nodes[@usize(v)].key = k
+            self.doc.nodes[@usize(v)].has_key = true
+            self.doc.add_child(obj, v)
+            self.skip_ws()
+            c: u8 = self.peek()
+            if c == 44u8 {
+                self.pos = self.pos + 1
+            } else if c == 125u8 {
+                self.pos = self.pos + 1
+                self.doc.seal(obj)
+                ret obj
+            } else {
+                ret self.fail("expected ',' or '}'")
+            }
+        }
+        ret -1
+    }
+}
+
+fn push_utf8(b: *s.StrBuf, cp: i64) {
+    if cp < 0x80 {
+        b.push_byte(@u8(cp))
+    } else if cp < 0x800 {
+        b.push_byte(@u8(0xC0 | (cp >> 6)))
+        b.push_byte(@u8(0x80 | (cp & 0x3F)))
+    } else if cp < 0x10000 {
+        b.push_byte(@u8(0xE0 | (cp >> 12)))
+        b.push_byte(@u8(0x80 | ((cp >> 6) & 0x3F)))
+        b.push_byte(@u8(0x80 | (cp & 0x3F)))
+    } else {
+        b.push_byte(@u8(0xF0 | (cp >> 18)))
+        b.push_byte(@u8(0x80 | ((cp >> 12) & 0x3F)))
+        b.push_byte(@u8(0x80 | ((cp >> 6) & 0x3F)))
+        b.push_byte(@u8(0x80 | (cp & 0x3F)))
+    }
+}
+
+# parse: parse JSON text. Check doc.ok(); on failure doc.err says where
+# ("line 3, column 7: expected ':'"). Always call free_doc() when done.
+fn parse(text: str) -> Doc {
+    d: Doc = Doc{.nodes = null, .len = 0, .cap = 0, .kids = null, .nkids = 0,
+                 .kcap = 0, .err = "", .err_own = false}
+    p: Parser = Parser{.text = text, .pos = 0, .line = 1, .line_start = 0,
+                       .depth = 0, .doc = &d, .failed = false}
+    r: i64 = p.parse_value()
+    if r >= 0 {
+        p.skip_ws()
+        if p.pos < text.len { p.fail("unexpected characters after the value") }
+    }
+    ret d
+}
+
+# parse_file: read and parse a JSON file
+fn parse_file(path: str) -> Doc {
+    if !file.is_file(path) {
+        ret Doc{.nodes = null, .len = 0, .cap = 0, .kids = null, .nkids = 0,
+                .kcap = 0, .err = "cannot read file", .err_own = false}
+    }
+    text: str = file.read_all(path)
+    d: Doc = parse(text)
+    if text.len > 0 { @free(text.data) }
+    ret d
+}
+
+# ── Navigation ───────────────────────────────────────────────────────────────
+
+impl Value {
+    fn missing(self: Value) -> Value {
+        ret Value{.doc = self.doc, .idx = -1}
+    }
+
+    # kind: Kind.Missing for a lookup that found nothing
+    fn kind(self: Value) -> Kind {
+        if self.idx < 0 { ret Kind.Missing }
+        ret self.doc.nodes[@usize(self.idx)].kind
+    }
+
+    # exists: false for a lookup that found nothing
+    fn exists(self: Value) -> bool {
+        ret self.idx >= 0
+    }
+
+    fn is_null(self: Value) -> bool {
+        ret self.kind() == Kind.Null
+    }
+
+    # get: member `key` of an object (the last one, if repeated)
+    fn get(self: Value, key: str) -> Value {
+        if self.kind() != Kind.Obj { ret self.missing() }
+        found: i64 = -1
+        c: i64 = self.doc.nodes[@usize(self.idx)].first
+        while c >= 0 {
+            if str_eq(self.doc.nodes[@usize(c)].key, key) { found = c }
+            c = self.doc.nodes[@usize(c)].next
+        }
+        ret Value{.doc = self.doc, .idx = found}
+    }
+
+    # has: true if an object has member `key`
+    fn has(self: Value, key: str) -> bool {
+        ret self.get(key).exists()
+    }
+
+    # at: element i of an array (or member i of an object, in order); O(1)
+    fn at(self: Value, i: usize) -> Value {
+        k: Kind = self.kind()
+        if k != Kind.Arr && k != Kind.Obj { ret self.missing() }
+        p: usize = @usize(self.idx)
+        if i >= self.doc.nodes[p].count { ret self.missing() }
+        ret Value{.doc = self.doc, .idx = self.doc.kids[self.doc.nodes[p].kids + i]}
+    }
+
+    # len: number of elements/members of an array/object, else 0
+    fn len(self: Value) -> usize {
+        k: Kind = self.kind()
+        if k != Kind.Arr && k != Kind.Obj { ret 0 }
+        ret self.doc.nodes[@usize(self.idx)].count
+    }
+
+    # key_at: key of member i of an object ("" if not an object/out of range)
+    fn key_at(self: Value, i: usize) -> str {
+        if self.kind() != Kind.Obj { ret "" }
+        m: Value = self.at(i)
+        if !m.exists() { ret "" }
+        ret self.doc.nodes[@usize(m.idx)].key
+    }
+
+    # as_str: error 1 if not a string
+    fn as_str(self: Value) -> !str {
+        if self.kind() != Kind.Str { ret @err(1) }
+        ret @ok(self.doc.nodes[@usize(self.idx)].s)
+    }
+
+    # as_f64: error 1 if not a number
+    fn as_f64(self: Value) -> !f64 {
+        if self.kind() != Kind.Num { ret @err(1) }
+        ret @ok(self.doc.nodes[@usize(self.idx)].num)
+    }
+
+    # as_i64: error 1 if not a number, 2 if it has a fraction or doesn't fit
+    fn as_i64(self: Value) -> !i64 {
+        if self.kind() != Kind.Num { ret @err(1) }
+        f: f64 = self.doc.nodes[@usize(self.idx)].num
+        if f < -9223372036854775808.0 || f >= 9223372036854775808.0 { ret @err(2) }
+        n: i64 = @i64(f)
+        if @f64(n) != f { ret @err(2) }
+        ret @ok(n)
+    }
+
+    # as_bool: error 1 if not true/false
+    fn as_bool(self: Value) -> !bool {
+        if self.kind() != Kind.Bool { ret @err(1) }
+        ret @ok(self.doc.nodes[@usize(self.idx)].b)
+    }
+}
+
+# ── Writing ──────────────────────────────────────────────────────────────────
+
+MAX_WRITE_DEPTH: usize : 128
+
+# Writer: builds JSON text; commas and quoting are handled for you.
+#   w: json.Writer = json.Writer.new()
+#   w.begin_object()
+#   w.key("name")
+#   w.str_value("Ada")
+#   w.end_object()
+#   out: str = w.to_str()     # {"name":"Ada"}
+struct Writer {
+    buf:       s.StrBuf
+    depth:     usize
+    has_item:  [128]bool
+    after_key: bool
+}
+
+impl Writer {
+    fn new() -> Writer {
+        w: Writer = Writer{.buf = s.StrBuf.new(), .depth = 0, .after_key = false}
+        for i => 0..MAX_WRITE_DEPTH { w.has_item[i] = false }
+        ret w
+    }
+
+    fn sep(self: *Writer) {
+        if self.after_key {
+            self.after_key = false
+            ret
+        }
+        if self.depth > 0 && self.depth < MAX_WRITE_DEPTH {
+            if self.has_item[self.depth] { self.buf.push_byte(44u8) }
+            self.has_item[self.depth] = true
+        }
+    }
+
+    fn open(self: *Writer, ch: u8) {
+        self.sep()
+        self.buf.push_byte(ch)
+        self.depth = self.depth + 1
+        if self.depth < MAX_WRITE_DEPTH { self.has_item[self.depth] = false }
+    }
+
+    fn close(self: *Writer, ch: u8) {
+        if self.depth > 0 { self.depth = self.depth - 1 }
+        self.buf.push_byte(ch)
+    }
+
+    fn begin_object(self: *Writer) { self.open(123u8) }
+    fn end_object(self: *Writer)   { self.close(125u8) }
+    fn begin_array(self: *Writer)  { self.open(91u8) }
+    fn end_array(self: *Writer)    { self.close(93u8) }
+
+    # key: the next member's key (inside an object)
+    fn key(self: *Writer, k: str) {
+        self.sep()
+        write_quoted(&self.buf, k)
+        self.buf.push_byte(58u8)
+        self.after_key = true
+    }
+
+    fn str_value(self: *Writer, v: str) {
+        self.sep()
+        write_quoted(&self.buf, v)
+    }
+
+    fn num_value(self: *Writer, v: f64) {
+        self.sep()
+        write_number(&self.buf, v)
+    }
+
+    fn int_value(self: *Writer, v: i64) {
+        self.sep()
+        t: str = @fmt("{v}")
+        self.buf.push(t)
+        @free(t.data)
+    }
+
+    fn bool_value(self: *Writer, v: bool) {
+        self.sep()
+        if v { self.buf.push("true") } else { self.buf.push("false") }
+    }
+
+    fn null_value(self: *Writer) {
+        self.sep()
+        self.buf.push("null")
+    }
+
+    # value: write a parsed Value (and everything under it)
+    fn value(self: *Writer, v: Value) {
+        k: Kind = v.kind()
+        when k {
+            Kind.Missing | Kind.Null => self.null_value()
+            Kind.Bool => {
+                b, e: !bool = v.as_bool()
+                self.bool_value(b)
+            }
+            Kind.Num => {
+                f, e2: !f64 = v.as_f64()
+                self.num_value(f)
+            }
+            Kind.Str => {
+                t, e3: !str = v.as_str()
+                self.str_value(t)
+            }
+            Kind.Arr => {
+                self.begin_array()
+                for i => 0..v.len() { self.value(v.at(i)) }
+                self.end_array()
+            }
+            Kind.Obj => {
+                self.begin_object()
+                for j => 0..v.len() {
+                    self.key(v.key_at(j))
+                    self.value(v.at(j))
+                }
+                self.end_object()
+            }
+        }
+    }
+
+    # to_str: the JSON written so far (a new heap string)
+    fn to_str(self: *Writer) -> str {
+        ret self.buf.to_str()
+    }
+
+    fn free_writer(self: *Writer) {
+        self.buf.free_buf()
+    }
+}
+
+fn write_quoted(b: *s.StrBuf, v: str) {
+    b.push_byte(34u8)
+    for i => 0..v.len {
+        c: u8 = (v.data + i).*
+        if c == 34u8 {
+            b.push("\\\"")
+        } else if c == 92u8 {
+            b.push("\\\\")
+        } else if c == 10u8 {
+            b.push("\\n")
+        } else if c == 13u8 {
+            b.push("\\r")
+        } else if c == 9u8 {
+            b.push("\\t")
+        } else if c < 32u8 {
+            b.push("\\u00")
+            hex: str = "0123456789abcdef"
+            b.push_byte((hex.data + @usize(c >> 4)).*)
+            b.push_byte((hex.data + @usize(c & 15u8)).*)
+        } else {
+            b.push_byte(c)
+        }
+    }
+    b.push_byte(34u8)
+}
+
+fn write_number(b: *s.StrBuf, v: f64) {
+    # NaN/Infinity have no JSON form
+    if v - v != 0.0 {
+        b.push("null")
+        ret
+    }
+    if v < 1000000000000000.0 && v > -1000000000000000.0 && v == @f64(@i64(v)) {
+        n: i64 = @i64(v)
+        t: str = @fmt("{n}")
+        b.push(t)
+        @free(t.data)
+        ret
+    }
+    tmp: *u8 = @alo(u8, 32)
+    n2: i32 = snprintf(tmp, 32, "%.15g", v)
+    if strtod(tmp, null) != v { n2 = snprintf(tmp, 32, "%.17g", v) }
+    b.push(@str_raw(tmp, @usize(n2)))
+    @free(tmp)
+}
+
+# quote: v as a JSON string literal, quotes included
+fn quote(v: str) -> str {
+    b: s.StrBuf = s.StrBuf.new()
+    defer b.free_buf()
+    write_quoted(&b, v)
+    ret b.to_str()
+}
+
+# stringify: a parsed Value as compact JSON text
+fn stringify(v: Value) -> str {
+    w: Writer = Writer.new()
+    defer w.free_writer()
+    w.value(v)
+    ret w.to_str()
+}

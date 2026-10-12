@@ -792,7 +792,11 @@ static Type *check_expr(Sema *s, Expr *e) {
         }
 
         case EXPR_CAST: {
-            check_expr(s, e->cast.val);
+            Type *vt = check_expr(s, e->cast.val);
+            if (vt && vt->kind == TY_FAILABLE)
+                sema_error(s, e->cast.val->span,
+                           "cannot cast a failable value; destructure it first "
+                           "(v, err: !T = ...)");
             /* resolve the target type name to a primitive */
             static const struct { const char *name; TypeKind k; } prims[] = {
                 {"i8",TY_I8},{"i16",TY_I16},{"i32",TY_I32},{"i64",TY_I64},

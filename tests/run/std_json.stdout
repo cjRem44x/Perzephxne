@@ -1,0 +1,23 @@
+name=Ada "L" age=36 admin=1
+tags len=4
+  str a
+  str b
+  num 3.500000
+  null
+utf8=café 😀 bytes=10
+missing err=1 frac err=2 type err=1 has(user)=1
+key user
+key tags
+key e
+key big
+key neg
+{"user":{"name":"Ada \"L\"","age":36,"admin":true},"tags":["a","b",3.5,null],"e":"café 😀","big":1e+300,"neg":-12}
+bad: line 1, column 7: unexpected character
+bad: line 1, column 6: expected ',' or ']'
+bad: line 1, column 6: expected ':'
+bad: line 1, column 1: unexpected character
+bad: line 1, column 4: unexpected character
+bad: line 1, column 3: control character in string
+bad: line 1, column 4: unexpected characters after the value
+{"name":"Bob \"the\" builder\n","n":-42,"pi":3.14159,"tenth":0.1,"list":[true,null,{},[]]}
+roundtrip ok=1 same=1

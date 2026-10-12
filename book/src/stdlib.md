@@ -2,7 +2,7 @@
 
 The standard library ships with the compiler under `compiler/std`. Import modules with `import(alias = "std/module")`.
 
-There is no external package resolver yet. `[deps]` in `przp.toml` is reserved for future packages; the modules below are the standard library that currently ships with the language.
+The modules below ship with the compiler. Third-party code comes in through `przp add` and `[deps]` — see [Build System § Dependencies](./build-system.md#dependencies).
 
 Every module below has a runnable usage snippet. For complete projects using several modules together, see the `examples/` gallery at the repo root (also pointed to from [Getting Started](./getting-started.md#next-steps)).
 
@@ -98,6 +98,32 @@ u: str = str.to_lower(t)
 @pf("{u}\n")                             # "hello, world!"
 @assert(str.starts_with(u, "hello"))
 n: usize = str.split_count(u, ", ")      # 2 — "hello" and "world!"
+```
+
+### `StrBuf`
+
+A growable byte buffer for building a string piece by piece, instead of repeated `concat` calls (each of which allocates a new string).
+
+| Symbol | Description |
+|---|---|
+| `StrBuf.new()` | empty buffer; allocates on first push |
+| `push(self, s)` | append a string |
+| `push_byte(self, b)` | append one byte |
+| `to_str(self)` | a new heap-allocated, NUL-terminated copy of the contents; the buffer stays usable |
+| `clear(self)` | empty the buffer, keeping its capacity |
+| `free_buf(self)` | release the buffer's memory |
+
+```
+import(s = "std/str")      # not `str`: that's also the type name, so `str.StrBuf` won't parse
+
+b: s.StrBuf = s.StrBuf.new()
+for i => 0..3 {
+    if i > 0 { b.push(", ") }
+    b.push("item")
+}
+b.push_byte('!')
+out: str = b.to_str()      # "item, item, item!"
+b.free_buf()
 ```
 
 ## `std/math`
@@ -388,6 +414,135 @@ for x => [3, 1, 3, 3] {
 }
 v, e: !i64 = counts.get(3)       # 3
 ```
+
+## `std/csv`
+
+Read and write CSV ([RFC 4180](https://www.rfc-editor.org/rfc/rfc4180)): quoted fields may contain the separator, newlines, and `""` for a literal quote. Parsing is lenient where the RFC isn't needed to make sense of the input — both `\r\n` and `\n` end a row, blank lines are skipped, and rows may have different numbers of cells. Every cell is a `str`; convert with `@i64(...)` / `@f64(...)`.
+
+| Symbol | Description |
+|---|---|
+| `parse(text) -> !Table` | parse comma-separated text; on failure the error code is the line where an unterminated quote began |
+| `parse_with(text, sep) -> !Table` | same, with another separator byte (`'\t'` for TSV, `';'`, …) |
+| `read_file(path) -> !Table` | read and parse a file; error `-1` if it can't be read |
+| `num_rows(self)` | number of rows, including a header row if there is one |
+| `num_cols(self, r)` | cells in row `r`; `0` if out of range |
+| `get(self, r, c) -> !str` | cell `(r, c)`; error `1` if out of range |
+| `row(self, r) -> []str` | the cells of row `r` (empty if out of range) |
+| `col_index(self, name) -> !usize` | column of `name` in the header (row 0); error `1` if absent |
+| `field(self, r, name) -> !str` | cell in row `r` under header `name`; error `1` if either is missing |
+| `free_table(self)` | release the table and every cell |
+| `format_row(fields) -> str` | one output line, quoting only fields that need it; no trailing newline |
+| `format_row_with(fields, sep)` | same, with another separator |
+| `quote_field(v) -> str` | one field as it should appear in output |
+
+```
+import(csv = "std/csv")
+
+t, err: !csv.Table = csv.read_file("people.csv")
+if err != 0 {
+    @pf("can't read people.csv (err {err})\n")
+    ret
+}
+for r => 1..t.num_rows() {                  # row 0 is the header
+    name, e1: !str = t.field(r, "name")
+    age_s, e2: !str = t.field(r, "age")
+    age, e3: !i64 = @i64(age_s)
+    @pf("{name} is {age}\n")
+}
+t.free_table()
+
+line: str = csv.format_row(["Ada", "London, UK", "said \"hi\""])
+# Ada,"London, UK","said ""hi"""
+```
+
+## `std/json`
+
+Parse, navigate and write [JSON](https://www.json.org). A parsed `Doc` holds every value in one flat array; a `Value` is a small handle into it (valid until `free_doc()`). There's no automatic mapping onto your own structs — read the fields you need.
+
+Looking up a key or index that isn't there gives a `Value` whose `kind()` is `Kind.Missing` rather than failing on the spot, so lookups chain and only the final `as_*` call needs checking:
+
+```
+import(json = "std/json")
+
+doc: json.Doc = json.parse("{\"user\": {\"name\": \"Ada\", \"langs\": [\"en\", \"fr\"]}}")
+if !doc.ok() {
+    @pf("bad JSON: {doc.err}\n")         # e.g. "line 3, column 7: expected ':'"
+    ret
+}
+user: json.Value = doc.root().get("user")
+name, e1: !str = user.get("name").as_str()             # "Ada"
+first, e2: !str = user.get("langs").at(0).as_str()     # "en"
+age, e3: !i64 = user.get("age").as_i64()               # e3 == 1: no such key
+for i => 0..user.get("langs").len() {
+    lang, e4: !str = user.get("langs").at(i).as_str()
+    @pf("{lang}\n")
+}
+doc.free_doc()
+```
+
+| Symbol | Description |
+|---|---|
+| `parse(text) -> Doc` | parse JSON text; check `doc.ok()`, and `doc.err` on failure |
+| `parse_file(path) -> Doc` | read and parse a file |
+| `Doc.ok()` / `Doc.err` | success flag / `"line L, column C: message"` on failure |
+| `Doc.root() -> Value` | the top-level value |
+| `Doc.free_doc()` | release the document; every `Value` into it becomes invalid |
+| `Value.kind() -> Kind` | `Kind.Missing`, `Null`, `Bool`, `Num`, `Str`, `Arr` or `Obj` |
+| `Value.exists()` / `is_null()` | false for a lookup that found nothing / true for JSON `null` |
+| `Value.get(key) -> Value` | object member (the last one, if a key repeats) |
+| `Value.has(key) -> bool` | true if an object has the member |
+| `Value.at(i) -> Value` | array element `i`, or object member `i` in order; O(1) |
+| `Value.len() -> usize` | element/member count of an array/object, else `0` |
+| `Value.key_at(i) -> str` | key of object member `i` |
+| `as_str() -> !str`, `as_f64() -> !f64`, `as_bool() -> !bool` | the value; error `1` if it's another kind |
+| `as_i64() -> !i64` | error `1` if not a number, `2` if it has a fraction or doesn't fit |
+| `stringify(v) -> str` | a `Value` back to compact JSON |
+| `quote(s) -> str` | `s` as a JSON string literal, quotes included |
+
+Branch on a value's kind with `when`:
+
+```
+when v.kind() {
+    json.Kind.Str => { ... }
+    json.Kind.Num => { ... }
+    json.Kind.Arr | json.Kind.Obj => { ... }
+    _ => { ... }
+}
+```
+
+Strings returned by `as_str` and `key_at` belong to the document: they're valid until `free_doc()`, so copy any you need to keep. Strings are decoded to UTF-8, including `\u` escapes and surrogate pairs (a lone surrogate becomes U+FFFD). Numbers are `f64` — integers beyond 2^53 lose precision, as in JavaScript. Input nested deeper than 512 levels is rejected with an error rather than overflowing the stack. `get` scans an object's members, so it's linear in the object's size; `at` is constant-time.
+
+### Writing JSON
+
+`Writer` builds JSON text, inserting commas and escaping strings for you:
+
+```
+w: json.Writer = json.Writer.new()
+w.begin_object()
+w.key("name")
+w.str_value("Ada")
+w.key("langs")
+w.begin_array()
+w.str_value("en")
+w.str_value("fr")
+w.end_array()
+w.key("age")
+w.int_value(36)
+w.end_object()
+out: str = w.to_str()     # {"name":"Ada","langs":["en","fr"],"age":36}
+w.free_writer()
+```
+
+| Method | Writes |
+|---|---|
+| `begin_object()` / `end_object()` | `{` / `}` |
+| `begin_array()` / `end_array()` | `[` / `]` |
+| `key(k)` | an object member's key; the next call writes its value |
+| `str_value(s)`, `int_value(i64)`, `num_value(f64)`, `bool_value(b)`, `null_value()` | a value |
+| `value(v)` | a parsed `Value` and everything under it |
+| `to_str()` / `free_writer()` | the text so far (a new string) / release the writer |
+
+`num_value` writes integral values without a decimal point and otherwise the shortest form that reads back to the same `f64`; NaN and infinity have no JSON form and are written as `null`. Output is compact (no indentation), and nesting deeper than 127 levels isn't comma-tracked.
 
 ## `std/atomic`
 

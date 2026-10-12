@@ -1,0 +1,20 @@
+# std/str StrBuf: growth, push_byte/push, to_str copies, clear, free
+import(s = "std/str")
+fn main() {
+    b: s.StrBuf = s.StrBuf.new()
+    b.push("hello")
+    b.push_byte(44u8)
+    b.push(" world")
+    i: i32 = 0
+    while i < 100 {
+        b.push_byte(120u8)
+        i = i + 1
+    }
+    out: str = b.to_str()
+    @pf("{out.len} {s.slice(out, 0, 12)}\n")
+    b.clear()
+    b.push("x")
+    t: str = b.to_str()
+    @pf("{t} {t.len}\n")
+    b.free_buf()
+}

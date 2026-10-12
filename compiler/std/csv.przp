@@ -1,0 +1,246 @@
+# std/csv — read and write CSV (RFC 4180, with lenient parsing)
+#
+#   t, err: !csv.Table = csv.parse(text)       # err = line of an unterminated quote
+#   t, err: !csv.Table = csv.read_file(path)   # err = -1 if the file can't be read
+#   name, e: !str = t.field(1, "name")         # by header (row 0) column name
+#   line: str = csv.format_row(["a", "b, c"])  # a,"b, c"
+#
+# Every cell is a str; convert with @i64(...)/@f64(...) as needed.
+
+import(s = "std/str", file = "std/file")
+
+struct Table {
+    cells:  *str     # every cell, row after row
+    ncells: usize
+    ccap:   usize
+    starts: *usize   # index into cells where each row begins
+    nrows:  usize
+    rcap:   usize
+}
+
+impl Table {
+    fn push_cell(self: *Table, v: str) {
+        if self.ncells == self.ccap {
+            nc: usize = self.ccap * 2 + 16
+            if self.cells == null {
+                self.cells = @alo(str, nc)
+            } else {
+                self.cells = @realo(self.cells, str, nc)
+            }
+            self.ccap = nc
+        }
+        self.cells[self.ncells] = v
+        self.ncells = self.ncells + 1
+    }
+
+    fn push_row(self: *Table, start: usize) {
+        if self.nrows == self.rcap {
+            nc: usize = self.rcap * 2 + 16
+            if self.starts == null {
+                self.starts = @alo(usize, nc)
+            } else {
+                self.starts = @realo(self.starts, usize, nc)
+            }
+            self.rcap = nc
+        }
+        self.starts[self.nrows] = start
+        self.nrows = self.nrows + 1
+    }
+
+    # num_rows: number of rows, including a header row if the file has one
+    fn num_rows(self: *Table) -> usize {
+        ret self.nrows
+    }
+
+    # num_cols: number of cells in row r (rows may differ); 0 if out of range
+    fn num_cols(self: *Table, r: usize) -> usize {
+        if r >= self.nrows { ret 0 }
+        end: usize = self.ncells
+        if r + 1 < self.nrows { end = self.starts[r + 1] }
+        ret end - self.starts[r]
+    }
+
+    # get: cell (r, c); error 1 if out of range
+    fn get(self: *Table, r: usize, c: usize) -> !str {
+        if c >= self.num_cols(r) { ret @err(1) }
+        ret @ok(self.cells[self.starts[r] + c])
+    }
+
+    # row: the cells of row r as a slice (empty if out of range)
+    fn row(self: *Table, r: usize) -> []str {
+        n: usize = self.num_cols(r)
+        if n == 0 { ret @slice(self.cells, 0) }
+        ret @slice(self.cells + self.starts[r], n)
+    }
+
+    # col_index: column of `name` in the header row (row 0); error 1 if absent
+    fn col_index(self: *Table, name: str) -> !usize {
+        n: usize = self.num_cols(0)
+        for c => 0..n {
+            if s.eq(self.cells[c], name) { ret @ok(c) }
+        }
+        ret @err(1)
+    }
+
+    # field: cell in row r under header column `name`; error 1 if either is missing
+    fn field(self: *Table, r: usize, name: str) -> !str {
+        c, err: !usize = self.col_index(name)
+        if err != 0 { ret @err(1) }
+        ret self.get(r, c)
+    }
+
+    # free_table: release the table and every cell string
+    fn free_table(self: *Table) {
+        for i => 0..self.ncells { @free(self.cells[i].data) }
+        if self.cells != null { @free(self.cells) }
+        if self.starts != null { @free(self.starts) }
+        self.cells = null
+        self.starts = null
+        self.ncells = 0
+        self.ccap = 0
+        self.nrows = 0
+        self.rcap = 0
+    }
+}
+
+# parse_with: parse CSV text using `sep` as the field separator (b',' for
+# CSV, b'\t' for TSV, b';' ...). Blank lines are skipped; \r\n and \n
+# both end a row. Error code = 1-based line of an unterminated quote.
+fn parse_with(text: str, sep: u8) -> !Table {
+    t: Table = Table{.cells = null, .ncells = 0, .ccap = 0,
+                     .starts = null, .nrows = 0, .rcap = 0}
+    buf: s.StrBuf = s.StrBuf.new()
+    defer buf.free_buf()
+    in_quotes: bool = false
+    quoted: bool = false
+    quote_line: i32 = 0
+    line: i32 = 1
+    row_start: usize = 0
+    row_fields: usize = 0
+    i: usize = 0
+    n: usize = text.len
+    while i < n {
+        c: u8 = (text.data + i).*
+        if in_quotes {
+            if c == 34u8 {
+                if i + 1 < n && (text.data + i + 1).* == 34u8 {
+                    buf.push_byte(34u8)
+                    i = i + 2
+                    continue
+                }
+                in_quotes = false
+                i = i + 1
+                continue
+            }
+            if c == 10u8 { line = line + 1 }
+            buf.push_byte(c)
+            i = i + 1
+            continue
+        }
+        if c == 34u8 && buf.len == 0 && !quoted {
+            in_quotes = true
+            quoted = true
+            quote_line = line
+            i = i + 1
+            continue
+        }
+        if c == sep {
+            t.push_cell(buf.to_str())
+            buf.clear()
+            quoted = false
+            row_fields = row_fields + 1
+            i = i + 1
+            continue
+        }
+        if c == 13u8 && i + 1 < n && (text.data + i + 1).* == 10u8 {
+            i = i + 1
+            continue
+        }
+        if c == 10u8 {
+            if row_fields > 0 || buf.len > 0 || quoted {
+                t.push_cell(buf.to_str())
+                t.push_row(row_start)
+                row_start = t.ncells
+            }
+            buf.clear()
+            quoted = false
+            row_fields = 0
+            line = line + 1
+            i = i + 1
+            continue
+        }
+        buf.push_byte(c)
+        i = i + 1
+    }
+    if in_quotes {
+        t.free_table()
+        ret @err(quote_line)
+    }
+    if row_fields > 0 || buf.len > 0 || quoted {
+        t.push_cell(buf.to_str())
+        t.push_row(row_start)
+    }
+    ret @ok(t)
+}
+
+# parse: parse comma-separated text
+fn parse(text: str) -> !Table {
+    ret parse_with(text, 44u8)
+}
+
+# read_file: read and parse a CSV file; error -1 if it can't be read,
+# otherwise the line of an unterminated quote
+fn read_file(path: str) -> !Table {
+    if !file.is_file(path) { ret @err(-1) }
+    text: str = file.read_all(path)
+    t, err: !Table = parse(text)
+    if text.len > 0 { @free(text.data) }
+    if err != 0 { ret @err(err) }
+    ret @ok(t)
+}
+
+# quote_field_with: a field as it should appear in output — wrapped in
+# quotes (with inner quotes doubled) only if it contains sep, '"', CR or LF
+fn quote_field_with(v: str, sep: u8) -> str {
+    needs: bool = false
+    for i => 0..v.len {
+        c: u8 = (v.data + i).*
+        if c == sep || c == 34u8 || c == 10u8 || c == 13u8 { needs = true }
+    }
+    b: s.StrBuf = s.StrBuf.new()
+    defer b.free_buf()
+    if !needs {
+        b.push(v)
+        ret b.to_str()
+    }
+    b.push_byte(34u8)
+    for j => 0..v.len {
+        c2: u8 = (v.data + j).*
+        if c2 == 34u8 { b.push_byte(34u8) }
+        b.push_byte(c2)
+    }
+    b.push_byte(34u8)
+    ret b.to_str()
+}
+
+fn quote_field(v: str) -> str {
+    ret quote_field_with(v, 44u8)
+}
+
+# format_row_with: one output line (no trailing newline) from fields
+fn format_row_with(fields: []str, sep: u8) -> str {
+    b: s.StrBuf = s.StrBuf.new()
+    defer b.free_buf()
+    for i => 0..fields.len {
+        if i > 0 { b.push_byte(sep) }
+        q: str = quote_field_with(fields[i], sep)
+        b.push(q)
+        @free(q.data)
+    }
+    ret b.to_str()
+}
+
+# format_row: one comma-separated output line (no trailing newline)
+fn format_row(fields: []str) -> str {
+    ret format_row_with(fields, 44u8)
+}

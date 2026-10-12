@@ -3167,6 +3167,15 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                 const char *self_llt = "ptr";
                 if (!is_static) {
                     self_val = cg_expr(cg, e->call.callee->field.obj, &obj_ty);
+                    /* f().method(): a call yields the struct as an SSA value,
+                       not the alloca pointer every path below expects */
+                    if (e->call.callee->field.obj->kind == EXPR_CALL && obj_ty
+                            && obj_ty->kind == TY_NAMED && find_struct(cg, obj_ty->named.name)) {
+                        int slot = new_tmp(cg);
+                        emit_alloca(cg, "  %%t%d = alloca %%%s\n", slot, obj_ty->named.name);
+                        emit(cg, "  store %%%s %s, ptr %%t%d\n", obj_ty->named.name, self_val.buf, slot);
+                        self_val = val_tmp(slot);
+                    }
                     /* self_val.buf is the receiver's alloca ptr; if the method's
                        self param is declared by value (not *T/^T), load the
                        struct value before passing it, matching the function's
@@ -3263,6 +3272,39 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                             emit(cg, "  %%t%d = load %s, ptr %s\n",
                                  sv, llvm_type(arg_tys[i]), arg_vals[i].buf);
                             arg_vals[i] = val_tmp(sv);
+                        }
+                    }
+                    /* width coercion to the declared param type, as the plain
+                       call path does — passing an i32 to an i64 param without
+                       it left the upper bits undefined (w.set(-42) stored
+                       4294967254) */
+                    size_t cpi = i + (is_static ? 0 : 1);
+                    Type *cpty = (mfn_ty && cpi < mfn_ty->fn.params.len)
+                                 ? mfn_ty->fn.params.data[cpi] : NULL;
+                    if (cpty && arg_tys[i]) {
+                        const char *at = effective_llvm_type(cg, arg_tys[i]);
+                        const char *pt = effective_llvm_type(cg, cpty);
+                        if ((!strcmp(at,"double") && !strcmp(pt,"float")) ||
+                            (!strcmp(at,"float")  && !strcmp(pt,"double"))) {
+                            int ct = new_tmp(cg);
+                            const char *op = !strcmp(pt,"float") ? "fptrunc" : "fpext";
+                            emit(cg, "  %%t%d = %s %s %s to %s\n", ct, op, at, arg_vals[i].buf, pt);
+                            arg_vals[i] = val_tmp(ct);
+                            arg_tys[i]  = cpty;
+                        } else {
+                            int sb = 0, db = 0;
+                            if (!strcmp(at,"i8"))  sb=8; else if (!strcmp(at,"i16")) sb=16;
+                            else if (!strcmp(at,"i32")) sb=32; else if (!strcmp(at,"i64")) sb=64;
+                            if (!strcmp(pt,"i8"))  db=8; else if (!strcmp(pt,"i16")) db=16;
+                            else if (!strcmp(pt,"i32")) db=32; else if (!strcmp(pt,"i64")) db=64;
+                            if (sb && db && sb != db) {
+                                int ct = new_tmp(cg);
+                                const char *op = (db < sb) ? "trunc"
+                                               : (type_is_signed(arg_tys[i]) ? "sext" : "zext");
+                                emit(cg, "  %%t%d = %s %s %s to %s\n", ct, op, at, arg_vals[i].buf, pt);
+                                arg_vals[i] = val_tmp(ct);
+                                arg_tys[i]  = cpty;
+                            }
                         }
                     }
                 }
@@ -3594,7 +3636,7 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
             if (field_is_agg)
                 return val_tmp(fp);
             int t = new_tmp(cg);
-            emit(cg, "  %%t%d = load %s, ptr %%t%d\n", t, llvm_type(fty), fp);
+            emit(cg, "  %%t%d = load %s, ptr %%t%d\n", t, effective_llvm_type(cg, fty), fp);
             return val_tmp(t);
         }
 
@@ -4027,8 +4069,12 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                 FieldInit *fi = &e->struct_lit.fields.data[i];
                 Type *val_ty = NULL;
                 Val fv = cg_expr(cg, fi->val, &val_ty);
-                /* struct/array values are returned as alloca ptrs — load them */
-                if (val_ty && val_ty->kind == TY_NAMED && !find_enum(cg, val_ty->named.name)) {
+                /* struct/array values are returned as alloca ptrs — load them;
+                   a call result is already the value itself */
+                int is_call = fi->val->kind == EXPR_CALL;
+                if (is_call) {
+                    /* nothing to load */
+                } else if (val_ty && val_ty->kind == TY_NAMED && !find_enum(cg, val_ty->named.name)) {
                     int lv = new_tmp(cg);
                     emit(cg, "  %%t%d = load %s, ptr %s\n", lv, llvm_type(val_ty), fv.buf);
                     fv = val_tmp(lv);
@@ -5549,7 +5595,9 @@ static void cg_fn(CG *cg, Item *item) {
     }
     emit(cg, ") {\nentry:\n");
 
-    cg->cur_fn_ret    = ret_llt;
+    /* copy: llvm_type() hands out rotating static buffers, which a long
+       body's own type lookups would otherwise overwrite */
+    cg->cur_fn_ret    = arena_strdup(cg->arena, ret_llt);
     cg->cur_fn_ret_ty = item->fn.ret;
     cg->cur_label     = -1; /* -1 = entry block */
     snprintf(cg->cur_block, sizeof(cg->cur_block), "entry");
@@ -6314,7 +6362,8 @@ int codegen(Module *mod, FILE *out, int release, int test_mode, const char *out_
         emit(&cg, "%%%s = type { ", item->name);
         for (size_t j = 0; j < item->struct_.fields.len; j++) {
             if (j) emit(&cg, ", ");
-            emit(&cg, "%s", llvm_type(item->struct_.fields.data[j].ty));
+            /* effective_: an enum field is its backing integer, not %Enum */
+            emit(&cg, "%s", effective_llvm_type(&cg, item->struct_.fields.data[j].ty));
         }
         emit(&cg, " }\n");
     }
