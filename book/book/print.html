@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-255c2f85.js";
+            window.path_to_searchindex_js = "searchindex-1dc3a998.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-4e58bc13.js"></script>
@@ -2389,7 +2389,7 @@ b: i32 = @rng(i32, 1, 100)
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="standard-library"><a class="header" href="#standard-library">Standard Library</a></h1>
 <p>The standard library ships with the compiler under <code>compiler/std</code>. Import modules with <code>import(alias = "std/module")</code>.</p>
-<p>There is no external package resolver yet. <code>[deps]</code> in <code>przp.toml</code> is reserved for future packages; the modules below are the standard library that currently ships with the language.</p>
+<p>The modules below ship with the compiler. Third-party code comes in through <code>przp add</code> and <code>[deps]</code> — see <a href="#dependencies">Build System § Dependencies</a>.</p>
 <p>Every module below has a runnable usage snippet. For complete projects using several modules together, see the <code>examples/</code> gallery at the repo root (also pointed to from <a href="#next-steps">Getting Started</a>).</p>
 <h2 id="stdio"><a class="header" href="#stdio"><code>std/io</code></a></h2>
 <p>File I/O via libc. Open files are raw <code>*u8</code> handles (<code>FILE *</code>). Naming mirrors
@@ -2487,6 +2487,34 @@ u: str = str.to_lower(t)
 @pf("{u}\n")                             # "hello, world!"
 @assert(str.starts_with(u, "hello"))
 n: usize = str.split_count(u, ", ")      # 2 — "hello" and "world!"
+</code></pre>
+<h3 id="strbuf"><a class="header" href="#strbuf"><code>StrBuf</code></a></h3>
+<p>A growable byte buffer for building a string piece by piece, instead of repeated <code>concat</code> calls (each of which allocates a new string).</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Symbol</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>StrBuf.new()</code></td><td>empty buffer; allocates on first push</td></tr>
+<tr><td><code>push(self, s)</code></td><td>append a string</td></tr>
+<tr><td><code>push_byte(self, b)</code></td><td>append one byte</td></tr>
+<tr><td><code>to_str(self)</code></td><td>a new heap-allocated, NUL-terminated copy of the contents; the buffer stays usable</td></tr>
+<tr><td><code>clear(self)</code></td><td>empty the buffer, keeping its capacity</td></tr>
+<tr><td><code>free_buf(self)</code></td><td>release the buffer’s memory</td></tr>
+</tbody>
+</table>
+</div>
+<pre><code>import(s = "std/str")      # not `str`: that's also the type name, so `str.StrBuf` won't parse
+
+b: s.StrBuf = s.StrBuf.new()
+for i =&gt; 0..3 {
+    if i &gt; 0 { b.push(", ") }
+    b.push("item")
+}
+b.push_byte('!')
+out: str = b.to_str()      # "item, item, item!"
+b.free_buf()
 </code></pre>
 <h2 id="stdmath"><a class="header" href="#stdmath"><code>std/math</code></a></h2>
 <p>Math wrappers and constants.</p>
@@ -2773,6 +2801,135 @@ for x =&gt; [3, 1, 3, 3] {
 }
 v, e: !i64 = counts.get(3)       # 3
 </code></pre>
+<h2 id="stdcsv"><a class="header" href="#stdcsv"><code>std/csv</code></a></h2>
+<p>Read and write CSV (<a href="https://www.rfc-editor.org/rfc/rfc4180">RFC 4180</a>): quoted fields may contain the separator, newlines, and <code>""</code> for a literal quote. Parsing is lenient where the RFC isn’t needed to make sense of the input — both <code>\r\n</code> and <code>\n</code> end a row, blank lines are skipped, and rows may have different numbers of cells. Every cell is a <code>str</code>; convert with <code>@i64(...)</code> / <code>@f64(...)</code>.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Symbol</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>parse(text) -&gt; !Table</code></td><td>parse comma-separated text; on failure the error code is the line where an unterminated quote began</td></tr>
+<tr><td><code>parse_with(text, sep) -&gt; !Table</code></td><td>same, with another separator byte (<code>'\t'</code> for TSV, <code>';'</code>, …)</td></tr>
+<tr><td><code>read_file(path) -&gt; !Table</code></td><td>read and parse a file; error <code>-1</code> if it can’t be read</td></tr>
+<tr><td><code>num_rows(self)</code></td><td>number of rows, including a header row if there is one</td></tr>
+<tr><td><code>num_cols(self, r)</code></td><td>cells in row <code>r</code>; <code>0</code> if out of range</td></tr>
+<tr><td><code>get(self, r, c) -&gt; !str</code></td><td>cell <code>(r, c)</code>; error <code>1</code> if out of range</td></tr>
+<tr><td><code>row(self, r) -&gt; []str</code></td><td>the cells of row <code>r</code> (empty if out of range)</td></tr>
+<tr><td><code>col_index(self, name) -&gt; !usize</code></td><td>column of <code>name</code> in the header (row 0); error <code>1</code> if absent</td></tr>
+<tr><td><code>field(self, r, name) -&gt; !str</code></td><td>cell in row <code>r</code> under header <code>name</code>; error <code>1</code> if either is missing</td></tr>
+<tr><td><code>free_table(self)</code></td><td>release the table and every cell</td></tr>
+<tr><td><code>format_row(fields) -&gt; str</code></td><td>one output line, quoting only fields that need it; no trailing newline</td></tr>
+<tr><td><code>format_row_with(fields, sep)</code></td><td>same, with another separator</td></tr>
+<tr><td><code>quote_field(v) -&gt; str</code></td><td>one field as it should appear in output</td></tr>
+</tbody>
+</table>
+</div>
+<pre><code>import(csv = "std/csv")
+
+t, err: !csv.Table = csv.read_file("people.csv")
+if err != 0 {
+    @pf("can't read people.csv (err {err})\n")
+    ret
+}
+for r =&gt; 1..t.num_rows() {                  # row 0 is the header
+    name, e1: !str = t.field(r, "name")
+    age_s, e2: !str = t.field(r, "age")
+    age, e3: !i64 = @i64(age_s)
+    @pf("{name} is {age}\n")
+}
+t.free_table()
+
+line: str = csv.format_row(["Ada", "London, UK", "said \"hi\""])
+# Ada,"London, UK","said ""hi"""
+</code></pre>
+<h2 id="stdjson"><a class="header" href="#stdjson"><code>std/json</code></a></h2>
+<p>Parse, navigate and write <a href="https://www.json.org">JSON</a>. A parsed <code>Doc</code> holds every value in one flat array; a <code>Value</code> is a small handle into it (valid until <code>free_doc()</code>). There’s no automatic mapping onto your own structs — read the fields you need.</p>
+<p>Looking up a key or index that isn’t there gives a <code>Value</code> whose <code>kind()</code> is <code>Kind.Missing</code> rather than failing on the spot, so lookups chain and only the final <code>as_*</code> call needs checking:</p>
+<pre><code>import(json = "std/json")
+
+doc: json.Doc = json.parse("{\"user\": {\"name\": \"Ada\", \"langs\": [\"en\", \"fr\"]}}")
+if !doc.ok() {
+    @pf("bad JSON: {doc.err}\n")         # e.g. "line 3, column 7: expected ':'"
+    ret
+}
+user: json.Value = doc.root().get("user")
+name, e1: !str = user.get("name").as_str()             # "Ada"
+first, e2: !str = user.get("langs").at(0).as_str()     # "en"
+age, e3: !i64 = user.get("age").as_i64()               # e3 == 1: no such key
+for i =&gt; 0..user.get("langs").len() {
+    lang, e4: !str = user.get("langs").at(i).as_str()
+    @pf("{lang}\n")
+}
+doc.free_doc()
+</code></pre>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Symbol</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>parse(text) -&gt; Doc</code></td><td>parse JSON text; check <code>doc.ok()</code>, and <code>doc.err</code> on failure</td></tr>
+<tr><td><code>parse_file(path) -&gt; Doc</code></td><td>read and parse a file</td></tr>
+<tr><td><code>Doc.ok()</code> / <code>Doc.err</code></td><td>success flag / <code>"line L, column C: message"</code> on failure</td></tr>
+<tr><td><code>Doc.root() -&gt; Value</code></td><td>the top-level value</td></tr>
+<tr><td><code>Doc.free_doc()</code></td><td>release the document; every <code>Value</code> into it becomes invalid</td></tr>
+<tr><td><code>Value.kind() -&gt; Kind</code></td><td><code>Kind.Missing</code>, <code>Null</code>, <code>Bool</code>, <code>Num</code>, <code>Str</code>, <code>Arr</code> or <code>Obj</code></td></tr>
+<tr><td><code>Value.exists()</code> / <code>is_null()</code></td><td>false for a lookup that found nothing / true for JSON <code>null</code></td></tr>
+<tr><td><code>Value.get(key) -&gt; Value</code></td><td>object member (the last one, if a key repeats)</td></tr>
+<tr><td><code>Value.has(key) -&gt; bool</code></td><td>true if an object has the member</td></tr>
+<tr><td><code>Value.at(i) -&gt; Value</code></td><td>array element <code>i</code>, or object member <code>i</code> in order; O(1)</td></tr>
+<tr><td><code>Value.len() -&gt; usize</code></td><td>element/member count of an array/object, else <code>0</code></td></tr>
+<tr><td><code>Value.key_at(i) -&gt; str</code></td><td>key of object member <code>i</code></td></tr>
+<tr><td><code>as_str() -&gt; !str</code>, <code>as_f64() -&gt; !f64</code>, <code>as_bool() -&gt; !bool</code></td><td>the value; error <code>1</code> if it’s another kind</td></tr>
+<tr><td><code>as_i64() -&gt; !i64</code></td><td>error <code>1</code> if not a number, <code>2</code> if it has a fraction or doesn’t fit</td></tr>
+<tr><td><code>stringify(v) -&gt; str</code></td><td>a <code>Value</code> back to compact JSON</td></tr>
+<tr><td><code>quote(s) -&gt; str</code></td><td><code>s</code> as a JSON string literal, quotes included</td></tr>
+</tbody>
+</table>
+</div>
+<p>Branch on a value’s kind with <code>when</code>:</p>
+<pre><code>when v.kind() {
+    json.Kind.Str =&gt; { ... }
+    json.Kind.Num =&gt; { ... }
+    json.Kind.Arr | json.Kind.Obj =&gt; { ... }
+    _ =&gt; { ... }
+}
+</code></pre>
+<p>Strings returned by <code>as_str</code> and <code>key_at</code> belong to the document: they’re valid until <code>free_doc()</code>, so copy any you need to keep. Strings are decoded to UTF-8, including <code>\u</code> escapes and surrogate pairs (a lone surrogate becomes U+FFFD). Numbers are <code>f64</code> — integers beyond 2^53 lose precision, as in JavaScript. Input nested deeper than 512 levels is rejected with an error rather than overflowing the stack. <code>get</code> scans an object’s members, so it’s linear in the object’s size; <code>at</code> is constant-time.</p>
+<h3 id="writing-json"><a class="header" href="#writing-json">Writing JSON</a></h3>
+<p><code>Writer</code> builds JSON text, inserting commas and escaping strings for you:</p>
+<pre><code>w: json.Writer = json.Writer.new()
+w.begin_object()
+w.key("name")
+w.str_value("Ada")
+w.key("langs")
+w.begin_array()
+w.str_value("en")
+w.str_value("fr")
+w.end_array()
+w.key("age")
+w.int_value(36)
+w.end_object()
+out: str = w.to_str()     # {"name":"Ada","langs":["en","fr"],"age":36}
+w.free_writer()
+</code></pre>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Method</th><th>Writes</th></tr>
+</thead>
+<tbody>
+<tr><td><code>begin_object()</code> / <code>end_object()</code></td><td><code>{</code> / <code>}</code></td></tr>
+<tr><td><code>begin_array()</code> / <code>end_array()</code></td><td><code>[</code> / <code>]</code></td></tr>
+<tr><td><code>key(k)</code></td><td>an object member’s key; the next call writes its value</td></tr>
+<tr><td><code>str_value(s)</code>, <code>int_value(i64)</code>, <code>num_value(f64)</code>, <code>bool_value(b)</code>, <code>null_value()</code></td><td>a value</td></tr>
+<tr><td><code>value(v)</code></td><td>a parsed <code>Value</code> and everything under it</td></tr>
+<tr><td><code>to_str()</code> / <code>free_writer()</code></td><td>the text so far (a new string) / release the writer</td></tr>
+</tbody>
+</table>
+</div>
+<p><code>num_value</code> writes integral values without a decimal point and otherwise the shortest form that reads back to the same <code>f64</code>; NaN and infinity have no JSON form and are written as <code>null</code>. Output is compact (no indentation), and nesting deeper than 127 levels isn’t comma-tracked.</p>
 <h2 id="stdatomic"><a class="header" href="#stdatomic"><code>std/atomic</code></a></h2>
 <p>Atomic operations on <code>i64</code> values. Operations use sequentially consistent ordering.</p>
 <div class="table-wrapper">
@@ -3106,7 +3263,29 @@ r: f64 = m.sqrt(2.0)
 </table>
 </div>
 <h2 id="bugs-found-and-fixed-along-the-way"><a class="header" href="#bugs-found-and-fixed-along-the-way">Bugs Found and Fixed Along the Way</a></h2>
+<p>Found while writing <code>std/csv</code> and <code>std/json</code>:</p>
 <ul>
+<li>
+<p><strong>A struct field typed as an enum made the whole struct unusable</strong> — struct type emission and field loads used <code>llvm_type</code>, which renders an enum as <code>%Enum</code>, a type that’s never defined (enums are their backing integer), so any use failed in LLVM with “base element of getelementptr must be sized”. Fixed by using <code>effective_llvm_type</code> for struct field types and field loads. Covered by <code>tests/run/struct_enum_field.przp</code>.</p>
+</li>
+<li>
+<p><strong>A long function could return the wrong struct type</strong> — <code>cur_fn_ret</code> kept the pointer <code>llvm_type()</code> returned, which is one of 8 rotating static buffers; after enough struct-type lookups in the body, <code>ret</code> emitted another struct’s type (“defined with type ‘%A’ but expected ‘%B’”). Fixed by copying the string. Covered by <code>tests/run/long_fn_struct_return.przp</code>.</p>
+</li>
+<li>
+<p><strong>Method-call arguments weren’t converted to the parameter’s type</strong> — the plain-call path widens/narrows integer and float arguments to the declared parameter type, but method calls passed the argument at its own width, leaving an <code>i64</code> parameter’s upper bits undefined: <code>w.set(-42)</code> stored 4294967254. Fixed by applying the same coercion. Covered by <code>tests/run/method_arg_widening.przp</code>.</p>
+</li>
+<li>
+<p><strong><code>f().method()</code> didn’t compile</strong> — the same issue as <code>f().field</code> below, in method receivers: a call yields a struct value, but receiver handling expects a pointer. Fixed by spilling the call result to a stack slot. Covered by <code>tests/run/method_call_on_call_result.przp</code>.</p>
+</li>
+<li>
+<p><strong>A struct literal field initialized from a call (<code>Out{.inner = mk()}</code>) was loaded as if it were a pointer</strong> — fixed by passing call results through unchanged. Covered by <code>tests/run/struct_lit_field_from_call.przp</code>.</p>
+</li>
+<li>
+<p><strong><code>...</code> in a parameter list never parsed</strong> — the documented <code>extern fn printf(fmt: *u8, ...)</code> form failed with “expected ‘)’, got ‘.’” because <code>...</code> lexes as <code>..</code> then <code>.</code>, and only the <code>..</code> was consumed. Covered by <code>tests/run/variadic_extern_ellipsis.przp</code>.</p>
+</li>
+<li>
+<p><strong><code>@i64(...)</code> (or any numeric cast) of a failable value crashed in LLVM</strong> instead of reporting an error. Now a compile error: “cannot cast a failable value; destructure it first”. Covered by <code>tests/fail/cast_failable.przp</code>.</p>
+</li>
 <li>
 <p><strong>A generic type argument naming a module’s own type broke once that module was imported</strong> — a module using <code>HashMap&lt;str, Cmd&gt;</code> with its own <code>Cmd</code> had <code>Cmd</code> renamed to <code>cmds__Cmd</code> on import, but the parser had already flattened the application into the single name <code>HashMap__str__Cmd</code>, which kept the stale argument. The importer’s <code>HashMap&lt;str, cmds.Cmd&gt;</code> then named a different type (“cannot assign ‘collec__HashMap__str__cmds__Cmd’ to ‘collec__HashMap__str__Cmd’”). Fixed in <code>mangle_items</code> by renaming each generic instance’s type arguments, rebuilding its flattened name the way the parser does, and applying that rename everywhere the old name appears; imported generic instances are now also de-duplicated by name when merged, since both modules request the same one. Covered by <code>tests/project/generic_arg_across_import</code>.</p>
 </li>

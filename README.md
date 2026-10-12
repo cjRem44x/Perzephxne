@@ -389,7 +389,7 @@ compiler changes and `book/book` after book source changes.
 | Module | Description |
 |---|---|
 | `std/io` | print, file I/O, stdin |
-| `std/str` | string operations, split/trim/contains/replace |
+| `std/str` | string operations, split/trim/contains/replace; StrBuf builder |
 | `std/math` | sqrt, trig, pow, log, floor/ceil, constants (PI, E, …) |
 | `std/os` | env, paths, exit, process execution |
 | `std/file` | file read/write, append, exists, delete, size |
@@ -398,6 +398,8 @@ compiler changes and `book/book` after book source changes.
 | `std/atomic` | atomic load/store/add/sub/cas/inc/dec on i64 |
 | `std/sync` | mutex and read-write lock wrappers |
 | `std/crypto` | djb2, fnv1a, sha256 hashing; xor_encrypt |
+| `std/csv` | read/write CSV (quoted fields, header lookup) |
+| `std/json` | parse, navigate and write JSON |
 
 ---
 

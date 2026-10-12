@@ -1,0 +1,79 @@
+# std/json: navigation, kinds, unicode escapes, error positions, Writer, round trip
+import(json = "std/json")
+
+fn main() {
+    text: str = "{\"user\": {\"name\": \"Ada \\\"L\\\"\", \"age\": 36, \"admin\": true},\n \"tags\": [\"a\", \"b\", 3.5, null], \"e\": \"caf\\u00e9 \\ud83d\\ude00\", \"big\": 1e300, \"neg\": -12}"
+    doc: json.Doc = json.parse(text)
+    if !doc.ok() {
+        @pf("error: {doc.err}\n")
+        ret
+    }
+    name, e1: !str = doc.root().get("user").get("name").as_str()
+    age, e2: !i64 = doc.root().get("user").get("age").as_i64()
+    admin, e3: !bool = doc.root().get("user").get("admin").as_bool()
+    @pf("name={name} age={age} admin={admin}\n")
+    tags: json.Value = doc.root().get("tags")
+    @pf("tags len={tags.len()}\n")
+    for i => 0..tags.len() {
+        t: json.Value = tags.at(i)
+        when t.kind() {
+            json.Kind.Str => {
+                sv, se: !str = t.as_str()
+                @pf("  str {sv}\n")
+            }
+            json.Kind.Num => {
+                nv, ne: !f64 = t.as_f64()
+                @pf("  num {nv}\n")
+            }
+            json.Kind.Null => @pf("  null\n")
+            _ => @pf("  other\n")
+        }
+    }
+    emo, e4: !str = doc.root().get("e").as_str()
+    @pf("utf8={emo} bytes={emo.len}\n")
+    m, e5: !str = doc.root().get("nope").get("deeper").as_str()
+    x, e6: !i64 = doc.root().get("tags").at(2).as_i64()
+    y, e7: !str = doc.root().get("user").get("age").as_str()
+    hu: bool = doc.root().has("user")
+    @pf("missing err={e5} frac err={e6} type err={e7} has(user)={hu}\n")
+    r: json.Value = doc.root()
+    for k => 0..r.len() { @pf("key {r.key_at(k)}\n") }
+    out: str = json.stringify(doc.root())
+    @pf("{out}\n")
+    doc.free_doc()
+
+    bads: [7]str = ["{\"a\": }", "[1, 2", "{\"a\" 1}", "tru", "[1,]", "\"x\ny\"", "{} extra"]
+    for b => bads {
+        d: json.Doc = json.parse(b)
+        @pf("bad: {d.err}\n")
+        d.free_doc()
+    }
+
+    w: json.Writer = json.Writer.new()
+    w.begin_object()
+    w.key("name")
+    w.str_value("Bob \"the\" builder\n")
+    w.key("n")
+    w.int_value(-42)
+    w.key("pi")
+    w.num_value(3.14159)
+    w.key("tenth")
+    w.num_value(0.1)
+    w.key("list")
+    w.begin_array()
+    w.bool_value(true)
+    w.null_value()
+    w.begin_object()
+    w.end_object()
+    w.begin_array()
+    w.end_array()
+    w.end_array()
+    w.end_object()
+    s: str = w.to_str()
+    @pf("{s}\n")
+    w.free_writer()
+    d2: json.Doc = json.parse(s)
+    rt: str = json.stringify(d2.root())
+    @pf("roundtrip ok={d2.ok()} same={rt == s}\n")
+    d2.free_doc()
+}

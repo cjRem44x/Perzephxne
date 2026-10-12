@@ -1,0 +1,25 @@
+# f().method(): a struct returned by a call can be a method receiver,
+# including chained calls and value receivers.
+struct D { vals: [4]i32 }
+struct V { d: *D, i: i64 }
+impl V {
+    fn next(self: V) -> V { ret V{.d = self.d, .i = self.i + 1} }
+    fn val(self: V) -> !i32 {
+        if self.i < 0 || self.i > 3 { ret @err(1) }
+        ret @ok(self.d.vals[@usize(self.i)])
+    }
+    fn bump(self: *V) -> i64 {
+        self.i = self.i + 10
+        ret self.i
+    }
+}
+impl D {
+    fn root(self: *D) -> V { ret V{.d = self, .i = 0} }
+}
+fn main() {
+    d: D = D{.vals = [10, 20, 30, 40]}
+    x, e: !i32 = d.root().next().next().val()
+    y, e2: !i32 = d.root().next().next().next().next().val()
+    b: i64 = d.root().next().bump()
+    @pf("{x} {e} {e2} {b}\n")
+}

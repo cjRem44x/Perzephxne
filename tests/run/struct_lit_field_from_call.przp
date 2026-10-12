@@ -1,0 +1,8 @@
+# A struct literal field initialized from a struct-returning call.
+struct In { a: i64, b: str }
+struct Out { inner: In, n: i32 }
+fn mk(a: i64) -> In { ret In{.a = a, .b = "made"} }
+fn main() {
+    o: Out = Out{.inner = mk(7), .n = 3}
+    @pf("{o.inner.a} {o.inner.b} {o.n}\n")
+}

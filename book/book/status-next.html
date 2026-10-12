@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-255c2f85.js";
+            window.path_to_searchindex_js = "searchindex-1dc3a998.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-4e58bc13.js"></script>
@@ -214,7 +214,29 @@
 </table>
 </div>
 <h2 id="bugs-found-and-fixed-along-the-way"><a class="header" href="#bugs-found-and-fixed-along-the-way">Bugs Found and Fixed Along the Way</a></h2>
+<p>Found while writing <code>std/csv</code> and <code>std/json</code>:</p>
 <ul>
+<li>
+<p><strong>A struct field typed as an enum made the whole struct unusable</strong> — struct type emission and field loads used <code>llvm_type</code>, which renders an enum as <code>%Enum</code>, a type that’s never defined (enums are their backing integer), so any use failed in LLVM with “base element of getelementptr must be sized”. Fixed by using <code>effective_llvm_type</code> for struct field types and field loads. Covered by <code>tests/run/struct_enum_field.przp</code>.</p>
+</li>
+<li>
+<p><strong>A long function could return the wrong struct type</strong> — <code>cur_fn_ret</code> kept the pointer <code>llvm_type()</code> returned, which is one of 8 rotating static buffers; after enough struct-type lookups in the body, <code>ret</code> emitted another struct’s type (“defined with type ‘%A’ but expected ‘%B’”). Fixed by copying the string. Covered by <code>tests/run/long_fn_struct_return.przp</code>.</p>
+</li>
+<li>
+<p><strong>Method-call arguments weren’t converted to the parameter’s type</strong> — the plain-call path widens/narrows integer and float arguments to the declared parameter type, but method calls passed the argument at its own width, leaving an <code>i64</code> parameter’s upper bits undefined: <code>w.set(-42)</code> stored 4294967254. Fixed by applying the same coercion. Covered by <code>tests/run/method_arg_widening.przp</code>.</p>
+</li>
+<li>
+<p><strong><code>f().method()</code> didn’t compile</strong> — the same issue as <code>f().field</code> below, in method receivers: a call yields a struct value, but receiver handling expects a pointer. Fixed by spilling the call result to a stack slot. Covered by <code>tests/run/method_call_on_call_result.przp</code>.</p>
+</li>
+<li>
+<p><strong>A struct literal field initialized from a call (<code>Out{.inner = mk()}</code>) was loaded as if it were a pointer</strong> — fixed by passing call results through unchanged. Covered by <code>tests/run/struct_lit_field_from_call.przp</code>.</p>
+</li>
+<li>
+<p><strong><code>...</code> in a parameter list never parsed</strong> — the documented <code>extern fn printf(fmt: *u8, ...)</code> form failed with “expected ‘)’, got ‘.’” because <code>...</code> lexes as <code>..</code> then <code>.</code>, and only the <code>..</code> was consumed. Covered by <code>tests/run/variadic_extern_ellipsis.przp</code>.</p>
+</li>
+<li>
+<p><strong><code>@i64(...)</code> (or any numeric cast) of a failable value crashed in LLVM</strong> instead of reporting an error. Now a compile error: “cannot cast a failable value; destructure it first”. Covered by <code>tests/fail/cast_failable.przp</code>.</p>
+</li>
 <li>
 <p><strong>A generic type argument naming a module’s own type broke once that module was imported</strong> — a module using <code>HashMap&lt;str, Cmd&gt;</code> with its own <code>Cmd</code> had <code>Cmd</code> renamed to <code>cmds__Cmd</code> on import, but the parser had already flattened the application into the single name <code>HashMap__str__Cmd</code>, which kept the stale argument. The importer’s <code>HashMap&lt;str, cmds.Cmd&gt;</code> then named a different type (“cannot assign ‘collec__HashMap__str__cmds__Cmd’ to ‘collec__HashMap__str__Cmd’”). Fixed in <code>mangle_items</code> by renaming each generic instance’s type arguments, rebuilding its flattened name the way the parser does, and applying that rename everywhere the old name appears; imported generic instances are now also de-duplicated by name when merged, since both modules request the same one. Covered by <code>tests/project/generic_arg_across_import</code>.</p>
 </li>

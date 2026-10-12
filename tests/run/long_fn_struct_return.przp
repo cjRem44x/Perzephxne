@@ -1,0 +1,20 @@
+# A long body's own struct-type lookups must not overwrite the function's
+# remembered return type (llvm_type hands out rotating static buffers).
+struct A { x: i64 }
+struct B { y: i64 }
+fn make(n: i64) -> A {
+    b1: B = B{.y = 1}
+    b2: B = B{.y = 2}
+    b3: B = B{.y = 3}
+    b4: B = B{.y = 4}
+    b5: B = B{.y = 5}
+    b6: B = B{.y = 6}
+    b7: B = B{.y = 7}
+    b8: B = B{.y = 8}
+    b9: B = B{.y = 9}
+    ret A{.x = n + b1.y + b2.y + b3.y + b4.y + b5.y + b6.y + b7.y + b8.y + b9.y}
+}
+fn main() {
+    a: A = make(100)
+    @pf("{a.x}\n")
+}

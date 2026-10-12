@@ -255,3 +255,67 @@ fn is_alpha_str(s: str) -> bool {
     }
     ret true
 }
+
+# ── StrBuf ───────────────────────────────────────────────────────────────────
+# Growable byte buffer for building a string piece by piece.
+
+struct StrBuf {
+    data: *u8
+    len:  usize
+    cap:  usize
+}
+
+impl StrBuf {
+    # new: empty buffer (allocates on first push)
+    fn new() -> StrBuf {
+        ret StrBuf{.data = null, .len = 0, .cap = 0}
+    }
+
+    # reserve: ensure room for n more bytes plus a trailing NUL
+    fn reserve(self: *StrBuf, n: usize) {
+        if self.len + n + 1 <= self.cap { ret }
+        nc: usize = self.cap * 2 + 32
+        while nc < self.len + n + 1 { nc = nc * 2 }
+        self.data = realloc(self.data, nc)
+        self.cap = nc
+    }
+
+    # push_byte: append one byte
+    fn push_byte(self: *StrBuf, b: u8) {
+        self.reserve(1)
+        p: *u8 = self.data + self.len
+        p.* = b
+        self.len = self.len + 1
+    }
+
+    # push: append a string
+    fn push(self: *StrBuf, s: str) {
+        if s.len == 0 { ret }
+        self.reserve(s.len)
+        memcpy(self.data + self.len, s.data, s.len)
+        self.len = self.len + s.len
+    }
+
+    # to_str: a new heap-allocated, NUL-terminated copy of the contents;
+    # the buffer stays usable
+    fn to_str(self: *StrBuf) -> str {
+        buf: *u8 = malloc(self.len + 1)
+        if self.len > 0 { memcpy(buf, self.data, self.len) }
+        end: *u8 = buf + self.len
+        end.* = 0u8
+        ret @str_raw(buf, self.len)
+    }
+
+    # clear: empty the buffer, keeping its capacity
+    fn clear(self: *StrBuf) {
+        self.len = 0
+    }
+
+    # free_buf: release the buffer's memory
+    fn free_buf(self: *StrBuf) {
+        if self.data != null { @free(self.data) }
+        self.data = null
+        self.len = 0
+        self.cap = 0
+    }
+}

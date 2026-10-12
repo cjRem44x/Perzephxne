@@ -1,0 +1,4 @@
+fn f() -> !str { ret @ok("12") }
+fn main() {
+    n: i64 = @i64(f())
+}

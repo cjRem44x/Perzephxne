@@ -1,0 +1,28 @@
+# Enum-typed struct fields: the struct's LLVM type and field loads use the
+# enum's backing integer, not an undefined %Enum type.
+enum Kind { A, B, C }
+struct Node {
+    kind: Kind
+    x: i64
+}
+fn mk(k: Kind) -> Node { ret Node{.kind = k, .x = 1} }
+fn main() {
+    ns: *Node = @alo(Node, 3)
+    ns[0] = Node{.kind = Kind.B, .x = 7}
+    ns[1] = mk(Kind.C)
+    ns[1].kind = Kind.A
+    n: Node = Node{.kind = Kind.C, .x = 2}
+    n.kind = Kind.B
+    k: Kind = ns[0].kind
+    if k == Kind.B { @pf("b ok\n") }
+    if ns[1].kind == Kind.A { @pf("a ok\n") }
+    if n.kind == Kind.B { @pf("n ok\n") }
+    when ns[0].kind {
+        Kind.B => @pf("when ok\n")
+        _ => @pf("when bad\n")
+    }
+    p: *Node = &n
+    if p.kind == Kind.B { @pf("ptr ok\n") }
+    if mk(Kind.C).kind == Kind.C { @pf("call ok\n") }
+    @free(ns)
+}

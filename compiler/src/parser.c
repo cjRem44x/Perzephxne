@@ -2022,7 +2022,8 @@ static Item *parse_item(Parser *p) {
         int variadic = 0;
         while (!check(p, TOK_RPAREN) && !check(p, TOK_EOF)) {
             if (cur(p).kind == TOK_DOTDOT || cur(p).kind == TOK_DOTDOTEQ) {
-                variadic = 1; advance(p); break;
+                /* `...` lexes as `..` + `.` */
+                variadic = 1; advance(p); eat(p, TOK_DOT); break;
             }
             const char *pn = "_";
             if (check(p, TOK_IDENT) && check2(p, TOK_COLON)) {
@@ -2108,7 +2109,7 @@ static Item *parse_item(Parser *p) {
         ParamList params = {0};
         int variadic = 0;
         while (!check(p, TOK_RPAREN) && !check(p, TOK_EOF)) {
-            if (cur(p).kind == TOK_DOTDOT) { variadic = 1; advance(p); break; }
+            if (cur(p).kind == TOK_DOTDOT) { variadic = 1; advance(p); eat(p, TOK_DOT); break; }
             const char *pn = expect(p, TOK_IDENT).sval;
             Type *pt = NULL;
             /* bare 'self' param: no type annotation — sema fills it in from impl context */
