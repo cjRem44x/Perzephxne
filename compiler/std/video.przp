@@ -349,6 +349,12 @@ impl VideoSprite {
         gl.draw_textured_rect(self.tex_id, pos.x, pos.y, @f32(self.video.width), @f32(self.video.height))
     }
 
+    # draw_scaled: the current frame stretched to fill `dest`
+    # (see gfx.fit_rect to keep the aspect ratio)
+    fn draw_scaled(self, dest: gfx.Rectangle) {
+        gl.draw_textured_rect(self.tex_id, dest.x, dest.y, dest.w, dest.h)
+    }
+
     fn width(self) -> i32 { ret self.video.width }
     fn height(self) -> i32 { ret self.video.height }
 

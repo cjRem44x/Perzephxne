@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-1dc3a998.js";
+            window.path_to_searchindex_js = "searchindex-eddecc83.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-4e58bc13.js"></script>
@@ -213,7 +213,31 @@
 </tbody>
 </table>
 </div>
+<h2 id="building-a-text-based-game"><a class="header" href="#building-a-text-based-game">Building a Text-Based Game</a></h2>
+<p><code>examples/games/text_adventure</code> is the reference for this kind of project: a terminal-style window with typed input, command history and scrollback; text in two font faces at several sizes and colors; PNG, GIF and video room pictures scaled into a panel; looping background music under sound effects; and the world loaded from JSON into <code>HashMap</code>/<code>List</code> structures. What it relies on, and what’s still missing:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Need</th><th>Status</th></tr>
+</thead>
+<tbody>
+<tr><td>Window, resize, fullscreen</td><td><code>std/graphics</code> <code>Window</code></td></tr>
+<tr><td>Typed text input</td><td><code>get_char_pressed</code> (Shift/Caps applied), <code>is_key_pressed</code> (with auto-repeat), Backspace/Tab/Delete/Home/End/PageUp/PageDown/digits/Shift/Ctrl keys, mouse wheel</td></tr>
+<tr><td>Text: position, size, color, typeface</td><td><code>draw_text</code> with a scale and tint; one bitmap atlas per typeface, made from any monospace TTF with <code>tools/make_font_atlas.py</code>. No proportional fonts or kerning; no TTF at runtime</td></tr>
+<tr><td>Word wrap, text boxes</td><td>in the example’s <code>ui.przp</code> (<code>wrap</code>, <code>TextField</code>) — not in the standard library yet</td></tr>
+<tr><td>Images / GIFs / video</td><td>PNG (<code>Texture</code>), GIF (<code>AnimatedSprite</code>), MP4 etc. (<code>VideoSprite</code>, video only — no audio track); all scalable with <code>draw_scaled</code>/<code>draw_texture_scaled</code> and <code>fit_rect</code>. No JPEG</td></tr>
+<tr><td>Music and sound</td><td><code>std/audio</code>: MP3 only; 15 mixed effects plus a looping music voice, per-music and master volume. No streaming (whole file is decoded into memory), no per-effect volume or panning</td></tr>
+<tr><td>Data structures</td><td><code>List&lt;T&gt;</code> (stack), <code>Queue&lt;T&gt;</code>, <code>HashMap&lt;K, V&gt;</code>, <code>StrBuf</code>, <code>std/json</code>, <code>std/csv</code></td></tr>
+<tr><td>Clipboard, mouse text selection</td><td>not available</td></tr>
+<tr><td>Saving games</td><td><code>std/file</code> + <code>std/json</code>’s <code>Writer</code>; no binary serialization helpers</td></tr>
+</tbody>
+</table>
+</div>
 <h2 id="bugs-found-and-fixed-along-the-way"><a class="header" href="#bugs-found-and-fixed-along-the-way">Bugs Found and Fixed Along the Way</a></h2>
+<p>Found while building <code>examples/games/text_adventure</code>:</p>
+<ul>
+<li><strong>A call’s return type could be emitted as the wrong struct</strong> — <code>llvm_type()</code> returned strings from small rotating static buffers; a call computed its return type, then evaluating its arguments made enough further <code>llvm_type()</code> calls to overwrite it (<code>call %gfx__Rectangle @term__new(...)</code> for a function returning a <code>Terminal</code>). The earlier <code>cur_fn_ret</code> fix below was one instance of the same hazard. Fixed at the root: <code>llvm_type</code> now interns every type string, so a result stays valid for the whole compile.</li>
+</ul>
 <p>Found while writing <code>std/csv</code> and <code>std/json</code>:</p>
 <ul>
 <li>

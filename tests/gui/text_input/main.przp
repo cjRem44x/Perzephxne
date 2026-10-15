@@ -1,0 +1,30 @@
+# get_char_pressed (Shift applied), is_key_pressed (Backspace/Enter), and
+# the mouse wheel, driven by tests/gui/text_input/drive.sh.
+import(gfx = "std/graphics", s = "std/str")
+
+fn main() {
+    w: gfx.Window = gfx.Window.open("text_input", 320, 200)
+    line: s.StrBuf = s.StrBuf.new()
+    backspaces: i32 = 0
+    wheel: f32 = 0.0
+    while !w.should_close() {
+        gfx.begin_drawing()
+        gfx.clear_background(gfx.BLACK)
+        c: i32 = gfx.get_char_pressed()
+        while c != 0 {
+            line.push_byte(@u8(c))
+            c = gfx.get_char_pressed()
+        }
+        wheel += gfx.get_mouse_wheel_move()
+        if gfx.is_key_pressed(gfx.Key.Backspace) {
+            backspaces += 1
+            if line.len > 0 { line.len -= 1 }
+        }
+        if gfx.is_key_pressed(gfx.Key.Enter) {
+            out: str = line.to_str()
+            @pf("typed=[{out}] backspaces={backspaces} wheel={wheel}\n")
+            ret
+        }
+        gfx.end_drawing()
+    }
+}

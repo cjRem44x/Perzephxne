@@ -1,6 +1,6 @@
 # Graphics — Design Sketch (Layers 1-2 Implemented, `gdev` 2D Core In Progress)
 
-> **Layer 1, layer 2's 2D surface (including MP4 video decode via `std/video`), and `gdev`'s 2D core (including basic audio) are now real; 3D and `guix` remain a plan.** This is an architecture sketch — written to guide implementation — for a future media stack in the spirit of [raylib](https://www.raylib.com/): simple enough for a weekend game, capable enough for a native GUI app. **This is not a raylib binding.** The plan is to write Perzephxne's own renderer and windowing layer from scratch, on raw platform APIs, and shape its call-level ergonomics after raylib's — because raylib's API is a genuinely good design, not because the library itself is a dependency worth taking on. Every other chapter in this book documents the compiler as it is; this one documents a plan, with a growing exception: `std/graphics/window` (open/close, resize, keyboard/mouse input), the backend contract, `std/graphics/gl` (context setup, clear/present, 2D immediate-mode drawing, texture upload, and 2D camera transforms), `std/image` (PNG and GIF decoding), `std/audio` (MP3 decoding, ALSA PCM playback), `std/video` (MP4/etc video decode via ffmpeg, plus a GL-texture `VideoSprite`), `std/graphics` itself (window lifecycle, input queries, `Color`, `draw_rectangle`/`draw_circle`/`draw_line`, `Texture`/`draw_texture`/`draw_texture_rec`, `Vector2`/`Rectangle`), `std/graphics`'s own `Font`/`draw_text` (a monospace bitmap font, not real text layout), and `std/gdev`'s 2D core (frame timing, `Sprite`, `AnimatedSprite`, `Camera2D`, collision checks) are real, shipped, and regression-tested — see their sections below. `gdev`'s 3D pieces, `guix`, and `gmed`'s own timeline/project model and encode/export are unbuilt; real text *layout* (proportional spacing, line wrapping, kerning) is still open, needed by `guix`, not by anything above.
+> **Layer 1, layer 2's 2D surface (including MP4 video decode via `std/video`), and `gdev`'s 2D core (including mixed audio and keyboard text input) are now real; 3D and `guix` remain a plan.** This is an architecture sketch — written to guide implementation — for a future media stack in the spirit of [raylib](https://www.raylib.com/): simple enough for a weekend game, capable enough for a native GUI app. **This is not a raylib binding.** The plan is to write Perzephxne's own renderer and windowing layer from scratch, on raw platform APIs, and shape its call-level ergonomics after raylib's — because raylib's API is a genuinely good design, not because the library itself is a dependency worth taking on. Every other chapter in this book documents the compiler as it is; this one documents a plan, with a growing exception: `std/graphics/window` (open/close, resize, keyboard/mouse input), the backend contract, `std/graphics/gl` (context setup, clear/present, 2D immediate-mode drawing, texture upload, and 2D camera transforms), `std/image` (PNG and GIF decoding), `std/audio` (MP3 decoding, ALSA PCM playback), `std/video` (MP4/etc video decode via ffmpeg, plus a GL-texture `VideoSprite`), `std/graphics` itself (window lifecycle, input queries, `Color`, `draw_rectangle`/`draw_circle`/`draw_line`, `Texture`/`draw_texture`/`draw_texture_rec`, `Vector2`/`Rectangle`), `std/graphics`'s own `Font`/`draw_text` (a monospace bitmap font, not real text layout), and `std/gdev`'s 2D core (frame timing, `Sprite`, `AnimatedSprite`, `Camera2D`, collision checks) are real, shipped, and regression-tested — see their sections below. `gdev`'s 3D pieces, `guix`, and `gmed`'s own timeline/project model and encode/export are unbuilt; real text *layout* (proportional spacing, line wrapping, kerning) is still open, needed by `guix`, not by anything above.
 
 The stack splits into purpose-specific libraries built on one shared foundation:
 
@@ -210,7 +210,9 @@ These call directly through GL, not through `Backend` — `Backend` has no submi
 struct Color { r: u8, g: u8, b: u8, a: u8 }
 RAYWHITE: Color : Color{.r=245, .g=245, .b=245, .a=255}   # + BLACK, WHITE, RED, GREEN, BLUE, YELLOW
 
-enum Key => i32 { Space = 0, Enter = 1, Escape = 2, Up = 3, Down = 4, Left = 5, Right = 6, A = 7, /* ...Z = 32 */ }
+enum Key => i32 { Space, Enter, Escape, Up, Down, Left, Right, A, /* ...Z, */
+                  Backspace, Tab, Delete, Home, End, PageUp, PageDown,
+                  Num0, /* ...Num9, */ LeftShift, RightShift, LeftCtrl, RightCtrl }
 enum MouseButton => i32 { Left = 0, Right = 1, Middle = 2 }
 enum WindowFlag => u32 { Resizable = 1, Fullscreen = 2 }   # bits for Window.configs
 
@@ -227,7 +229,10 @@ impl Window {
     fn close(self)
 }
 
-fn is_key_down(k: Key) -> bool
+fn is_key_down(k: Key) -> bool         # held right now
+fn is_key_pressed(k: Key) -> bool      # went down this frame (and on each keyboard auto-repeat)
+fn get_char_pressed() -> i32           # next typed character this frame, Shift/Caps applied; 0 = none
+fn get_mouse_wheel_move() -> f32       # wheel notches this frame, + = up
 fn is_mouse_button_down(b: MouseButton) -> bool
 fn mouse_position() -> (f32, f32)
 
@@ -239,7 +244,19 @@ fn draw_circle(x: f32, y: f32, radius: f32, c: Color)
 fn draw_line(x1: f32, y1: f32, x2: f32, y2: f32, c: Color)
 ```
 
-Single-window model, deliberately (like raylib): `Window.open` sets one module-level "current window" state; every other function operates on it implicitly, with no handle threaded through every call. A freshly opened window resizes freely (X11's own default — no size hints are set until one of these is called); `set_resizable(false)` locks it to whatever size it happened to be at that moment, `set_min_size`/`set_max_size` bound it while resizable, and all three go through one `apply_size_hints` that pushes a fresh `XSizeHints` (`PMinSize`/`PMaxSize`) via `XSetWMNormalHints` — X11 hints replace the whole struct rather than accumulating, so it's recomputed from `GfxState` on every call, not patched in place. Toggling `set_resizable(false)` then back to `(true)` restores whatever min/max was configured before, since the fixed-size lock never overwrites `STATE.min_w`/etc., it just overrides them while inactive. Input is sampled once per frame inside `end_drawing` (see `poll_events` in `compiler/std/graphics.przp`) — key/mouse state read anywhere in a frame reflects exactly what was true when that frame's events were drained, not a live read racing the event queue. A `KeyPress`/`KeyRelease` event's raw X11 `KeySym` is mapped to a `Key` by `keysym_to_key`, tested directly against hardcoded `KeySym` constants from `X11/keysymdef.h` (`tests/gl/graphics_layer2`) rather than through a real key event, since the actual `KeySym` a keycode produces depends on the test machine's keyboard layout.
+Single-window model, deliberately (like raylib): `Window.open` sets one module-level "current window" state; every other function operates on it implicitly, with no handle threaded through every call. A freshly opened window resizes freely (X11's own default — no size hints are set until one of these is called); `set_resizable(false)` locks it to whatever size it happened to be at that moment, `set_min_size`/`set_max_size` bound it while resizable, and all three go through one `apply_size_hints` that pushes a fresh `XSizeHints` (`PMinSize`/`PMaxSize`) via `XSetWMNormalHints` — X11 hints replace the whole struct rather than accumulating, so it's recomputed from `GfxState` on every call, not patched in place. Toggling `set_resizable(false)` then back to `(true)` restores whatever min/max was configured before, since the fixed-size lock never overwrites `STATE.min_w`/etc., it just overrides them while inactive. Input is sampled once per frame inside `end_drawing` (see `poll_events` in `compiler/std/graphics.przp`) — key/mouse state read anywhere in a frame reflects exactly what was true when that frame's events were drained, not a live read racing the event queue. **Text input**: `get_char_pressed` returns the characters typed since the last frame, one per call, already decoded by X11's `XLookupString` (so Shift, Caps Lock and the keyboard layout apply: `a`, `A`, `!`, `#`), and `0` when there are none left; call it in a loop each frame. Only printable characters come through it; Enter, Backspace, Tab and the arrows are read with `is_key_pressed`, which is true in the frame a key goes down and again on each auto-repeat while it's held (so holding Backspace keeps deleting). Up to 64 typed characters queue between frames. A typical text field:
+
+```
+c: i32 = gfx.get_char_pressed()
+while c != 0 {
+    line.push_byte(@u8(c))            # line: a std/str StrBuf
+    c = gfx.get_char_pressed()
+}
+if gfx.is_key_pressed(gfx.Key.Backspace) && line.len > 0 { line.len -= 1 }
+if gfx.is_key_pressed(gfx.Key.Enter) { submit(line.to_str()) }
+```
+
+`tests/gui/text_input` drives this through real X11 key events with `xdotool` (typing shifted characters, Backspace, Enter, and the mouse wheel) and checks what the program received; `examples/games/text_adventure` builds a full terminal-style input line on it. A `KeyPress`/`KeyRelease` event's raw X11 `KeySym` is mapped to a `Key` by `keysym_to_key`, tested directly against hardcoded `KeySym` constants from `X11/keysymdef.h` (`tests/gl/graphics_layer2`) rather than through a real key event, since the actual `KeySym` a keycode produces depends on the test machine's keyboard layout.
 
 `resize`/`set_fullscreen`/`configs` are programmatic — distinct from `set_min_size`/`set_max_size`, which only *constrain* what the window manager/user is allowed to resize to, never resize anything themselves. `resize(w, h)` calls `XResizeWindow` directly; `set_fullscreen(true)` covers the screen (`XDisplayWidth`/`XDisplayHeight`, then `XMoveResizeWindow` to `(0, 0, screen_w, screen_h)`) and remembers the pre-fullscreen size to restore on `set_fullscreen(false)` — deliberately WM-independent (a direct geometry change) rather than the EWMH `_NET_WM_STATE_FULLSCREEN` `ClientMessage` a real desktop compositor would negotiate, since this project's own Xvfb-based test environment has no window manager running at all to answer that message. `configs(flags)` is the raylib-shaped bulk form — `win.configs(@u32(gfx.WindowFlag.Resizable) | @u32(gfx.WindowFlag.Fullscreen))` instead of one call per flag — currently covering only `Resizable`/`Fullscreen`, not a placeholder for raylib flags (MSAA hints, VSYNC, ...) nothing here backs yet.
 
@@ -284,7 +301,11 @@ impl Texture {
 }
 
 fn draw_texture(t: Texture, x: f32, y: f32)   # native resolution, no scaling
+fn draw_texture_scaled(t: Texture, dest: Rectangle, tint: Color)   # stretched to fill dest; WHITE = untinted
+fn fit_rect(w: i32, h: i32, box: Rectangle) -> Rectangle   # largest w:h rect centered in box (letterbox)
 ```
+
+To show a picture of any size in a fixed panel without distorting it, draw it into `fit_rect(t.w, t.h, panel)`. `AnimatedSprite` (GIF) and `VideoSprite` have the same `draw_scaled(dest: Rectangle)` alongside their native-size `draw(pos)`.
 
 Texture upload/draw goes through `std/graphics/gl`'s `create_texture`/`draw_textured_rect` (nearest-neighbor filtering, edge-clamped wrapping — real GL 1.1 texturing calls, no runtime loader needed), the same direct-to-GL coupling `draw_rect`/`draw_circle`/`draw_line` already have, for the same reason (no `Backend.submit` yet). `tests/gl/texture_load` verifies the full round trip — decode, upload, draw, read back — against two fixtures: a hand-rolled RGB PNG (every scanline filter type `None`) and a real libpng-encoded RGBA PNG using adaptive per-row filter selection, so all five PNG filter types (`None`/`Sub`/`Up`/`Average`/`Paeth`) are exercised, not just the trivial one.
 
@@ -336,6 +357,13 @@ Deliberately different from the original sketch signature above (no implicit def
 
 Tinting needed two small additions below `draw_text` itself, both in `std/graphics/gl.przp`: `draw_textured_rect_uv` gained `(r, g, b, a)` parameters (`glColor4f`'s arguments were previously hardcoded to `(1,1,1,1)`; GL 1.1's default texture environment mode is `GL_MODULATE`, texture-color-times-vertex-color, never changed anywhere in this file, so passing a real tint there needed no other state changes), and `create_context` now enables standard alpha blending (`GL_BLEND` with `GL_SRC_ALPHA`/`GL_ONE_MINUS_SRC_ALPHA`) for the program's whole lifetime rather than toggling it around specific draws — an opaque draw (alpha=1, every `draw_rect`/`draw_circle`/pre-existing `draw_texture` call) composites identically whether blending is on or off, so this doesn't change how anything already drawn looks; it only starts mattering for a texture with real alpha<255 pixels, which a font atlas's transparent background always has and which previously always drew as fully opaque regardless of its own alpha channel (this incidentally also fixes general PNG/GIF transparency compositing, not just text — confirmed by updating `tests/gl/texture_load`'s own expected pixel values, which change once its RGBA fixture's genuine partial-alpha pixels correctly blend against what was drawn under them instead of overwriting it outright). `std/graphics.przp` also grew `draw_texture_rec_tinted` (a tinted sibling of `draw_texture_rec`, which itself now just calls it with `WHITE`) as the general building block, and `draw_text` goes one level lower still, straight to `gl.draw_textured_rect_uv`, since a scaled glyph needs a destination size independent of the atlas cell's own pixel size — exactly how that function's `(w, h)` vs `(u0,v0,u1,v1)` parameters are already split, just not something the higher-level per-source-size helper exposes.
 
+**Making a font atlas**: `tools/make_font_atlas.py` (repo root) renders any monospace TTF/OTF into an atlas in exactly this layout and prints the cell size to pass to `Font.load`; `--px` sets the size the glyphs are drawn at (pick the largest size you'll display, then scale down). Different faces (regular, bold, another typeface) are just different atlases — `examples/games/text_adventure` ships DejaVu Sans Mono regular and bold this way and picks between them per line of text.
+
+```sh
+python3 tools/make_font_atlas.py /usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf mono.png --px 20
+# mono.png: glyph_w=13 glyph_h=24 first_char=32
+```
+
 `tests/gl/draw_text` verifies this end to end against a real monospace font atlas (generated via Python/Pillow from a system font for the test only — see its `CREDITS.md`; not shipped as a language feature): draws a tinted glyph at two different scales and reads back pixels proving both a fully-opaque glyph pixel becomes the pure tint color (no partial blend) and a transparent one leaves the background untouched, at both scales — not just that the call completes without crashing.
 
 **MP3 decoding and PCM playback are also implemented**, via a new `std/audio` module — both bind system libraries (`libmpg123` for decode, ALSA for output) rather than hand-writing an MP3 decoder or an audio driver, the same reasoning as PNG's zlib dependency above:
@@ -347,22 +375,52 @@ fn free_sound(s: Sound)
 
 struct AudioOutput { channels: i32, ctrl: *AudioCtrl }   # ctrl is opaque to callers
 fn open_output(device: str, rate: i32, channels: i32) -> !AudioOutput   # "default", or "null" for a hardware-free sink
-fn play_sound(out: AudioOutput, s: Sound) -> i64
-fn close_output(out: AudioOutput)
+fn close_output(out: AudioOutput)             # stops music, lets effects finish, closes the device
 
-# Playback controls — whole-output, not per-sound (see below)
+# Effects: mixed together, up to 15 at once
+fn play_sound(out: AudioOutput, s: Sound) -> i64        # frames, or 0 if every voice is busy (skipped)
+fn sounds_playing(out: AudioOutput) -> i32              # voices playing, music included
+
+# Music: one voice of its own, optionally looping
+fn play_music(out: AudioOutput, s: Sound, looping: bool)   # replaces the current music
+fn stop_music(out: AudioOutput)
+fn is_music_playing(out: AudioOutput) -> bool
+fn set_music_volume(out: AudioOutput, vol: f32)
+
+# Whole-output controls
 fn pause_output(out: AudioOutput)
 fn resume_output(out: AudioOutput)
 fn is_paused(out: AudioOutput) -> bool
-fn stop_output(out: AudioOutput)
-fn set_volume(out: AudioOutput, vol: f32)   # 1.0 = unchanged, 0.0 = silent, >1.0 = boost (clamped, can clip)
+fn stop_output(out: AudioOutput)              # silence every voice now
+fn set_volume(out: AudioOutput, vol: f32)     # master: 1.0 = unchanged, 0.0 = silent, >1.0 = boost (can clip)
+
+# Offline mixing — no device or thread; for tests, or rendering audio to a file
+fn open_offline(rate: i32, channels: i32) -> AudioOutput
+fn render_offline(out: AudioOutput, frames: usize) -> *i16   # next frames (≤1024), interleaved
 ```
+
+Background music plus effects:
+
+```
+import(audio = "std/audio")
+
+out, err: !audio.AudioOutput = audio.open_output("default", 44100, 2)
+music, e1: !audio.Sound = audio.decode_mp3("music.mp3")
+boom, e2: !audio.Sound = audio.decode_mp3("boom.mp3")
+audio.play_music(out, music, true)       # loops until stop_music
+audio.set_music_volume(out, 0.5)         # duck it under the effects
+audio.play_sound(out, boom)              # plays on top of the music
+```
+
+A `Sound` must stay alive (not `free_sound`-ed) while it's playing.
 
 `decode_mp3` fully decodes into memory as signed 16-bit PCM (fine for the short sound effects/music loops a 2D game actually uses; streaming decode for long tracks is a straightforward extension of the same `mpg123_read` loop if something ever needs it) — `mpg123_format`/`mpg123_format_none` force that output encoding so no per-sample conversion sits between decode and `snd_pcm_writei`, which expects exactly that layout. Playback targets ALSA's PCM API directly (`snd_pcm_set_params`/`snd_pcm_writei`) rather than a higher-level sound-server abstraction, since PulseAudio/PipeWire both still expose an ALSA-compatible PCM device on any system that has them.
 
-`open_output` spawns a dedicated background thread (`pthread_create`, via a first-class function value passed straight as the C start routine — no wrapper needed) that owns the PCM handle and is the only thing that ever calls `snd_pcm_writei`; `play_sound` itself never touches ALSA at all, it just mutex-locks a small fixed-capacity ring buffer (`AudioCtrl.queue`, `AUDIO_QUEUE_CAP` slots), copies in a `{pcm, n_frames}` request, and returns — a handful of instructions, not a syscall. This replaced an earlier `SND_PCM_NONBLOCK`-based design (still visible in git history) that opened the PCM non-blocking and called `snd_pcm_writei` directly from the caller's thread: that fixed the *reported* case (a literal blocking write stalling the render loop) but a full rewrite was needed once holding down fire kept reproducing frame lag anyway, worse the more shots queued per second — consistent with some ALSA PCM plugins (PulseAudio's/PipeWire's ALSA-compat shim especially, common on desktop Linux) not making every `SND_PCM_NONBLOCK` write cheap regardless of the flag. Moving the actual writes to a thread the render loop never waits on removes that dependency outright rather than reasoning about a specific backend's non-blocking behavior. The worker just blocks on `snd_pcm_writei` in a loop (retrying via `snd_pcm_recover` on an xrun) since blocking there costs it nothing; a `play_sound` call that finds the queue already full drops that one shot's sound rather than ever blocking the caller, the same fixed-capacity tradeoff `MAX_BULLETS` makes in `examples/games/astro_blaster`. `close_output` flips a mutex-guarded `running` flag, `pthread_join`s the worker (which drains its queue before exiting), then drains and closes the PCM handle only once the worker is provably done touching it. There's no software mixing — overlapping sounds queue back-to-back in the same PCM buffer rather than blending, fine for short, rarely-simultaneous SFX, not a real mixer. `tests/run/std_audio.przp` verifies decode against known-good sample values captured from an independent C program calling `libmpg123` with the identical call sequence, then plays the result through ALSA's `"null"` device — a real, userspace-only PCM sink that needs no sound hardware, the same role Xvfb plays for the GL tests below.
+**Mixing.** An `AudioOutput` has 16 voices: voice 0 is the music voice, the other 15 play effects. Every chunk (`AUDIO_MIX_FRAMES` = 1024 frames, ~23ms at 44.1kHz), each active voice is converted to the output's channel count (mono is duplicated to every channel; stereo is averaged down to mono) and sample rate (nearest-sample resampling with a 16.16 fixed-point step, so a 44.1kHz file plays at the right pitch on a 48kHz output), scaled by its own volume, summed into a 32-bit accumulator, scaled by the master volume, and clamped to 16 bits so loud overlaps clip instead of wrapping around. A looping voice wraps to its start mid-chunk with no gap. `tests/run/std_audio_mixer.przp` checks exact output samples for all of this through the offline renderer — overlap and clamping, looping, both volume controls, the voice limit, `stop_output`, mono→stereo, stereo→mono, and a 2× sample-rate change.
 
-**Playback control** (`pause_output`/`resume_output`/`is_paused`/`stop_output`/`set_volume`) is whole-output, not per-sound — the no-mixing design above means every `play_sound` call shares the one PCM stream an `AudioOutput` already is, so once something's queued there's no per-sound identity left to target; pausing, stopping, or changing volume affects everything currently playing or about to play through that output. `pause_output` just stops the worker from writing anything *new* — whatever's already sitting in the ALSA hardware ring buffer (up to `open_output`'s ~500ms latency) keeps playing out, so `resume_output` picks back up with no click or dropped frame at the seam. `stop_output` is the immediate-cut alternative: it clears the queue and has the worker call `snd_pcm_drop` (discard the ring buffer outright) followed by `snd_pcm_prepare` (put the stream back in a writable state), all from the worker thread itself so `ctrl.pcm` is never touched from two threads at once. `set_volume` scales samples into a small fixed-size scratch buffer (`AUDIO_SCRATCH_FRAMES` frames) before each write rather than mutating the caller's own decoded `Sound.pcm` — that buffer gets reused on every future `play_sound` call for the same `Sound`, so scaling it in place would make one call's volume answer for every later one too. Closing an `AudioOutput` while paused doesn't hang waiting for a `resume_output` that's never coming: `close_output` clears `paused` along with the worker's `running` flag, since the worker's exit check requires both. `tests/run/std_audio_control.przp` verifies all of this against the `"null"` device, including that close-while-paused case explicitly.
+`open_output` spawns a dedicated background thread (`pthread_create`, via a first-class function value passed straight as the C start routine — no wrapper needed) that owns the PCM handle, mixes, and is the only thing that ever calls `snd_pcm_writei`; `play_sound`/`play_music` never touch ALSA at all, they just mutex-lock the voice table, claim a voice, and return — a handful of instructions, not a syscall. The device is opened with ~100ms of buffering, which is how long a new sound takes to be heard at most. This replaced an earlier `SND_PCM_NONBLOCK`-based design (still visible in git history) that opened the PCM non-blocking and called `snd_pcm_writei` directly from the caller's thread: that fixed the *reported* case (a literal blocking write stalling the render loop) but a full rewrite was needed once holding down fire kept reproducing frame lag anyway, worse the more shots queued per second — consistent with some ALSA PCM plugins (PulseAudio's/PipeWire's ALSA-compat shim especially, common on desktop Linux) not making every `SND_PCM_NONBLOCK` write cheap regardless of the flag. Moving the actual writes to a thread the render loop never waits on removes that dependency outright rather than reasoning about a specific backend's non-blocking behavior. The worker mixes a chunk under the lock, then releases it and blocks on `snd_pcm_writei` (retrying via `snd_pcm_recover` on an xrun), since blocking there costs it nothing; a `play_sound` call that finds every effect voice busy skips that one sound rather than ever blocking the caller, the same fixed-capacity tradeoff `MAX_BULLETS` makes in `examples/games/astro_blaster`. `close_output` stops the music, flips a mutex-guarded `running` flag, `pthread_join`s the worker (which finishes the effects still playing before exiting), then drains and closes the PCM handle only once the worker is provably done touching it. `tests/run/std_audio.przp` verifies decode against known-good sample values captured from an independent C program calling `libmpg123` with the identical call sequence, then plays the result through ALSA's `"null"` device — a real, userspace-only PCM sink that needs no sound hardware, the same role Xvfb plays for the GL tests below.
+
+**Playback control.** The music voice has its own volume (`set_music_volume`); effects play at full volume; `set_volume` is the master over everything. `pause_output` stops mixing — whatever's already in the device buffer (~100ms) plays out, and `resume_output` continues every voice exactly where it stopped, with no click at the seam. `stop_output` is the immediate cut: it stops every voice and has the worker call `snd_pcm_drop` (discard the device buffer) followed by `snd_pcm_prepare` (make the stream writable again), from the worker thread itself so `ctrl.pcm` is never touched from two threads at once. Volume is applied while mixing, never to the caller's `Sound.pcm`, which may be playing on several voices at once. Closing an `AudioOutput` while paused doesn't hang waiting for a `resume_output` that's never coming: `close_output` clears `paused` along with the worker's `running` flag, since the worker's exit check requires both. `tests/run/std_audio_control.przp` verifies all of this against the `"null"` device, including that close-while-paused case explicitly.
 
 **MP4 (or any container ffmpeg's `libavformat` can demux) video decode and playback are also implemented**, via a new `std/video` module — binds `ffmpeg`'s `libavformat`/`libavcodec`/`libswscale` rather than hand-writing an H.264 decoder, the same "bind an existing library" reasoning as `libmpg123`/ALSA above, just for a codec with real motion-compensation/entropy-coding complexity that isn't realistically hand-written the way PNG's DEFLATE-based decode was:
 

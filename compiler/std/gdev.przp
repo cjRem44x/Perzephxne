@@ -257,6 +257,13 @@ impl AnimatedSprite {
         gfx.draw_texture(self.frames[self.cur_frame].texture, pos.x, pos.y)
     }
 
+    # draw_scaled: the current frame stretched to fill `dest`
+    # (see gfx.fit_rect to keep the aspect ratio)
+    fn draw_scaled(self, dest: gfx.Rectangle) {
+        if self.n_frames == 0 { ret }
+        gfx.draw_texture_scaled(self.frames[self.cur_frame].texture, dest, gfx.WHITE)
+    }
+
     # width/height: the animation's frame size in pixels — every frame of
     # a GIF composites onto the same fixed-size canvas (the GIF spec's
     # own logical screen descriptor), so any frame's texture dimensions

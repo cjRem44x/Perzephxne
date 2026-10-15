@@ -32,7 +32,27 @@ The core language surface is represented in the book and regression suite. The r
 | Window resize can't be pixel-verified under Xvfb+swrast, still open | `Window.resize`/`set_fullscreen`'s GL-rendering-after-resize path (see [Graphics](./graphics.md)) can't get the same pixel read-back verification the rest of `tests/gl` uses: under this project's own Xvfb + software-GL (llvmpipe/swrast, no GPU) test environment, `XResizeWindow` on a window with a bound GLX context breaks rendering entirely — confirmed even with zero GL-side handling involved, a bare `XResizeWindow` call and nothing else already does it. This is an environment limitation, not a bug in `resize` itself (which does the standard thing: `XResizeWindow`/`XMoveResizeWindow`, `glViewport`, `glOrtho`, a fresh `glXMakeCurrent`) — a real GPU-backed X server is expected to handle this normally, the same way any other GLX application resizing its window does. `tests/gl/window_resize` verifies what *is* checkable here (the real X11-level resize via `XGetWindowAttributes`). Revisit if this project ever gets a non-Xvfb GL test environment. |
 | astro_blaster reported stutter, still open | A stutter reported during rapid fire in `examples/games/astro_blaster` survived three rounds of fixes to `std/audio` (non-blocking writes, an `snd_pcm_avail_update` pre-check, then a full background-thread rewrite) and reproduces with audio skipped entirely (`przp run --no-audio`) — so it isn't audio. `std/gdev`'s own frame timer (`get_frame_time`, real wall-clock via `os.monotonic_ms`) never recorded a frame over 33ms during a session where the stutter was reported, which is the actually strange part: whatever's happening either isn't visible on that clock at all (input-latency-shaped, not render-loop-shaped) or is smaller than the 33ms threshold currently logged. The diagnostic (`[STALL]` logging in `main.przp`) is still in place for whoever picks this back up. |
 
+## Building a Text-Based Game
+
+`examples/games/text_adventure` is the reference for this kind of project: a terminal-style window with typed input, command history and scrollback; text in two font faces at several sizes and colors; PNG, GIF and video room pictures scaled into a panel; looping background music under sound effects; and the world loaded from JSON into `HashMap`/`List` structures. What it relies on, and what's still missing:
+
+| Need | Status |
+|---|---|
+| Window, resize, fullscreen | `std/graphics` `Window` |
+| Typed text input | `get_char_pressed` (Shift/Caps applied), `is_key_pressed` (with auto-repeat), Backspace/Tab/Delete/Home/End/PageUp/PageDown/digits/Shift/Ctrl keys, mouse wheel |
+| Text: position, size, color, typeface | `draw_text` with a scale and tint; one bitmap atlas per typeface, made from any monospace TTF with `tools/make_font_atlas.py`. No proportional fonts or kerning; no TTF at runtime |
+| Word wrap, text boxes | in the example's `ui.przp` (`wrap`, `TextField`) — not in the standard library yet |
+| Images / GIFs / video | PNG (`Texture`), GIF (`AnimatedSprite`), MP4 etc. (`VideoSprite`, video only — no audio track); all scalable with `draw_scaled`/`draw_texture_scaled` and `fit_rect`. No JPEG |
+| Music and sound | `std/audio`: MP3 only; 15 mixed effects plus a looping music voice, per-music and master volume. No streaming (whole file is decoded into memory), no per-effect volume or panning |
+| Data structures | `List<T>` (stack), `Queue<T>`, `HashMap<K, V>`, `StrBuf`, `std/json`, `std/csv` |
+| Clipboard, mouse text selection | not available |
+| Saving games | `std/file` + `std/json`'s `Writer`; no binary serialization helpers |
+
 ## Bugs Found and Fixed Along the Way
+
+Found while building `examples/games/text_adventure`:
+
+- **A call's return type could be emitted as the wrong struct** — `llvm_type()` returned strings from small rotating static buffers; a call computed its return type, then evaluating its arguments made enough further `llvm_type()` calls to overwrite it (`call %gfx__Rectangle @term__new(...)` for a function returning a `Terminal`). The earlier `cur_fn_ret` fix below was one instance of the same hazard. Fixed at the root: `llvm_type` now interns every type string, so a result stays valid for the whole compile.
 
 Found while writing `std/csv` and `std/json`:
 

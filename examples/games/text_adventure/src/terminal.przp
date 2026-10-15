@@ -1,0 +1,175 @@
+# terminal — a scrolling text console with an input line.
+#
+#   t.print(fonts, "Hello", ui.style(false, 0.75, ui.TEXT))   # output
+#   line, err: !str = t.update()                             # input
+#   t.draw(fonts, time)
+#
+# Output is word-wrapped to the panel width and kept as colored lines.
+# Input supports typing, Backspace, Esc (clear), Up/Down (history) and
+# PageUp/PageDown or the mouse wheel (scrollback).
+
+import(gfx = "std/graphics", gdev = "std/gdev", c = "std/collections", s = "std/str", ui = "ui")
+
+MAX_LINES: usize : 2000
+MAX_INPUT: usize : 200
+
+struct Line {
+    text:  str,
+    style: ui.Style,
+}
+
+struct Terminal {
+    rect:     gfx.Rectangle,
+    style:    ui.Style,          # input line style; also sets the row height
+    lines:    c.List<Line>,
+    input:    s.StrBuf,
+    history:  c.List<str>,
+    hist_pos: usize,             # == history.len when not browsing history
+    scroll:   usize,             # rows scrolled up from the bottom
+    echo:     bool,              # also print output to stdout (demo mode)
+}
+
+fn new(rect: gfx.Rectangle, st: ui.Style) -> Terminal {
+    ret Terminal{.rect = rect, .style = st, .lines = c.List<Line>.new(),
+                 .input = s.StrBuf.new(), .history = c.List<str>.new(),
+                 .hist_pos = 0, .scroll = 0, .echo = false}
+}
+
+impl Terminal {
+    fn cols(self: *Terminal) -> usize {
+        ret self.cols_for(self.style)
+    }
+
+    fn cols_for(self: *Terminal, st: ui.Style) -> usize {
+        ret @usize((self.rect.w - 16.0) / ui.char_w(st))
+    }
+
+    # rows: how many output rows fit above the input line
+    fn rows(self: *Terminal) -> usize {
+        ret @usize((self.rect.h - 16.0) / ui.line_h(self.style)) - 2
+    }
+
+    # print: append text (wrapped to the panel width) in the given style
+    fn print(self: *Terminal, text: str, st: ui.Style) {
+        if self.echo { @pf("{text}\n") }
+        parts: c.List<str> = c.List<str>.new()
+        defer parts.free_list()
+        ui.wrap(text, self.cols_for(st), &parts)
+        for p => parts.items() { self.lines.push(Line{.text = p, .style = st}) }
+        while self.lines.len_of() > MAX_LINES {
+            old, oe: !Line = self.lines.remove_at(0)
+            @free(old.text.data)
+        }
+        self.scroll = 0
+    }
+
+    fn blank(self: *Terminal) {
+        self.print("", self.style)
+    }
+
+    # submit: run a line as if it had been typed and Enter pressed
+    fn submit(self: *Terminal, line: str) -> str {
+        if line.len > 0 {
+            self.history.push(s.slice(line, 0, line.len))
+            self.hist_pos = self.history.len_of()
+        }
+        ret line
+    }
+
+    # update: handle this frame's keyboard/mouse input; returns the line
+    # entered when Enter was pressed, else error 1
+    fn update(self: *Terminal) -> !str {
+        ch: i32 = gfx.get_char_pressed()
+        while ch != 0 {
+            if self.input.len < MAX_INPUT { self.input.push_byte(@u8(ch)) }
+            ch = gfx.get_char_pressed()
+        }
+        if gfx.is_key_pressed(gfx.Key.Backspace) && self.input.len > 0 {
+            self.input.len -= 1
+        }
+        if gfx.is_key_pressed(gfx.Key.Escape) { self.input.clear() }
+
+        nh: usize = self.history.len_of()
+        if gfx.is_key_pressed(gfx.Key.Up) && self.hist_pos > 0 {
+            self.hist_pos -= 1
+            self.load_history()
+        }
+        if gfx.is_key_pressed(gfx.Key.Down) && self.hist_pos < nh {
+            self.hist_pos += 1
+            if self.hist_pos == nh { self.input.clear() } else { self.load_history() }
+        }
+
+        page: usize = self.rows() / 2
+        if gfx.is_key_pressed(gfx.Key.PageUp) { self.scroll_by(@i64(page)) }
+        if gfx.is_key_pressed(gfx.Key.PageDown) { self.scroll_by(-@i64(page)) }
+        wheel: f32 = gfx.get_mouse_wheel_move()
+        if wheel != 0.0 { self.scroll_by(@i64(wheel * 3.0)) }
+
+        if gfx.is_key_pressed(gfx.Key.Enter) {
+            line: str = self.input.to_str()
+            self.input.clear()
+            ret @ok(self.submit(line))
+        }
+        ret @err(1)
+    }
+
+    fn load_history(self: *Terminal) {
+        h, he: !str = self.history.get(self.hist_pos)
+        if he != 0 { ret }
+        self.input.clear()
+        self.input.push(h)
+    }
+
+    fn scroll_by(self: *Terminal, delta: i64) {
+        max_scroll: i64 = 0
+        if self.lines.len_of() > self.rows() { max_scroll = @i64(self.lines.len_of() - self.rows()) }
+        v: i64 = @i64(self.scroll) + delta
+        if v < 0 { v = 0 }
+        if v > max_scroll { v = max_scroll }
+        self.scroll = @usize(v)
+    }
+
+    fn draw(self: *Terminal, fonts: *ui.Fonts, time: f32) {
+        ui.draw_frame(self.rect, ui.PANEL, ui.BORDER)
+        lh: f32 = ui.line_h(self.style)
+        x: f32 = self.rect.x + 8.0
+        iy: f32 = self.rect.y + self.rect.h - lh - 10.0
+
+        # output, drawn bottom-up so lines of different sizes stack cleanly
+        top: f32 = self.rect.y + 6.0
+        y: f32 = iy - 10.0
+        i: usize = self.lines.len_of() - self.scroll
+        while i > 0 {
+            ln, le: !Line = self.lines.get(i - 1)
+            h: f32 = ui.line_h(ln.style)
+            if y - h < top { break }
+            y -= h
+            ui.draw_text(fonts, ln.text, x, y, ln.style)
+            i -= 1
+        }
+        if self.scroll > 0 {
+            more: str = @fmt("-- {self.scroll} more below (PgDn) --")
+            mw: f32 = @f32(more.len) * ui.char_w(self.style)
+            bx: f32 = self.rect.x + self.rect.w - mw - 14.0
+            gfx.draw_rectangle(bx, self.rect.y + 4.0, mw + 10.0, lh + 4.0, ui.BORDER)
+            ui.draw_text(fonts, more, bx + 5.0, self.rect.y + 6.0,
+                         ui.style(false, self.style.scale, ui.TEXT))
+            @free(more.data)
+        }
+
+        # input line, separated from the output by a rule
+        gfx.draw_rectangle(self.rect.x + 1.0, iy - 6.0, self.rect.w - 2.0, 1.0, ui.BORDER)
+        prompt_st: ui.Style = ui.style(true, self.style.scale, ui.CYAN)
+        ui.draw_text(fonts, "> ", x, iy, prompt_st)
+        typed: str = @str_raw(self.input.data, self.input.len)
+        # keep the end of a long input visible
+        fit: usize = self.cols() - 3
+        if typed.len > fit { typed = @str_raw(self.input.data + (typed.len - fit), fit) }
+        tx: f32 = x + 2.0 * ui.char_w(self.style)
+        ui.draw_text(fonts, typed, tx, iy, self.style)
+        if gdev.blink(time, 2.0) {
+            cx: f32 = tx + @f32(typed.len) * ui.char_w(self.style)
+            gfx.draw_rectangle(cx, iy + 2.0, ui.char_w(self.style), lh - 4.0, ui.CYAN)
+        }
+    }
+}

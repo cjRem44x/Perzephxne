@@ -1,0 +1,77 @@
+The Lantern Keep
+Rain has stopped. The old keep looms above you, dark except for one window high in the tower.
+Legend says whoever reaches that window can leave this world behind.
+Type 'help' to see what you can do.
+
+Outer Gate
+You stand before the outer gate of the keep. The portcullis is rusted open just enough to squeeze through. The sky burns orange behind the battlements.
+Exits: north.
+
+> help
+Commands
+  help              show this list
+  look              describe where you are
+  go <direction>    move: north, south, east, west, up, down
+  n/s/e/w/u/d       shortcuts for go
+  take <item>       pick something up
+  drop <item>       put something down
+  inventory         list what you carry
+  examine <item>    look closely at an item
+  music             turn the background music on/off
+  volume <0-100>    set the master volume
+  clear             clear the screen
+  quit              leave the game
+
+> north
+
+Courtyard
+A quiet courtyard under a sky full of stars. An old stone well sits in the middle. A door leads east into the library; a dark hall lies to the north.
+You see: lantern.
+Exits: south, east, north.
+
+> take lantern
+You take the lantern.
+
+> east
+
+Library
+Shelves of crumbling books reach up into the dark. A single candle flickers on the reading desk.
+You see: key.
+Exits: west.
+
+> take key
+You take the key.
+
+> x key
+A heavy brass key, warm to the touch.
+
+> inventory
+You are carrying: lantern, key.
+
+> west
+
+Courtyard
+A quiet courtyard under a sky full of stars. An old stone well sits in the middle. A door leads east into the library; a dark hall lies to the north.
+Exits: south, east, north.
+
+> north
+
+Great Hall
+A long hall lit by two guttering torches. At the far end, a heavy oak door with a brass lock guards the tower stairs.
+Exits: south, up.
+
+> up
+You unlock the door.
+
+Tower Top
+At the top of the stairs, the window opens onto a swirling, impossible sky. It pulls at you gently.
+Exits: down.
+
+You step through the window and fall upward into the light. THE END.
+You finished in 5 moves. Type 'quit' to leave.
+
+> music
+The story is over. Type 'quit' to leave.
+
+> quit
+Farewell.

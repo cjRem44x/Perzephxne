@@ -1,0 +1,319 @@
+# game — game state and the command table.
+#
+# Commands live in a HashMap<str, Cmd>; aliases are registered with
+# put_all, so "n" and "north" (or "quit", "exit", "qqq") reach the same
+# handler. Add a command by writing a fn(*Game, str) and registering it in
+# new_game.
+
+import(c = "std/collections", s = "std/str", audio = "std/audio", fmt = "std/fmt")
+import(ui = "ui", term = "terminal", w = "world")
+
+SCALE: f32 : 0.75
+
+struct Sounds {
+    out:     audio.AudioOutput,
+    enabled: bool,
+    music_on: bool,
+    music:   audio.Sound,
+    pickup:  audio.Sound,
+    step:    audio.Sound,
+    error:   audio.Sound,
+    win:     audio.Sound,
+}
+
+struct Cmd {
+    usage: str,
+    desc:  str,
+    run:   fn(*Game, str),
+}
+
+struct Game {
+    world: *w.World,
+    room:  *w.Room,
+    inv:   c.List<str>,
+    t:     *term.Terminal,
+    cmds:  c.HashMap<str, Cmd>,
+    order: c.List<str>,       # primary command names, in help order
+    snd:   *Sounds,
+    over:  bool,              # the story has ended
+    quit:  bool,              # leave the program
+    moves: i32,
+}
+
+# ── output helpers ───────────────────────────────────────────────────────────
+
+fn say(g: *Game, text: str)  { g.t.print(text, ui.style(false, SCALE, ui.TEXT)) }
+fn good(g: *Game, text: str) { g.t.print(text, ui.style(false, SCALE, ui.GREEN)) }
+fn bad(g: *Game, text: str) {
+    g.t.print(text, ui.style(false, SCALE, ui.RED))
+    play(g, g.snd.error)
+}
+fn dim(g: *Game, text: str)  { g.t.print(text, ui.style(false, SCALE, ui.DIM)) }
+
+fn play(g: *Game, snd: audio.Sound) {
+    if g.snd.enabled { audio.play_sound(g.snd.out, snd) }
+}
+
+fn has_item(g: *Game, item: str) -> bool {
+    for it => g.inv.items() {
+        if it == item { ret true }
+    }
+    ret false
+}
+
+fn index_of(list: *c.List<str>, item: str) -> i64 {
+    for i => 0..list.len_of() {
+        v, e: !str = list.get(i)
+        if v == item { ret @i64(i) }
+    }
+    ret -1
+}
+
+fn can_see(g: *Game) -> bool {
+    ret !g.room.dark || has_item(g, "lantern")
+}
+
+fn join(list: *c.List<str>, sep: str) -> str {
+    b: s.StrBuf = s.StrBuf.new()
+    defer b.free_buf()
+    for i => 0..list.len_of() {
+        if i > 0 { b.push(sep) }
+        v, e: !str = list.get(i)
+        b.push(v)
+    }
+    ret b.to_str()
+}
+
+fn describe(g: *Game) {
+    g.t.blank()
+    g.t.print(g.room.name, ui.style(true, 0.85, ui.AMBER))
+    if !can_see(g) {
+        say(g, g.room.dark_text)
+        ret
+    }
+    say(g, g.room.text)
+    if g.room.items.len_of() > 0 {
+        items: str = join(&g.room.items, ", ")
+        g.t.print(@fmt("You see: {items}."), ui.style(false, SCALE, ui.MAGENTA))
+    }
+    exits: c.List<str> = c.List<str>.new()
+    defer exits.free_list()
+    for i => 0..g.room.exits.len_of() { exits.push(g.room.exits.key_at(i)) }
+    ex: str = join(&exits, ", ")
+    dim(g, @fmt("Exits: {ex}."))
+}
+
+# ── commands ─────────────────────────────────────────────────────────────────
+
+fn cmd_help(g: *Game, arg: str) {
+    g.t.print("Commands", ui.style(true, 0.8, ui.AMBER))
+    for name => g.order.items() {
+        cmd, e: !Cmd = g.cmds.get(name)
+        usage: str = fmt.pad_right(cmd.usage, 16, 32u8)
+        say(g, @fmt("  {usage}  {cmd.desc}"))
+        @free(usage.data)
+    }
+}
+
+fn cmd_look(g: *Game, arg: str) { describe(g) }
+
+fn go(g: *Game, dir: str) {
+    if dir.len == 0 {
+        bad(g, "Go where? Try 'go north', or just 'n'.")
+        ret
+    }
+    dest, e: !str = g.room.exits.get(dir)
+    if e != 0 {
+        bad(g, "You can't go that way.")
+        ret
+    }
+    if g.room.lock_exit == dir {
+        if !has_item(g, g.room.lock_key) {
+            bad(g, g.room.lock_text)
+            ret
+        }
+        good(g, "You unlock the door.")
+        g.room.lock_exit = ""
+    }
+    next, ne: !*w.Room = g.world.rooms.get(dest)
+    if ne != 0 {
+        bad(g, "That way leads nowhere (missing room in world.json).")
+        ret
+    }
+    g.room = next
+    g.moves += 1
+    play(g, g.snd.step)
+    describe(g)
+    if g.room.ending.len > 0 {
+        g.t.blank()
+        g.t.print(g.room.ending, ui.style(true, 0.85, ui.GREEN))
+        dim(g, @fmt("You finished in {g.moves} moves. Type 'quit' to leave."))
+        play(g, g.snd.win)
+        g.over = true
+    }
+}
+
+fn cmd_go(g: *Game, arg: str)    { go(g, arg) }
+fn cmd_north(g: *Game, arg: str) { go(g, "north") }
+fn cmd_south(g: *Game, arg: str) { go(g, "south") }
+fn cmd_east(g: *Game, arg: str)  { go(g, "east") }
+fn cmd_west(g: *Game, arg: str)  { go(g, "west") }
+fn cmd_up(g: *Game, arg: str)    { go(g, "up") }
+fn cmd_down(g: *Game, arg: str)  { go(g, "down") }
+
+fn cmd_take(g: *Game, arg: str) {
+    if arg.len == 0 {
+        bad(g, "Take what?")
+        ret
+    }
+    if !can_see(g) {
+        bad(g, "You fumble around in the dark but find nothing.")
+        ret
+    }
+    i: i64 = index_of(&g.room.items, arg)
+    if i < 0 {
+        bad(g, @fmt("There is no {arg} here."))
+        ret
+    }
+    item, e: !str = g.room.items.remove_at(@usize(i))
+    g.inv.push(item)
+    good(g, @fmt("You take the {item}."))
+    play(g, g.snd.pickup)
+    if item == "lantern" && g.room.dark { describe(g) }
+}
+
+fn cmd_drop(g: *Game, arg: str) {
+    i: i64 = index_of(&g.inv, arg)
+    if i < 0 {
+        bad(g, @fmt("You aren't carrying a {arg}."))
+        ret
+    }
+    item, e: !str = g.inv.remove_at(@usize(i))
+    g.room.items.push(item)
+    say(g, @fmt("You drop the {item}."))
+}
+
+fn cmd_inventory(g: *Game, arg: str) {
+    if g.inv.is_empty() {
+        say(g, "You are carrying nothing.")
+        ret
+    }
+    items: str = join(&g.inv, ", ")
+    g.t.print(@fmt("You are carrying: {items}."), ui.style(false, SCALE, ui.MAGENTA))
+}
+
+fn cmd_examine(g: *Game, arg: str) {
+    if !has_item(g, arg) && (index_of(&g.room.items, arg) < 0 || !can_see(g)) {
+        bad(g, @fmt("You don't see a {arg} here."))
+        ret
+    }
+    d, e: !str = g.world.items.get(arg)
+    if e != 0 {
+        say(g, "Nothing special about it.")
+        ret
+    }
+    say(g, d)
+}
+
+fn cmd_music(g: *Game, arg: str) {
+    if !g.snd.enabled {
+        dim(g, "Audio is off (no sound device, or started with --no-audio).")
+        ret
+    }
+    if g.snd.music_on {
+        audio.stop_music(g.snd.out)
+        g.snd.music_on = false
+        dim(g, "Music off.")
+    } else {
+        audio.play_music(g.snd.out, g.snd.music, true)
+        g.snd.music_on = true
+        dim(g, "Music on.")
+    }
+}
+
+fn cmd_volume(g: *Game, arg: str) {
+    v, e: !i32 = @i32(arg)
+    if e != 0 || v < 0 || v > 100 {
+        bad(g, "Usage: volume <0-100>")
+        ret
+    }
+    if g.snd.enabled { audio.set_volume(g.snd.out, @f32(v) / 100.0) }
+    dim(g, @fmt("Volume {v}%."))
+}
+
+fn cmd_clear(g: *Game, arg: str) {
+    for i => 0..g.t.lines.len_of() {
+        ln, e: !term.Line = g.t.lines.get(i)
+        @free(ln.text.data)
+    }
+    g.t.lines.clear()
+}
+
+fn cmd_quit(g: *Game, arg: str) {
+    dim(g, "Farewell.")
+    g.quit = true
+}
+
+# ── setup and dispatch ──────────────────────────────────────────────────────
+
+fn add(g: *Game, names: []str, usage: str, desc: str, run: fn(*Game, str)) {
+    g.cmds.put_all(names, Cmd{.usage = usage, .desc = desc, .run = run})
+    g.order.push(names[0])
+}
+
+fn new_game(world: *w.World, t: *term.Terminal, snd: *Sounds) -> Game {
+    first, e: !*w.Room = world.rooms.get(world.start)
+    g: Game = Game{.world = world, .room = first, .inv = c.List<str>.new(), .t = t,
+                   .cmds = c.HashMap<str, Cmd>.new(c.hash_str, c.eq_str),
+                   .order = c.List<str>.new(), .snd = snd,
+                   .over = false, .quit = false, .moves = 0}
+    add(&g, ["help", "h", "?"], "help", "show this list", cmd_help)
+    add(&g, ["look", "l"], "look", "describe where you are", cmd_look)
+    add(&g, ["go", "walk"], "go <direction>", "move: north, south, east, west, up, down", cmd_go)
+    add(&g, ["north", "n"], "n/s/e/w/u/d", "shortcuts for go", cmd_north)
+    g.cmds.put_all(["south", "s"], Cmd{.usage = "", .desc = "", .run = cmd_south})
+    g.cmds.put_all(["east", "e"], Cmd{.usage = "", .desc = "", .run = cmd_east})
+    g.cmds.put_all(["west", "w"], Cmd{.usage = "", .desc = "", .run = cmd_west})
+    g.cmds.put_all(["up", "u"], Cmd{.usage = "", .desc = "", .run = cmd_up})
+    g.cmds.put_all(["down", "d"], Cmd{.usage = "", .desc = "", .run = cmd_down})
+    add(&g, ["take", "get"], "take <item>", "pick something up", cmd_take)
+    add(&g, ["drop"], "drop <item>", "put something down", cmd_drop)
+    add(&g, ["inventory", "inv", "i"], "inventory", "list what you carry", cmd_inventory)
+    add(&g, ["examine", "x"], "examine <item>", "look closely at an item", cmd_examine)
+    add(&g, ["music"], "music", "turn the background music on/off", cmd_music)
+    add(&g, ["volume"], "volume <0-100>", "set the master volume", cmd_volume)
+    add(&g, ["clear"], "clear", "clear the screen", cmd_clear)
+    add(&g, ["quit", "exit", "qqq"], "quit", "leave the game", cmd_quit)
+    ret g
+}
+
+fn start(g: *Game) {
+    g.t.print(g.world.title, ui.style(true, 1.1, ui.AMBER))
+    for line => g.world.intro.items() { say(g, line) }
+    describe(g)
+}
+
+# run_command: echo the line, split it into a verb and the rest, dispatch
+fn run_command(g: *Game, raw: str) {
+    line: str = s.to_lower(s.trim(raw))
+    if line.len == 0 { ret }
+    g.t.blank()
+    g.t.print(@fmt("> {line}"), ui.style(true, SCALE, ui.CYAN))
+    sp: usize = s.index_of_char(line, 32u8)
+    verb: str = line
+    arg: str = ""
+    if sp < line.len {
+        verb = s.slice(line, 0, sp)
+        arg = s.trim(s.slice(line, sp + 1, line.len))
+    }
+    if g.over && verb != "quit" && verb != "exit" && verb != "qqq" {
+        dim(g, "The story is over. Type 'quit' to leave.")
+        ret
+    }
+    cmd, e: !Cmd = g.cmds.get(verb)
+    if e != 0 {
+        bad(g, @fmt("I don't know how to '{verb}'. Type 'help' for commands."))
+        ret
+    }
+    cmd.run(g, arg)
+}

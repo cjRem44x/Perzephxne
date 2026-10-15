@@ -1,0 +1,7 @@
+map:1 lamp:2 key:1 len=3
+removed=lamp top=key
+oob err=1 set_oob=0
+south east north | empty pop err=1
+sum=4999950000
+queue len=15 front=msg15 third=msg17
+msg15 msg16 msg17 msg18 msg19 msg20 msg21 msg22 msg23 msg24 msg25 msg26 msg27 msg28 msg29 

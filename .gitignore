@@ -27,3 +27,4 @@ examples/*/*/*
 !examples/*/*/src/**
 !examples/*/*/tests/
 !examples/*/*/tests/*.przp
+!examples/*/*/README.md

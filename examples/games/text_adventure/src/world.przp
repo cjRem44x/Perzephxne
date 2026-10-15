@@ -1,0 +1,90 @@
+# world — rooms, exits and items, loaded from src/world.json.
+#
+# Strings point into the parsed JSON document, which the World keeps alive
+# for the whole game (see `doc`).
+
+import(json = "std/json", c = "std/collections")
+
+struct Room {
+    id:        str,
+    name:      str,
+    media:     str,                   # image/gif/video path, "" for none
+    text:      str,
+    dark:      bool,                  # needs the lantern to see anything
+    dark_text: str,
+    exits:     c.HashMap<str, str>,   # direction -> room id
+    items:     c.List<str>,
+    lock_exit: str,                   # "" if nothing is locked
+    lock_key:  str,
+    lock_text: str,
+    ending:    str,                   # reaching this room ends the game
+}
+
+struct World {
+    doc:   json.Doc,
+    title: str,
+    start: str,
+    intro: c.List<str>,
+    rooms: c.HashMap<str, *Room>,
+    items: c.HashMap<str, str>,       # item -> description
+}
+
+fn str_or(v: json.Value, fallback: str) -> str {
+    t, e: !str = v.as_str()
+    if e != 0 { ret fallback }
+    ret t
+}
+
+fn load_room(id: str, v: json.Value) -> *Room {
+    r: *Room = @alo(Room)
+    r.id = id
+    r.name = str_or(v.get("name"), id)
+    r.media = str_or(v.get("media"), "")
+    r.text = str_or(v.get("text"), "")
+    d, de: !bool = v.get("dark").as_bool()
+    r.dark = de == 0 && d
+    r.dark_text = str_or(v.get("dark_text"), "It is too dark to see.")
+    r.exits = c.HashMap<str, str>.new(c.hash_str, c.eq_str)
+    ex: json.Value = v.get("exits")
+    for i => 0..ex.len() { r.exits.put(ex.key_at(i), str_or(ex.at(i), "")) }
+    r.items = c.List<str>.new()
+    its: json.Value = v.get("items")
+    for j => 0..its.len() { r.items.push(str_or(its.at(j), "")) }
+    lk: json.Value = v.get("locked")
+    r.lock_exit = str_or(lk.get("exit"), "")
+    r.lock_key = str_or(lk.get("key"), "")
+    r.lock_text = str_or(lk.get("text"), "It's locked.")
+    r.ending = str_or(v.get("ending"), "")
+    ret r
+}
+
+# load: parse the world file; error 1 = can't parse (message printed),
+# 2 = the start room doesn't exist
+fn load(path: str) -> !World {
+    d: json.Doc = json.parse_file(path)
+    if !d.ok() {
+        @epf("{path}: {d.err}\n")
+        ret @err(1)
+    }
+    w: World = World{.doc = d, .title = "", .start = "",
+                     .intro = c.List<str>.new(),
+                     .rooms = c.HashMap<str, *Room>.new(c.hash_str, c.eq_str),
+                     .items = c.HashMap<str, str>.new(c.hash_str, c.eq_str)}
+    root: json.Value = w.doc.root()
+    w.title = str_or(root.get("title"), "Adventure")
+    w.start = str_or(root.get("start"), "")
+    intro: json.Value = root.get("intro")
+    for i => 0..intro.len() { w.intro.push(str_or(intro.at(i), "")) }
+    rooms: json.Value = root.get("rooms")
+    for j => 0..rooms.len() {
+        id: str = rooms.key_at(j)
+        w.rooms.put(id, load_room(id, rooms.at(j)))
+    }
+    items: json.Value = root.get("items")
+    for k => 0..items.len() { w.items.put(items.key_at(k), str_or(items.at(k), "")) }
+    if !w.rooms.has(w.start) {
+        @epf("{path}: start room is not defined\n")
+        ret @err(2)
+    }
+    ret @ok(w)
+}

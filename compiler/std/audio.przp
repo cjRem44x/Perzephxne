@@ -124,228 +124,311 @@ fn decode_mp3(path: str) -> !Sound {
     ret Sound{.pcm=buf, .n_frames=n_frames, .channels=channels, .rate=@i32(rate)}
 }
 
-# AUDIO_QUEUE_CAP: how many play_sound() requests can be pending for the
-# background audio thread at once — headroom well beyond what a 2D game's
-# rapid-fire SFX realistically queues between two drains of the ALSA
-# buffer; a request that finds the queue full just drops that one shot's
-# sound rather than ever making the caller wait, the same fixed-capacity
-# tradeoff MAX_BULLETS makes in examples/games/astro_blaster.
-AUDIO_QUEUE_CAP: usize : 16
+# ── Mixer ─────────────────────────────────────────────────────────────────────
+# An AudioOutput mixes up to AUDIO_MAX_VOICES sounds at once: voice 0 is
+# reserved for music (play_music, optionally looping), the rest for
+# one-shot effects (play_sound). Every chunk, each playing voice is
+# converted to the output's channel count and sample rate, scaled by its
+# own volume, summed, scaled by the master volume, and clamped to 16 bits.
+#
+# A background thread does the mixing and the (blocking) ALSA writes, so
+# none of these calls ever stall the caller's frame loop.
 
-# AUDIO_SCRATCH_FRAMES: the chunk size audio_worker writes at once, and
-# the size of the scratch buffer it volume-scales into before each write
-# (see apply_volume) — a fixed cap rather than one big per-request
-# buffer sized to the whole sound, so a very long sound doesn't need a
-# proportionally large scratch allocation; just more, smaller writes.
-AUDIO_SCRATCH_FRAMES: usize : 4096
+AUDIO_MAX_VOICES: usize : 16
+AUDIO_MUSIC_VOICE: usize : 0
 
-struct AudioRequest {
-    pcm:      *u8,
-    n_frames: usize,
+# AUDIO_MIX_FRAMES: frames mixed and written per chunk (~23ms at 44.1kHz):
+# how quickly a newly started sound joins the mix
+AUDIO_MIX_FRAMES: usize : 1024
+
+struct Voice {
+    pcm:      *u8      # the Sound's interleaved s16 PCM (not owned)
+    n_frames: usize
+    channels: i32
+    pos:      u64      # read position in source frames, 16.16 fixed point
+    step:     u64      # source frames per output frame, 16.16 (rate conversion)
+    volume:   f32
+    looping:  bool
+    active:   bool
 }
 
-# AudioCtrl: the state shared between a caller's thread and the
-# background audio thread — always accessed through a pointer (see
-# AudioOutput.ctrl) so every AudioOutput copy still refers to the same
-# queue, mutex, and PCM handle. `running=false` plus an empty queue is
-# the worker's exit signal (see close_output/audio_worker).
-#
-# paused/stop_requested/volume are whole-output controls, not per-sound:
-# this module has no software mixing (see decode_mp3's own doc comment)
-# and every play_sound request shares the one PCM stream `ctrl.pcm`
-# already is, so there's no way to identify "just this one sound" once
-# it's queued — pausing/stopping/setting volume affects everything
-# currently playing or about to play through this AudioOutput. See
-# pause_output/resume_output/stop_output/set_volume below.
 struct AudioCtrl {
     mu:              sync.Mutex,
-    pcm:             *u8,
+    pcm:             *u8,       # ALSA handle; null for an offline output
+    channels:        i32,
+    rate:            i32,
     bytes_per_frame: usize,
     thread:          u64,
-    queue:           [AUDIO_QUEUE_CAP]AudioRequest,
-    head:            usize,
-    count:           usize,
+    voices:          [16]Voice,
     running:         bool,
     paused:          bool,
     stop_requested:  bool,
-    volume:          f32,
-    scratch:         *u8,
+    volume:          f32,       # master volume
+    music_volume:    f32,
+    mix:             *i32,      # accumulator, AUDIO_MIX_FRAMES * channels
+    scratch:         *u8,       # mixed s16 output, AUDIO_MIX_FRAMES frames
 }
 
-# apply_volume: copy `n_frames` frames (interleaved 16-bit PCM) from
-# `src` to `dst`, scaling every sample by `vol` and clamping to i16
-# range — vol > 1.0 can clip, same as any other digital gain. A copy
-# rather than an in-place scale since `src` is the caller's own decoded
-# Sound.pcm, reused on every future play_sound call for that Sound;
-# permanently rescaling it here would make one call's volume answer for
-# every later one too.
-fn apply_volume(src: *u8, dst: *u8, n_frames: usize, bytes_per_frame: usize, vol: f32) {
-    n_samples: usize = n_frames * (bytes_per_frame / 2)
-    src16: *i16 = @bitcast(*i16, src)
-    dst16: *i16 = @bitcast(*i16, dst)
-    i: usize = 0
-    while i < n_samples {
-        v: f32 = @f32(src16[i]) * vol
-        if v > 32767.0 { v = 32767.0 }
-        if v < -32768.0 { v = -32768.0 }
-        dst16[i] = @i16(v)
-        i += 1
+# mix_chunk: mix `frames` output frames from every active voice into
+# ctrl.scratch (s16, interleaved), advancing and retiring voices. Caller
+# holds ctrl.mu.
+fn mix_chunk(ctrl: *AudioCtrl, frames: usize) {
+    out_ch: usize = @usize(ctrl.channels)
+    n: usize = frames * out_ch
+    for i => 0..n { ctrl.mix[i] = 0 }
+    for v => 0..AUDIO_MAX_VOICES {
+        if !ctrl.voices[v].active { continue }
+        src: *i16 = @bitcast(*i16, ctrl.voices[v].pcm)
+        src_ch: usize = @usize(ctrl.voices[v].channels)
+        total: u64 = @u64(ctrl.voices[v].n_frames)
+        pos: u64 = ctrl.voices[v].pos
+        step: u64 = ctrl.voices[v].step
+        vol: f32 = ctrl.voices[v].volume
+        f: usize = 0
+        while f < frames {
+            sf: u64 = pos >> 16
+            if sf >= total {
+                if !ctrl.voices[v].looping || total == 0 {
+                    ctrl.voices[v].active = false
+                    break
+                }
+                pos = pos - (total << 16)
+                sf = pos >> 16
+            }
+            base: usize = @usize(sf) * src_ch
+            if out_ch == src_ch {
+                for c => 0..out_ch {
+                    ctrl.mix[f * out_ch + c] += @i32(@f32(src[base + c]) * vol)
+                }
+            } elif src_ch == 1 {
+                m: i32 = @i32(@f32(src[base]) * vol)
+                for c2 => 0..out_ch { ctrl.mix[f * out_ch + c2] += m }
+            } else {
+                # downmix: average the source channels into each output channel
+                sum: i32 = 0
+                for c3 => 0..src_ch { sum += @i32(src[base + c3]) }
+                avg: i32 = @i32(@f32(sum / @i32(src_ch)) * vol)
+                for c4 => 0..out_ch { ctrl.mix[f * out_ch + c4] += avg }
+            }
+            pos += step
+            f += 1
+        }
+        ctrl.voices[v].pos = pos
+    }
+    out16: *i16 = @bitcast(*i16, ctrl.scratch)
+    master: f32 = ctrl.volume
+    for j => 0..n {
+        x: f32 = @f32(ctrl.mix[j]) * master
+        if x > 32767.0 { x = 32767.0 }
+        if x < -32768.0 { x = -32768.0 }
+        out16[j] = @i16(x)
     }
 }
 
-# audio_worker: runs on its own thread for the lifetime of an
-# AudioOutput. Blocks freely on snd_pcm_writei — that's the whole point:
-# a game's single-threaded render loop calls play_sound() to enqueue a
-# request (a mutex-guarded pointer/length copy, never touches ALSA) and
-# carries on immediately, no matter how slowly the ALSA backend the
-# system resolves "default" to actually services a write. Some ALSA PCM
-# plugins — PulseAudio's/PipeWire's ALSA-compat shim especially, common
-# on desktop Linux — have historically not honored SND_PCM_NONBLOCK
-# cheaply (or at all) on every write, which was the working theory
-# behind this rewrite (a stutter reported against
-# examples/games/astro_blaster, worse holding fire down). It turned out
-# not to be the cause — the same stutter reproduces with audio skipped
-# entirely (`przp run --no-audio`) — but moving playback off the render
-# thread is still the right design regardless of what "default"
-# resolves to, so it stays; the actual stutter is still open, see
-# astro_blaster's main.przp for the frame-stall diagnostic tracking it.
+fn any_active(ctrl: *AudioCtrl) -> bool {
+    for v => 0..AUDIO_MAX_VOICES {
+        if ctrl.voices[v].active { ret true }
+    }
+    ret false
+}
+
 fn audio_worker(arg: *u8) -> *u8 {
     ctrl: *AudioCtrl = arg
     while true {
         sync.lock(&ctrl.mu)
-        if ctrl.paused || ctrl.count == 0 {
-            still_running: bool = ctrl.running
+        if ctrl.stop_requested {
+            for v => 0..AUDIO_MAX_VOICES { ctrl.voices[v].active = false }
+            ctrl.stop_requested = false
             sync.unlock(&ctrl.mu)
-            if !still_running { ret null }
+            snd_pcm_drop(ctrl.pcm)
+            snd_pcm_prepare(ctrl.pcm)
+            continue
+        }
+        active: bool = any_active(ctrl)
+        if !ctrl.running && (!active || ctrl.paused) {
+            sync.unlock(&ctrl.mu)
+            ret null
+        }
+        if ctrl.paused || !active {
+            sync.unlock(&ctrl.mu)
             os.sleep_ms(2)
             continue
         }
-        req: AudioRequest = ctrl.queue[ctrl.head]
-        ctrl.head = (ctrl.head + 1) % AUDIO_QUEUE_CAP
-        ctrl.count -= 1
-        # A stop_output before this dequeue only ever meant to affect
-        # whatever was already in flight — clear it now so it can't
-        # wrongly cut off this brand new, unrelated request too.
-        ctrl.stop_requested = false
+        mix_chunk(ctrl, AUDIO_MIX_FRAMES)
         sync.unlock(&ctrl.mu)
 
-        buf: *u8 = req.pcm
-        frames_left: usize = req.n_frames
-        while frames_left > 0 {
-            sync.lock(&ctrl.mu)
-            stop_now: bool = ctrl.stop_requested
-            paused_now: bool = ctrl.paused
-            vol: f32 = ctrl.volume
-            sync.unlock(&ctrl.mu)
-
-            if stop_now {
-                snd_pcm_drop(ctrl.pcm)
-                snd_pcm_prepare(ctrl.pcm)
-                sync.lock(&ctrl.mu)
-                ctrl.stop_requested = false
-                sync.unlock(&ctrl.mu)
-                break
-            }
-            if paused_now {
-                os.sleep_ms(5)
-                continue
-            }
-
-            chunk: usize = frames_left
-            if chunk > AUDIO_SCRATCH_FRAMES { chunk = AUDIO_SCRATCH_FRAMES }
-
-            write_buf: *u8 = buf
-            if vol != 1.0 {
-                apply_volume(buf, ctrl.scratch, chunk, ctrl.bytes_per_frame, vol)
-                write_buf = ctrl.scratch
-            }
-
-            r: i64 = snd_pcm_writei(ctrl.pcm, write_buf, @u64(chunk))
+        # blocking write outside the lock, so play_sound never waits on ALSA
+        buf: *u8 = ctrl.scratch
+        left: usize = AUDIO_MIX_FRAMES
+        while left > 0 {
+            r: i64 = snd_pcm_writei(ctrl.pcm, buf, @u64(left))
             if r < 0 {
                 if snd_pcm_recover(ctrl.pcm, @i32(r), 1) != 0 { break }
                 continue
             }
-            written: usize = @usize(r)
-            if written == 0 { break }
-            frames_left -= written
-            buf = buf + written * ctrl.bytes_per_frame
+            if r == 0 { break }
+            left -= @usize(r)
+            buf = buf + @usize(r) * ctrl.bytes_per_frame
         }
     }
     ret null
 }
 
-# AudioOutput: an open ALSA PCM playback handle plus its background
-# playback thread. `device` is an ALSA PCM name — "default" for the
-# system's default output, "null" for ALSA's hardware-free sink (useful
-# for testing FFI plumbing on a machine with no real sound card, the same
-# role Xvfb plays for std/graphics/gl).
+# AudioOutput: an open playback device and its mixer. `device` is an ALSA
+# PCM name — "default" for the system's default output, "null" for ALSA's
+# hardware-free sink (useful on a machine with no sound card, the same role
+# Xvfb plays for std/graphics).
 struct AudioOutput {
     channels: i32,
     ctrl:     *AudioCtrl,
 }
 
+fn new_ctrl(rate: i32, channels: i32) -> *AudioCtrl {
+    ctrl: *AudioCtrl = @alo(AudioCtrl)
+    ctrl.mu = sync.mutex_new()
+    ctrl.pcm = null
+    ctrl.channels = channels
+    ctrl.rate = rate
+    ctrl.bytes_per_frame = @usize(channels) * 2
+    for v => 0..AUDIO_MAX_VOICES { ctrl.voices[v].active = false }
+    ctrl.running = true
+    ctrl.paused = false
+    ctrl.stop_requested = false
+    ctrl.volume = 1.0
+    ctrl.music_volume = 1.0
+    ctrl.mix = @alo(i32, AUDIO_MIX_FRAMES * @usize(channels))
+    ctrl.scratch = @alo(u8, AUDIO_MIX_FRAMES * ctrl.bytes_per_frame)
+    ret ctrl
+}
+
+fn free_ctrl(ctrl: *AudioCtrl) {
+    sync.mutex_destroy(&ctrl.mu)
+    free(@bitcast(*u8, ctrl.mix))
+    free(ctrl.scratch)
+    free(@bitcast(*u8, ctrl))
+}
+
+# open_output: open `device` at `rate` Hz with `channels` channels (2 for
+# stereo). Sounds in any rate/channel layout can be played on it.
+# Errors: 1 can't open the device, 2 format rejected, 3 thread failed.
 fn open_output(device: str, rate: i32, channels: i32) -> !AudioOutput {
     pcm: *u8 = null
     if snd_pcm_open(&pcm, device.data, SND_PCM_STREAM_PLAYBACK, 0) < 0 {
         ret @err(1)
     }
     if snd_pcm_set_params(pcm, SND_PCM_FORMAT_S16_LE, SND_PCM_ACCESS_RW_INTERLEAVED,
-            @u32(channels), @u32(rate), 1, 500000u32) < 0 {
+            @u32(channels), @u32(rate), 1, 100000u32) < 0 {
         snd_pcm_close(pcm)
         ret @err(2)
     }
-
-    ctrl: *AudioCtrl = @alo(AudioCtrl)
-    ctrl.mu = sync.mutex_new()
+    ctrl: *AudioCtrl = new_ctrl(rate, channels)
     ctrl.pcm = pcm
-    ctrl.bytes_per_frame = @usize(channels) * 2
-    ctrl.head = 0
-    ctrl.count = 0
-    ctrl.running = true
-    ctrl.paused = false
-    ctrl.stop_requested = false
-    ctrl.volume = 1.0
-    ctrl.scratch = @alo(u8, AUDIO_SCRATCH_FRAMES * ctrl.bytes_per_frame)
-
     tid: u64 = 0
-    if pthread_create(&tid, null, audio_worker, ctrl) != 0 {
-        free(ctrl.scratch)
-        sync.mutex_destroy(&ctrl.mu)
-        free(ctrl)
+    if pthread_create(&tid, null, audio_worker, @bitcast(*u8, ctrl)) != 0 {
+        free_ctrl(ctrl)
         snd_pcm_close(pcm)
         ret @err(3)
     }
     ctrl.thread = tid
-
     ret AudioOutput{.channels=channels, .ctrl=ctrl}
 }
 
-# play_sound: hands `s` off to the background audio thread and returns
-# immediately — never calls into ALSA itself, so it never stalls the
-# caller no matter how the underlying PCM device behaves. Returns the
-# frame count enqueued, or 0 if the queue was full (dropped, see
-# AUDIO_QUEUE_CAP) — either way the caller's frame time is unaffected.
+# open_offline: a mixer with no device or thread — render_offline pulls
+# mixed audio from it directly. For tests, or writing audio to a file.
+fn open_offline(rate: i32, channels: i32) -> AudioOutput {
+    ctrl: *AudioCtrl = new_ctrl(rate, channels)
+    ctrl.running = false
+    ret AudioOutput{.channels=channels, .ctrl=ctrl}
+}
+
+# render_offline: mix the next `frames` frames (at most AUDIO_MIX_FRAMES)
+# of an open_offline output; returns interleaved samples valid until the
+# next call
+fn render_offline(out: AudioOutput, frames: usize) -> *i16 {
+    n: usize = frames
+    if n > AUDIO_MIX_FRAMES { n = AUDIO_MIX_FRAMES }
+    ctrl: *AudioCtrl = out.ctrl
+    sync.lock(&ctrl.mu)
+    mix_chunk(ctrl, n)
+    sync.unlock(&ctrl.mu)
+    ret @bitcast(*i16, ctrl.scratch)
+}
+
+fn start_voice(ctrl: *AudioCtrl, v: usize, s: Sound, vol: f32, looping: bool) {
+    ctrl.voices[v] = Voice{.pcm = s.pcm, .n_frames = s.n_frames, .channels = s.channels,
+                           .pos = 0, .step = (@u64(s.rate) << 16) / @u64(ctrl.rate),
+                           .volume = vol, .looping = looping, .active = true}
+}
+
+# play_sound: start `s` as a one-shot effect, mixed with whatever else is
+# playing. Returns its frame count, or 0 if every effect voice is busy (the
+# sound is skipped — the caller never waits). `s` must stay alive while it
+# plays.
 fn play_sound(out: AudioOutput, s: Sound) -> i64 {
     ctrl: *AudioCtrl = out.ctrl
     sync.lock(&ctrl.mu)
-    if ctrl.count >= AUDIO_QUEUE_CAP {
-        sync.unlock(&ctrl.mu)
-        ret 0
+    for v => 1..AUDIO_MAX_VOICES {
+        if !ctrl.voices[v].active {
+            start_voice(ctrl, v, s, 1.0, false)
+            sync.unlock(&ctrl.mu)
+            ret @i64(s.n_frames)
+        }
     }
-    tail: usize = (ctrl.head + ctrl.count) % AUDIO_QUEUE_CAP
-    ctrl.queue[tail] = AudioRequest{.pcm=s.pcm, .n_frames=s.n_frames}
-    ctrl.count += 1
     sync.unlock(&ctrl.mu)
-    ret @i64(s.n_frames)
+    ret 0
 }
 
-# pause_output/resume_output: stop/resume feeding new audio to the ALSA
-# buffer. Not instant silence — whatever's already sitting in the
-# hardware ring buffer (up to open_output's ~500ms latency) keeps
-# playing out, since pausing doesn't touch it, only what the worker
-# writes *next*. That's deliberate: resuming quickly picks up exactly
-# where playback left off, no click or dropped frame at the seam. For
-# an immediate cut instead, see stop_output.
+# play_music: play `s` on the music voice, replacing any current music;
+# `looping` restarts it seamlessly at the end
+fn play_music(out: AudioOutput, s: Sound, looping: bool) {
+    ctrl: *AudioCtrl = out.ctrl
+    sync.lock(&ctrl.mu)
+    start_voice(ctrl, AUDIO_MUSIC_VOICE, s, ctrl.music_volume, looping)
+    sync.unlock(&ctrl.mu)
+}
+
+fn stop_music(out: AudioOutput) {
+    ctrl: *AudioCtrl = out.ctrl
+    sync.lock(&ctrl.mu)
+    ctrl.voices[AUDIO_MUSIC_VOICE].active = false
+    sync.unlock(&ctrl.mu)
+}
+
+fn is_music_playing(out: AudioOutput) -> bool {
+    ctrl: *AudioCtrl = out.ctrl
+    sync.lock(&ctrl.mu)
+    p: bool = ctrl.voices[AUDIO_MUSIC_VOICE].active
+    sync.unlock(&ctrl.mu)
+    ret p
+}
+
+# set_music_volume: the music voice's own volume (1.0 = unchanged), on top
+# of the master volume — e.g. duck the music under dialogue
+fn set_music_volume(out: AudioOutput, vol: f32) {
+    v: f32 = vol
+    if v < 0.0 { v = 0.0 }
+    ctrl: *AudioCtrl = out.ctrl
+    sync.lock(&ctrl.mu)
+    ctrl.music_volume = v
+    ctrl.voices[AUDIO_MUSIC_VOICE].volume = v
+    sync.unlock(&ctrl.mu)
+}
+
+# sounds_playing: how many voices (music included) are playing right now
+fn sounds_playing(out: AudioOutput) -> i32 {
+    ctrl: *AudioCtrl = out.ctrl
+    sync.lock(&ctrl.mu)
+    n: i32 = 0
+    for v => 0..AUDIO_MAX_VOICES {
+        if ctrl.voices[v].active { n += 1 }
+    }
+    sync.unlock(&ctrl.mu)
+    ret n
+}
+
+# pause_output/resume_output: stop/resume mixing. Whatever is already in
+# the device's buffer (~100ms) plays out; resuming continues every voice
+# exactly where it left off.
 fn pause_output(out: AudioOutput) {
     ctrl: *AudioCtrl = out.ctrl
     sync.lock(&ctrl.mu)
@@ -368,26 +451,21 @@ fn is_paused(out: AudioOutput) -> bool {
     ret p
 }
 
-# stop_output: drop whatever's queued (not yet started) and cut off
-# whatever's currently mid-write immediately — snd_pcm_drop discards the
-# hardware ring buffer's contents outright (unlike pause, which leaves
-# them to play out), then snd_pcm_prepare puts the stream back in a
-# writable state for whatever plays next.
+# stop_output: silence everything now — every voice (music included) is
+# stopped and the device's buffer is discarded
 fn stop_output(out: AudioOutput) {
     ctrl: *AudioCtrl = out.ctrl
     sync.lock(&ctrl.mu)
-    ctrl.count = 0
-    ctrl.head = 0
-    ctrl.stop_requested = true
+    if ctrl.pcm == null {
+        for v => 0..AUDIO_MAX_VOICES { ctrl.voices[v].active = false }
+    } else {
+        ctrl.stop_requested = true
+    }
     sync.unlock(&ctrl.mu)
 }
 
-# set_volume: scale every sample written from this point on by `vol`
-# (1.0 = unchanged, 0.0 = silent, >1.0 = boost — clamps to i16 range,
-# same as any other digital gain past 1.0 risking clipping). Applies to
-# the whole output, including whatever's already mid-write — there's no
-# per-sound identity to target (see AudioCtrl's own doc comment).
-# Negative values clamp to 0.0 rather than erroring.
+# set_volume: master volume for everything (1.0 = unchanged, 0.0 = silent,
+# >1.0 boosts and may clip). Negative values clamp to 0.0.
 fn set_volume(out: AudioOutput, vol: f32) {
     v: f32 = vol
     if v < 0.0 { v = 0.0 }
@@ -397,25 +475,20 @@ fn set_volume(out: AudioOutput, vol: f32) {
     sync.unlock(&ctrl.mu)
 }
 
-# close_output: signals the worker to stop once its queue drains, joins
-# it (bounded — the worker only blocks inside ALSA calls that themselves
-# complete), then drains the PCM device and closes it. Joining first
-# guarantees the worker is done touching `pcm` before this thread closes
-# it out from under it. Clears `paused` along with `running`: the worker's
-# exit check requires !paused (see audio_worker) precisely so a paused
-# output can still shut down instead of waiting forever for a
-# resume_output that's never coming.
+# close_output: stop the music, let effects already playing finish, then
+# shut the device down. Safe to call while paused.
 fn close_output(out: AudioOutput) {
     ctrl: *AudioCtrl = out.ctrl
     sync.lock(&ctrl.mu)
+    ctrl.voices[AUDIO_MUSIC_VOICE].active = false
+    was_running: bool = ctrl.running
     ctrl.running = false
     ctrl.paused = false
     sync.unlock(&ctrl.mu)
-
-    pthread_join(ctrl.thread, null)
-    snd_pcm_drain(ctrl.pcm)
-    snd_pcm_close(ctrl.pcm)
-    sync.mutex_destroy(&ctrl.mu)
-    free(ctrl.scratch)
-    free(ctrl)
+    if ctrl.pcm != null {
+        if was_running { pthread_join(ctrl.thread, null) }
+        snd_pcm_drain(ctrl.pcm)
+        snd_pcm_close(ctrl.pcm)
+    }
+    free_ctrl(ctrl)
 }

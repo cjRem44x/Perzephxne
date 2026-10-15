@@ -1,0 +1,67 @@
+# std/audio mixer via the offline renderer: overlap + clamp, looping music,
+# volumes, voice limit, stop, channel and sample-rate conversion
+import(audio = "std/audio")
+
+fn mk(vals: []i16, channels: i32, rate: i32) -> audio.Sound {
+    p: *i16 = @alo(i16, vals.len)
+    for i => 0..vals.len { p[i] = vals[i] }
+    ret audio.Sound{.pcm = @bitcast(*u8, p), .n_frames = vals.len / @usize(channels),
+                    .channels = channels, .rate = rate}
+}
+
+fn show(label: str, p: *i16, n: usize) {
+    @pf("{label}:")
+    for i => 0..n { @pf(" {p[i]}") }
+    @pf("\n")
+}
+
+fn main() {
+    out: audio.AudioOutput = audio.open_offline(8000, 1)
+    a: audio.Sound = mk([100i16, 200i16, 300i16], 1, 8000)
+    b: audio.Sound = mk([32700i16, 30000i16], 1, 8000)
+
+    # two effects overlap and sum; the sum clamps at 32767; voices end
+    audio.play_sound(out, a)
+    audio.play_sound(out, b)
+    @pf("playing={audio.sounds_playing(out)}\n")
+    show("mix", audio.render_offline(out, 5), 5)
+    @pf("playing after={audio.sounds_playing(out)}\n")
+
+    # looping music wraps; master and music volume scale it
+    audio.play_music(out, a, true)
+    show("loop", audio.render_offline(out, 7), 7)
+    audio.set_music_volume(out, 0.5)
+    show("music vol", audio.render_offline(out, 3), 3)
+    audio.set_volume(out, 2.0)
+    show("master vol", audio.render_offline(out, 3), 3)
+    audio.set_volume(out, 1.0)
+    audio.stop_music(out)
+    @pf("music playing={audio.is_music_playing(out)}\n")
+
+    # 15 effect voices max; a 16th is skipped
+    n_ok: i32 = 0
+    for i => 0..16 {
+        if audio.play_sound(out, a) > 0 { n_ok += 1 }
+    }
+    @pf("started={n_ok} playing={audio.sounds_playing(out)}\n")
+    audio.stop_output(out)
+    @pf("after stop={audio.sounds_playing(out)}\n")
+    audio.close_output(out)
+
+    # mono -> stereo duplicates; 16kHz source on 8kHz output skips every other frame
+    st: audio.AudioOutput = audio.open_offline(8000, 2)
+    hi: audio.Sound = mk([1i16, 2i16, 3i16, 4i16, 5i16, 6i16], 1, 16000)
+    audio.play_sound(st, hi)
+    show("mono->stereo @2x", audio.render_offline(st, 4), 8)
+    # stereo source on a mono output averages the channels
+    audio.close_output(st)
+    mo: audio.AudioOutput = audio.open_offline(8000, 1)
+    sv: audio.Sound = mk([10i16, 30i16, -40i16, 0i16], 2, 8000)
+    audio.play_sound(mo, sv)
+    show("stereo->mono", audio.render_offline(mo, 3), 3)
+    audio.close_output(mo)
+    audio.free_sound(a)
+    audio.free_sound(b)
+    audio.free_sound(hi)
+    audio.free_sound(sv)
+}

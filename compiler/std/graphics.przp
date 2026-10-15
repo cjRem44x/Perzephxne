@@ -102,7 +102,15 @@ enum Key => i32 {
     H = 14, I = 15, J = 16, K = 17, L = 18, M = 19, N = 20,
     O = 21, P = 22, Q = 23, R = 24, S = 25, T = 26, U = 27,
     V = 28, W = 29, X = 30, Y = 31, Z = 32,
+    Backspace = 33, Tab = 34, Delete = 35, Home = 36, End = 37,
+    PageUp = 38, PageDown = 39,
+    Num0 = 40, Num1 = 41, Num2 = 42, Num3 = 43, Num4 = 44,
+    Num5 = 45, Num6 = 46, Num7 = 47, Num8 = 48, Num9 = 49,
+    LeftShift = 50, RightShift = 51, LeftCtrl = 52, RightCtrl = 53,
 }
+
+KEY_COUNT: i32 : 54
+CHAR_QUEUE_CAP: i32 : 64
 
 enum MouseButton => i32 {
     Left = 0, Right = 1, Middle = 2,
@@ -129,7 +137,12 @@ struct GfxState {
     should_close: bool,
     width:  i32,
     height: i32,
-    keys_down:  [40]bool,
+    keys_down:  [64]bool,
+    keys_pressed: [64]bool,   # went down (or auto-repeated) since the last poll
+    chars:      [64]i32,      # typed characters not yet read (ring buffer)
+    char_head:  i32,
+    char_count: i32,
+    wheel:      f32,          # mouse wheel notches since the last poll (+ = up)
     mouse_x: f32,
     mouse_y: f32,
     mouse_down: [3]bool,
@@ -165,6 +178,18 @@ fn keysym_to_key(ks: u64) -> i32 {
     if ks == 0xff53 { ret @i32(Key.Right) }
     if ks >= 0x0061 && ks <= 0x007a { ret @i32(Key.A) + @i32(ks - 0x0061) }
     if ks >= 0x0041 && ks <= 0x005a { ret @i32(Key.A) + @i32(ks - 0x0041) }
+    if ks >= 0x0030 && ks <= 0x0039 { ret @i32(Key.Num0) + @i32(ks - 0x0030) }
+    if ks == 0xff08 { ret @i32(Key.Backspace) }
+    if ks == 0xff09 { ret @i32(Key.Tab) }
+    if ks == 0xffff { ret @i32(Key.Delete) }
+    if ks == 0xff50 { ret @i32(Key.Home) }
+    if ks == 0xff57 { ret @i32(Key.End) }
+    if ks == 0xff55 { ret @i32(Key.PageUp) }
+    if ks == 0xff56 { ret @i32(Key.PageDown) }
+    if ks == 0xffe1 { ret @i32(Key.LeftShift) }
+    if ks == 0xffe2 { ret @i32(Key.RightShift) }
+    if ks == 0xffe3 { ret @i32(Key.LeftCtrl) }
+    if ks == 0xffe4 { ret @i32(Key.RightCtrl) }
     ret -1
 }
 
@@ -185,6 +210,8 @@ fn x11_button_to_index(btn: u32) -> i32 {
 # frame — no event can be read twice or missed between frames.
 fn poll_events() {
     buf: [192]u8 = undef
+    for i => 0..KEY_COUNT { STATE.keys_pressed[i] = false }
+    STATE.wheel = 0.0
     while win.XPending(STATE.display) > 0 {
         win.XNextEvent(STATE.display, &buf[0])
         ty: i32 = win.event_type(&buf[0])
@@ -195,12 +222,25 @@ fn poll_events() {
             }
         } elif ty == win.EVENT_KEY_PRESS {
             k: i32 = keysym_to_key(win.XKeycodeToKeysym(STATE.display, @u8(win.event_keycode(&buf[0])), 0))
-            if k >= 0 { STATE.keys_down[k] = true }
+            if k >= 0 {
+                STATE.keys_down[k] = true
+                STATE.keys_pressed[k] = true
+            }
+            text: [8]u8 = undef
+            ks: u64 = 0
+            n: i32 = win.XLookupString(&buf[0], &text[0], 8, &ks, null)
+            # printable text only: control bytes (Enter, Backspace, Tab, ...)
+            # are reported through is_key_pressed instead
+            if n == 1 && text[0] >= 32u8 && text[0] != 127u8 { push_char(@i32(text[0])) }
         } elif ty == win.EVENT_KEY_RELEASE {
             k: i32 = keysym_to_key(win.XKeycodeToKeysym(STATE.display, @u8(win.event_keycode(&buf[0])), 0))
             if k >= 0 { STATE.keys_down[k] = false }
         } elif ty == win.EVENT_BUTTON_PRESS {
-            b: i32 = x11_button_to_index(win.event_button(&buf[0]))
+            xb: u32 = win.event_button(&buf[0])
+            # X11 reports the wheel as buttons 4 (up) and 5 (down)
+            if xb == 4 { STATE.wheel += 1.0 }
+            if xb == 5 { STATE.wheel -= 1.0 }
+            b: i32 = x11_button_to_index(xb)
             if b >= 0 { STATE.mouse_down[b] = true }
         } elif ty == win.EVENT_BUTTON_RELEASE {
             b: i32 = x11_button_to_index(win.event_button(&buf[0]))
@@ -382,6 +422,31 @@ impl Window {
 }
 
 fn is_key_down(k: Key) -> bool { ret STATE.keys_down[@i32(k)] }
+
+# is_key_pressed: true in the frame the key went down — and again on each
+# keyboard auto-repeat while it's held, so holding Backspace keeps deleting
+fn is_key_pressed(k: Key) -> bool { ret STATE.keys_pressed[@i32(k)] }
+
+fn push_char(c: i32) {
+    if STATE.char_count >= CHAR_QUEUE_CAP { ret }
+    STATE.chars[(STATE.char_head + STATE.char_count) % CHAR_QUEUE_CAP] = c
+    STATE.char_count += 1
+}
+
+# get_char_pressed: the next character typed since the last frame, with
+# Shift/Caps Lock applied ('a', 'A', '!', ...), or 0 when there are no more.
+# Call it in a loop each frame to collect everything typed. Printable
+# characters only: Enter, Backspace, Tab etc. come from is_key_pressed.
+fn get_char_pressed() -> i32 {
+    if STATE.char_count == 0 { ret 0 }
+    c: i32 = STATE.chars[STATE.char_head]
+    STATE.char_head = (STATE.char_head + 1) % CHAR_QUEUE_CAP
+    STATE.char_count -= 1
+    ret c
+}
+
+# get_mouse_wheel_move: wheel notches this frame; positive = scrolled up
+fn get_mouse_wheel_move() -> f32 { ret STATE.wheel }
 fn is_mouse_button_down(b: MouseButton) -> bool { ret STATE.mouse_down[@i32(b)] }
 fn mouse_position() -> (f32, f32) { ret (STATE.mouse_x, STATE.mouse_y) }
 
@@ -463,6 +528,27 @@ fn draw_texture_rec_tinted(t: Texture, source: Rectangle, pos: Vector2, tint: Co
     v1: f32 = (source.y + source.h) / @f32(t.h)
     gl.draw_textured_rect_uv(t.id, pos.x, pos.y, source.w, source.h, u0, v0, u1, v1,
         @f32(tint.r) / 255.0, @f32(tint.g) / 255.0, @f32(tint.b) / 255.0, @f32(tint.a) / 255.0)
+}
+
+# draw_texture_scaled: the whole texture stretched to fill `dest`, tinted
+# (WHITE = unchanged colors)
+fn draw_texture_scaled(t: Texture, dest: Rectangle, tint: Color) {
+    gl.draw_textured_rect_uv(t.id, dest.x, dest.y, dest.w, dest.h, 0.0, 0.0, 1.0, 1.0,
+        @f32(tint.r) / 255.0, @f32(tint.g) / 255.0, @f32(tint.b) / 255.0, @f32(tint.a) / 255.0)
+}
+
+# fit_rect: the largest rectangle with a w:h aspect ratio that fits inside
+# `box`, centered in it — for drawing an image/GIF/video into a fixed panel
+# without stretching it
+fn fit_rect(w: i32, h: i32, box: Rectangle) -> Rectangle {
+    if w <= 0 || h <= 0 { ret box }
+    sx: f32 = box.w / @f32(w)
+    sy: f32 = box.h / @f32(h)
+    s: f32 = sx
+    if sy < sx { s = sy }
+    fw: f32 = @f32(w) * s
+    fh: f32 = @f32(h) * s
+    ret Rectangle{.x = box.x + (box.w - fw) / 2.0, .y = box.y + (box.h - fh) / 2.0, .w = fw, .h = fh}
 }
 
 # ── Bitmap fonts ─────────────────────────────────────────────────────────────

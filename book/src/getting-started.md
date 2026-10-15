@@ -62,6 +62,6 @@ The `examples/` directory at the repo root is a gallery of complete, runnable pr
 - `examples/dsa/` — data structures: linked list, binary search tree, stack/queue, sorting
 - `examples/use_cases/` — small complete programs: a calculator, a to-do list, a word counter, a password-gated encrypted note (`std/crypto`)
 - `examples/graphics/` — windowing and 2D drawing via `std/graphics` (needs a real or virtual X display — see [Graphics](./graphics.md))
-- `examples/games/` — complete small games exercising the 2D stack end-to-end: `astro_blaster`, an Asteroids-style shooter using `std/graphics`, `std/image`, `std/gdev`, and `std/audio` together (same X display requirement as `examples/graphics/`)
+- `examples/games/` — complete small games exercising the 2D stack end-to-end: `astro_blaster`, an Asteroids-style shooter using `std/graphics`, `std/image`, `std/gdev`, and `std/audio` together (same X display requirement as `examples/graphics/`); and `text_adventure`, a terminal-style text adventure (typed input, styled text, PNG/GIF/video room pictures, music and sound effects, JSON world data) meant as a starting point for your own game — see its `README.md`
 
 The [Standard Library](./stdlib.md) reference page also has a runnable code snippet for every module.

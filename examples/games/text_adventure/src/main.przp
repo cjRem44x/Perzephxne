@@ -1,0 +1,244 @@
+# examples/games/text_adventure — "The Lantern Keep", a small text
+# adventure in a terminal-style window. A starting point for a bigger game:
+#
+#   ui.przp        fonts, styles, word wrap, positioned/sized/colored text
+#   terminal.przp  scrolling console + input line (history, scrollback)
+#   world.przp     rooms/items loaded from src/world.json
+#   game.przp      game state and the command table (HashMap + aliases)
+#   main.przp      window layout, room media (PNG/GIF/video), audio, loop
+#
+# Run it from this directory:
+#   przp run                     # needs an X display
+#   przp run --no-audio          # skip sound
+#   przp run --demo              # plays itself, printing the transcript
+#   przp run --audio-device=null # sound code runs, output discarded
+#
+# Needs the X11, GL, zlib, ffmpeg (libavformat/libavcodec/libavutil/
+# libswscale), ALSA and mpg123 development packages — see przp.toml.
+
+import(gfx = "std/graphics", gdev = "std/gdev", video = "std/video")
+import(audio = "std/audio", c = "std/collections", s = "std/str")
+import(ui = "ui", term = "terminal", w = "world", game = "game")
+
+WIN_W: i32 : 1024
+WIN_H: i32 : 640
+
+MEDIA_IMAGE: i32 : 0
+MEDIA_GIF:   i32 : 1
+MEDIA_VIDEO: i32 : 2
+
+# Media: one room's picture — a still image, an animated GIF, or a video
+struct Media {
+    kind: i32,
+    tex:  gfx.Texture,
+    gif:  *gdev.AnimatedSprite,
+    vid:  *video.VideoSprite,
+    w:    i32,
+    h:    i32,
+}
+
+fn load_media(path: str) -> !*Media {
+    m: *Media = @alo(Media)
+    m.gif = null
+    m.vid = null
+    if s.ends_with(path, ".gif") {
+        g, ge: !gdev.AnimatedSprite = gdev.load_animated_sprite(path)
+        if ge != 0 { ret @err(ge) }
+        m.kind = MEDIA_GIF
+        m.gif = @alo(gdev.AnimatedSprite)
+        m.gif.* = g
+        m.w = g.width()
+        m.h = g.height()
+    } elif s.ends_with(path, ".mp4") {
+        v, ve: !video.VideoSprite = video.load_video_sprite(path)
+        if ve != 0 { ret @err(ve) }
+        m.kind = MEDIA_VIDEO
+        m.vid = @alo(video.VideoSprite)
+        m.vid.* = v
+        m.vid.video.looping = true
+        m.w = v.width()
+        m.h = v.height()
+    } else {
+        t, te: !gfx.Texture = gfx.Texture.load(path)
+        if te != 0 { ret @err(te) }
+        m.kind = MEDIA_IMAGE
+        m.tex = t
+        m.w = t.w
+        m.h = t.h
+    }
+    ret @ok(m)
+}
+
+fn update_media(m: *Media, dt: f32) {
+    if m.kind == MEDIA_GIF { m.gif.update(dt) }
+    if m.kind == MEDIA_VIDEO { m.vid.update(dt) }
+}
+
+fn draw_media(m: *Media, box: gfx.Rectangle) {
+    r: gfx.Rectangle = gfx.fit_rect(m.w, m.h, box)
+    if m.kind == MEDIA_IMAGE { gfx.draw_texture_scaled(m.tex, r, gfx.WHITE) }
+    if m.kind == MEDIA_GIF { m.gif.draw_scaled(r) }
+    if m.kind == MEDIA_VIDEO { m.vid.draw_scaled(r) }
+}
+
+fn load_sound(path: str) -> audio.Sound {
+    snd, e: !audio.Sound = audio.decode_mp3(path)
+    if e != 0 { @epf("warning: can't decode {path}\n") }
+    ret snd
+}
+
+fn rect(x: f32, y: f32, ww: f32, h: f32) -> gfx.Rectangle {
+    ret gfx.Rectangle{.x = x, .y = y, .w = ww, .h = h}
+}
+
+# The demo plays these commands, one every DEMO_EVERY frames
+DEMO_EVERY: i32 : 45
+
+fn main() -> i32 {
+    no_audio: bool = false
+    demo: bool = false
+    device: str = "default"
+    args: []str = @args
+    for i => 1..args.len {
+        if args[i] == "--no-audio" { no_audio = true }
+        if args[i] == "--demo" { demo = true }
+        if s.starts_with(args[i], "--audio-device=") { device = s.slice(args[i], 15, args[i].len) }
+    }
+
+    world, werr: !w.World = w.load("src/world.json")
+    if werr != 0 { ret 1 }
+
+    win: gfx.Window = gfx.Window.open(world.title, WIN_W, WIN_H)
+    fonts, ferr: !ui.Fonts = ui.load_fonts()
+    if ferr != 0 {
+        @epf("can't load fonts from src/assets/fonts\n")
+        ret 1
+    }
+
+    # every room's picture, loaded up front
+    media: c.HashMap<str, *Media> = c.HashMap<str, *Media>.new(c.hash_str, c.eq_str)
+    for i => 0..world.rooms.len_of() {
+        room: *w.Room = world.rooms.val_at(i)
+        if room.media.len == 0 { continue }
+        m, me: !*Media = load_media(room.media)
+        if me != 0 {
+            @epf("warning: can't load {room.media} (error {me})\n")
+            continue
+        }
+        media.put(room.id, m)
+    }
+
+    # audio is optional: no sound device just means a silent game
+    snd: game.Sounds = game.Sounds{.enabled = false, .music_on = false}
+    if !no_audio {
+        out, oerr: !audio.AudioOutput = audio.open_output(device, 44100, 2)
+        if oerr == 0 {
+            snd.out = out
+            snd.enabled = true
+            snd.music = load_sound("src/assets/music.mp3")
+            snd.pickup = load_sound("src/assets/pickup.mp3")
+            snd.step = load_sound("src/assets/step.mp3")
+            snd.error = load_sound("src/assets/error.mp3")
+            snd.win = load_sound("src/assets/win.mp3")
+            audio.set_music_volume(out, 0.6)
+            audio.play_music(out, snd.music, true)
+            snd.music_on = true
+        } else {
+            @epf("note: no audio device '{device}', playing silently\n")
+        }
+    }
+
+    t: term.Terminal = term.new(rect(16.0, 56.0, 600.0, 528.0), ui.style(false, game.SCALE, ui.TEXT))
+    t.echo = demo
+    g: game.Game = game.new_game(&world, &t, &snd)
+    game.start(&g)
+
+    demo_script: [12]str = ["help", "north", "take lantern", "east", "take key", "x key",
+                            "inventory", "west", "north", "up", "music", "quit"]
+    demo_step: usize = 0
+
+    title_st: ui.Style = ui.style(true, 1.0, ui.AMBER)
+    label_st: ui.Style = ui.style(true, 0.65, ui.DIM)
+    value_st: ui.Style = ui.style(false, 0.75, ui.TEXT)
+    hint_st: ui.Style = ui.style(false, 0.6, ui.DIM)
+    media_box: gfx.Rectangle = rect(632.0, 56.0, 376.0, 282.0)
+    info_box: gfx.Rectangle = rect(632.0, 346.0, 376.0, 238.0)
+
+    gdev.set_target_fps(60)
+    time: f32 = 0.0
+    frame: i32 = 0
+    while !win.should_close() && !g.quit {
+        dt: f32 = gdev.get_frame_time()
+        time += dt
+        frame += 1
+
+        line, le: !str = t.update()
+        if le == 0 {
+            game.run_command(&g, line)
+            @free(line.data)
+        }
+        if demo && frame % DEMO_EVERY == 0 && demo_step < 12 {
+            game.run_command(&g, demo_script[demo_step])
+            demo_step += 1
+        }
+
+        cur, ce: !*Media = media.get(g.room.id)
+        if ce == 0 { update_media(cur, dt) }
+
+        gdev.begin_drawing()
+        gfx.clear_background(ui.BG)
+
+        # header: game title left, current room right
+        ui.draw_text(&fonts, world.title, 16.0, 14.0, title_st)
+        rw: f32 = @f32(g.room.name.len) * ui.char_w(title_st)
+        ui.draw_text(&fonts, g.room.name, @f32(WIN_W) - 16.0 - rw, 14.0,
+                     ui.style(false, 1.0, ui.TEXT))
+
+        t.draw(&fonts, time)
+
+        # room picture
+        ui.draw_frame(media_box, gfx.BLACK, ui.BORDER)
+        if ce == 0 {
+            if game.can_see(&g) {
+                draw_media(cur, rect(media_box.x + 4.0, media_box.y + 4.0,
+                                     media_box.w - 8.0, media_box.h - 8.0))
+            } else {
+                ui.draw_text(&fonts, "(too dark to see)", media_box.x + 90.0,
+                             media_box.y + 130.0, ui.style(false, 0.75, ui.DIM))
+            }
+        }
+
+        # info panel: labelled text fields
+        ui.draw_frame(info_box, ui.PANEL, ui.BORDER)
+        x: f32 = info_box.x + 12.0
+        exits: c.List<str> = c.List<str>.new()
+        for e => 0..g.room.exits.len_of() { exits.push(g.room.exits.key_at(e)) }
+        ex_text: str = game.join(&exits, ", ")
+        exits.free_list()
+        inv_text: str = "nothing"
+        if !g.inv.is_empty() { inv_text = game.join(&g.inv, ", ") }
+        ui.draw_text(&fonts, "EXITS", x, info_box.y + 12.0, label_st)
+        ui.draw_field(&fonts, ui.TextField{.rect = rect(x, info_box.y + 32.0, 352.0, 40.0),
+                                           .style = value_st, .text = ex_text})
+        ui.draw_text(&fonts, "CARRYING", x, info_box.y + 80.0, label_st)
+        ui.draw_field(&fonts, ui.TextField{.rect = rect(x, info_box.y + 100.0, 352.0, 60.0),
+                                           .style = ui.style(false, 0.75, ui.MAGENTA), .text = inv_text})
+        moves: str = @fmt("MOVES  {g.moves}")
+        ui.draw_text(&fonts, moves, x, info_box.y + 172.0, label_st)
+        @free(moves.data)
+        music_text: str = "MUSIC  off"
+        if snd.music_on { music_text = "MUSIC  on" }
+        ui.draw_text(&fonts, music_text, x, info_box.y + 196.0, label_st)
+        @free(ex_text.data)
+        if !g.inv.is_empty() { @free(inv_text.data) }
+
+        ui.draw_text(&fonts, "Enter: run   Up/Down: history   PgUp/PgDn or wheel: scroll   Esc: clear   type 'help'",
+                     16.0, 598.0, hint_st)
+
+        gdev.end_drawing()
+    }
+
+    if snd.enabled { audio.close_output(snd.out) }
+    win.close()
+    ret 0
+}
