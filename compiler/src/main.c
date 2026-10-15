@@ -28,7 +28,7 @@ extern ssize_t readlink(const char *path, char *buf, size_t bufsiz);
    no per-project version negotiation here: this is `przp` the tool's
    own version, distinct from `[package].version` in a project's own
    przp.toml, which is just free-form metadata for that project. */
-#define PRZP_VERSION "0.1.0"
+#define PRZP_VERSION "0.1.2"
 
 /* ── Utilities ────────────────────────────────────────────────────────────── */
 
