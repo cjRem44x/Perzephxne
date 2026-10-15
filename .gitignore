@@ -1,5 +1,7 @@
 # compiled project outputs (no extension = ELF binary)
 **/main
+# przp sac's default output name when no -o= is given
+out
 *.o
 *.out
 
