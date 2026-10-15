@@ -1309,9 +1309,9 @@ run_cli_fail sac_missing_file "przp: cannot open 'tests/no_such_file.przp'" "$PR
 run_cli_fail_in_dir build_no_manifest "przp build: no przp.toml found" "$TMP/no_manifest_build" "$PRZP" build
 run_cli_fail_in_dir run_no_manifest "przp run: no przp.toml found" "$TMP/no_manifest_run" "$PRZP" run
 
-run_cli_ok version_cmd    "przp 0.1.0" "$PRZP" version
-run_cli_ok version_dashes "przp 0.1.0" "$PRZP" --version
-run_cli_ok version_short  "przp 0.1.0" "$PRZP" -v
+run_cli_ok version_cmd    "przp 0.1.2" "$PRZP" version
+run_cli_ok version_dashes "przp 0.1.2" "$PRZP" --version
+run_cli_ok version_short  "przp 0.1.2" "$PRZP" -v
 
 for src in "$ROOT"/tests/fail/*.przp; do
     [ -e "$src" ] || continue
