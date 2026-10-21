@@ -501,6 +501,36 @@ run_gl_case() {
     fi
 }
 
+# run_monitor_case: a GL program that also links libXrandr (std/graphics/monitor)
+run_monitor_case() {
+    local src_dir="$1"
+    local name
+    name="$(basename "$src_dir")"
+    local bin="$TMP/bin/$name.mon"
+    local actual="$TMP/out/$name.mon.stdout"
+    local compile_err="$TMP/err/$name.mon.compile.stderr"
+    local run_err="$TMP/err/$name.mon.run.stderr"
+
+    printf 'mon   %s\n' "$name"
+    if ! PRZP_STDLIB="$STDLIB" "$PRZP" sac "$src_dir/main.przp" -lX11 -lGL -lz -lXrandr -o="$bin" \
+            >"$TMP/out/$name.mon.compile.stdout" 2>"$compile_err"; then
+        printf 'FAIL  %s: monitor compile failed\n' "$name" >&2
+        sed -n '1,120p' "$compile_err" >&2
+        failures=$((failures + 1))
+        return
+    fi
+    if ! DISPLAY="$X11_DISPLAY" timeout 10 "$bin" >"$actual" 2>"$run_err"; then
+        printf 'FAIL  %s: monitor run failed\n' "$name" >&2
+        sed -n '1,120p' "$run_err" >&2
+        failures=$((failures + 1))
+        return
+    fi
+    if ! diff -u "$src_dir/stdout" "$actual"; then
+        printf 'FAIL  %s: monitor stdout mismatch\n' "$name" >&2
+        failures=$((failures + 1))
+    fi
+}
+
 # run_gui_case: an interactive GL program driven by xdotool. drive.sh
 # receives the window title (the case name) and types/clicks into it;
 # the program prints what it observed and exits on its own.
@@ -1261,6 +1291,14 @@ if run_x11_setup; then
             [ "$(basename "$dir")" = "video_sprite" ] && continue
             run_gl_case "$dir"
         done
+        if ldconfig -p 2>/dev/null | grep -q "libXrandr\.so"; then
+            for dir in "$ROOT"/tests/monitor/*; do
+                [ -d "$dir" ] || continue
+                run_monitor_case "$dir"
+            done
+        else
+            printf 'skip  monitor tests: libXrandr not installed\n'
+        fi
         if command -v xdotool >/dev/null 2>&1; then
             for dir in "$ROOT"/tests/gui/*; do
                 [ -d "$dir" ] || continue

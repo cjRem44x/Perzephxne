@@ -38,7 +38,8 @@ The core language surface is represented in the book and regression suite. The r
 
 | Need | Status |
 |---|---|
-| Window, resize, fullscreen | `std/graphics` `Window` |
+| Window, resize, fullscreen | `std/graphics` `Window`; `get_window_size`/`get_window_position` |
+| Monitors: count, resolution, position, size in mm, refresh rate, rotation | `std/graphics/monitor` (RandR); fullscreen on one monitor |
 | Typed text input | `get_char_pressed` (Shift/Caps applied), `is_key_pressed` (with auto-repeat), Backspace/Tab/Delete/Home/End/PageUp/PageDown/digits/Shift/Ctrl keys, mouse wheel |
 | Text: position, size, color, typeface | `draw_text` with a scale and tint; one bitmap atlas per typeface, made from any monospace TTF with `tools/make_font_atlas.py`. No proportional fonts or kerning; no TTF at runtime |
 | Word wrap, text boxes | in the example's `ui.przp` (`wrap`, `TextField`) — not in the standard library yet |
@@ -49,6 +50,8 @@ The core language surface is represented in the book and regression suite. The r
 | Saving games | `std/file` + `std/json`'s `Writer`; no binary serialization helpers |
 
 ## Bugs Found and Fixed Along the Way
+
+- **An array literal of struct-returning calls (`[mk(1), mk(2)]`) didn't compile** — each element was loaded as if it were a pointer, the same call-results-are-values issue as the struct-literal and `f().field` fixes below. Found writing `std/graphics/monitor`'s tests. Covered by `tests/run/array_lit_of_calls.przp`.
 
 Found while building `examples/games/text_adventure`:
 

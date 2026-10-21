@@ -1,0 +1,56 @@
+# examples/graphics/monitor_info — list every monitor, then open a window
+# sized to half of the primary monitor, centered on it, and show which
+# monitor it's on. F toggles fullscreen on that monitor; Esc quits.
+#
+# Run it with: przp run   (needs an X display and libxrandr-dev)
+
+import(gfx = "std/graphics", mon = "std/graphics/monitor")
+
+fn main() -> i32 {
+    n: i32 = mon.count()
+    if n == 0 {
+        @epf("no display to query\n")
+        ret 1
+    }
+    @pf("{n} monitor(s):\n")
+    for i => 0..n {
+        m, err: !mon.Monitor = mon.get(i)
+        primary: str = ""
+        if m.primary { primary = "  (primary)" }
+        shape: str = "landscape"
+        if m.is_portrait() { shape = "portrait" }
+        @pf("  {m.index}: {m.name}  {m.width}x{m.height} at ({m.x}, {m.y}){primary}\n")
+        @pf("     {m.width_mm}x{m.height_mm} mm, {@i32(m.dpi())} dpi, {m.refresh_hz} Hz, rotated {m.rotation}, {shape}\n")
+    }
+    screen: (i32, i32) = mon.screen_size()
+    @pf("whole screen: {screen.0}x{screen.1}\n")
+
+    # size the window from the primary monitor before opening it
+    p, perr: !mon.Monitor = mon.primary()
+    ww: i32 = p.width / 2
+    wh: i32 = p.height / 2
+    win: gfx.Window = gfx.Window.open("monitor_info", ww, wh)
+
+    frames: i32 = 0
+    while !win.should_close() && frames < 300 {
+        if gfx.is_key_pressed(gfx.Key.Escape) { break }
+        if gfx.is_key_pressed(gfx.Key.F) {
+            if win.is_fullscreen() {
+                win.set_fullscreen(false)
+            } else {
+                cur, ce: !mon.Monitor = mon.current()
+                if ce == 0 { mon.set_fullscreen(win, cur) }
+            }
+        }
+        gfx.begin_drawing()
+        gfx.clear_background(gfx.BLUE)
+        size: (i32, i32) = gfx.get_window_size()
+        gfx.draw_rectangle(10.0, 10.0, @f32(size.0) - 20.0, @f32(size.1) - 20.0, gfx.RAYWHITE)
+        gfx.end_drawing()
+        frames += 1
+    }
+    cur2, ce2: !mon.Monitor = mon.current()
+    @pf("the window ended on monitor {cur2.index} ({cur2.name})\n")
+    win.close()
+    ret 0
+}

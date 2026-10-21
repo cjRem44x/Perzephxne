@@ -46,6 +46,10 @@ extern fn memset(dst: *u8, val: i32, n: usize) -> *u8
 extern fn XKeycodeToKeysym(display: *u8, keycode: u8, index: i32) -> u64
 # XLookupString: the text a KeyPress produces with modifiers applied
 # (Shift, Caps Lock) — the typed character, as opposed to the key's identity
+# XTranslateCoordinates: a point in one window's coordinates, in another's
+# (here: the window's top-left corner on the root window, i.e. the screen)
+extern fn XTranslateCoordinates(display: *u8, src: u64, dest: u64, src_x: i32, src_y: i32,
+                                dest_x: *i32, dest_y: *i32, child: *u64) -> i32
 extern fn XLookupString(event: *u8, buf: *u8, n: i32, keysym: *u64, status: *u8) -> i32
 
 EVENT_SIZE: usize = 192

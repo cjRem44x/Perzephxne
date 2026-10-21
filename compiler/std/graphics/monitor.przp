@@ -1,0 +1,308 @@
+# std/graphics/monitor — the monitors attached to the display: how many,
+# their resolution, position, physical size, refresh rate and rotation.
+#
+#   import(gfx = "std/graphics", mon = "std/graphics/monitor")
+#   for i => 0..mon.count() {
+#       m, err: !mon.Monitor = mon.get(i)
+#       @pf("{m.name}: {m.width}x{m.height} @ {m.refresh_hz} Hz\n")
+#   }
+#
+# Uses the X11 RandR extension: link with -lXrandr (as well as -lX11).
+# Works before a window is opened (it connects to the display itself), so
+# a program can pick a monitor and size its window first. Every call asks
+# the X server afresh, so monitors plugged in, unplugged or rotated while
+# the program runs are picked up. Without RandR, the whole screen is
+# reported as one monitor.
+
+import(gfx = "std/graphics")
+
+extern fn XOpenDisplay(name: *u8) -> *u8
+extern fn XDefaultScreen(display: *u8) -> i32
+extern fn XRootWindow(display: *u8, screen: i32) -> u64
+extern fn XDisplayWidth(display: *u8, screen: i32) -> i32
+extern fn XDisplayHeight(display: *u8, screen: i32) -> i32
+extern fn XDisplayWidthMM(display: *u8, screen: i32) -> i32
+extern fn XDisplayHeightMM(display: *u8, screen: i32) -> i32
+extern fn XGetAtomName(display: *u8, atom: u64) -> *u8
+extern fn XFree(p: *u8) -> i32
+extern fn XRRQueryExtension(display: *u8, event_base: *i32, error_base: *i32) -> i32
+extern fn XRRGetMonitors(display: *u8, window: u64, get_active: i32, n: *i32) -> *u8
+extern fn XRRFreeMonitors(monitors: *u8)
+extern fn XRRGetScreenResourcesCurrent(display: *u8, window: u64) -> *u8
+extern fn XRRFreeScreenResources(res: *u8)
+extern fn XRRGetOutputInfo(display: *u8, res: *u8, output: u64) -> *u8
+extern fn XRRFreeOutputInfo(info: *u8)
+extern fn XRRGetCrtcInfo(display: *u8, res: *u8, crtc: u64) -> *u8
+extern fn XRRFreeCrtcInfo(info: *u8)
+extern fn strlen(s: *u8) -> usize
+extern fn memcpy(dst: *u8, src: *u8, n: usize) -> *u8
+
+# Byte offsets into Xrandr.h's structs, measured with offsetof against the
+# libXrandr 1.5 headers (no C header importer to read them from)
+MI_SIZE: usize : 56          # XRRMonitorInfo
+MI_NAME: usize : 0           # Atom
+MI_PRIMARY: usize : 8        # Bool
+MI_NOUTPUT: usize : 16       # int
+MI_X: usize : 20
+MI_Y: usize : 24
+MI_WIDTH: usize : 28
+MI_HEIGHT: usize : 32
+MI_MWIDTH: usize : 36
+MI_MHEIGHT: usize : 40
+MI_OUTPUTS: usize : 48       # RROutput*
+RES_NMODE: usize : 48        # XRRScreenResources
+RES_MODES: usize : 56
+MODE_SIZE: usize : 80        # XRRModeInfo
+MODE_ID: usize : 0
+MODE_DOTCLOCK: usize : 16
+MODE_HTOTAL: usize : 32
+MODE_VTOTAL: usize : 48
+MODE_FLAGS: usize : 72
+OUT_CRTC: usize : 8          # XRROutputInfo
+CRTC_MODE: usize : 24        # XRRCrtcInfo
+CRTC_ROTATION: usize : 32
+
+RR_INTERLACE: u64 : 16
+RR_DOUBLESCAN: u64 : 32
+
+struct Monitor {
+    index:      i32,
+    name:       str,    # e.g. "HDMI-1", "eDP-1"
+    primary:    bool,
+    x:          i32,    # position in screen coordinates
+    y:          i32,
+    width:      i32,    # pixels, as currently displayed (after rotation)
+    height:     i32,
+    width_mm:   i32,    # physical size; 0 if the monitor doesn't report it
+    height_mm:  i32,
+    refresh_hz: f32,    # 0.0 if unknown
+    rotation:   i32,    # 0, 90, 180 or 270 degrees
+}
+
+impl Monitor {
+    fn is_portrait(self) -> bool { ret self.height > self.width }
+
+    # dpi: pixels per inch along the width; 0.0 if the physical size is unknown
+    fn dpi(self) -> f32 {
+        if self.width_mm <= 0 { ret 0.0 }
+        ret @f32(self.width) * 25.4 / @f32(self.width_mm)
+    }
+
+    # rect: the monitor's area in screen coordinates
+    fn rect(self) -> gfx.Rectangle {
+        ret gfx.Rectangle{.x = @f32(self.x), .y = @f32(self.y),
+                          .w = @f32(self.width), .h = @f32(self.height)}
+    }
+
+    fn contains(self, px: i32, py: i32) -> bool {
+        ret px >= self.x && px < self.x + self.width && py >= self.y && py < self.y + self.height
+    }
+}
+
+struct MonState {
+    display: *u8,   # own connection, used only while no window is open
+}
+
+MON: MonState = MonState{.display = null}
+
+fn display() -> *u8 {
+    d: *u8 = gfx.x_display()
+    if d != null { ret d }
+    if MON.display == null { MON.display = XOpenDisplay(null) }
+    ret MON.display
+}
+
+fn rd_i32(base: *u8, off: usize) -> i32 { ret @bitcast(*i32, base + off).* }
+fn rd_u32(base: *u8, off: usize) -> u32 { ret @bitcast(*u32, base + off).* }
+fn rd_u64(base: *u8, off: usize) -> u64 { ret @bitcast(*u64, base + off).* }
+fn rd_u16(base: *u8, off: usize) -> u16 { ret @bitcast(*u16, base + off).* }
+fn rd_ptr(base: *u8, off: usize) -> *u8 { ret @bitcast(**u8, base + off).* }
+
+# rotation_degrees: an RandR Rotation bitmask as degrees
+fn rotation_degrees(bits: u16) -> i32 {
+    if (bits & 2u16) != 0 { ret 90 }
+    if (bits & 4u16) != 0 { ret 180 }
+    if (bits & 8u16) != 0 { ret 270 }
+    ret 0
+}
+
+# refresh_hz: a mode's refresh rate from its timings (as xrandr computes it)
+fn refresh_hz(dot_clock: u64, h_total: u32, v_total: u32, flags: u64) -> f32 {
+    v: f64 = @f64(v_total)
+    if (flags & RR_DOUBLESCAN) != 0 { v = v * 2.0 }
+    if (flags & RR_INTERLACE) != 0 { v = v / 2.0 }
+    if h_total == 0 || v <= 0.0 { ret 0.0 }
+    ret @f32(@f64(dot_clock) / (@f64(h_total) * v))
+}
+
+# decode: entry `i` of an XRRMonitorInfo array, without the name/refresh/
+# rotation lookups that need the server
+fn decode(infos: *u8, i: i32) -> Monitor {
+    p: *u8 = infos + @usize(i) * MI_SIZE
+    ret Monitor{.index = i, .name = "", .primary = rd_i32(p, MI_PRIMARY) != 0,
+                .x = rd_i32(p, MI_X), .y = rd_i32(p, MI_Y),
+                .width = rd_i32(p, MI_WIDTH), .height = rd_i32(p, MI_HEIGHT),
+                .width_mm = rd_i32(p, MI_MWIDTH), .height_mm = rd_i32(p, MI_MHEIGHT),
+                .refresh_hz = 0.0, .rotation = 0}
+}
+
+fn copy_cstr(p: *u8) -> str {
+    if p == null { ret "" }
+    n: usize = strlen(p)
+    buf: *u8 = @alo(u8, n + 1)
+    memcpy(buf, p, n + 1)
+    ret @str_raw(buf, n)
+}
+
+# fill_mode_info: refresh rate and rotation from the CRTC driving output `out`
+fn fill_mode_info(d: *u8, root: u64, out: u64, m: *Monitor) {
+    res: *u8 = XRRGetScreenResourcesCurrent(d, root)
+    if res == null { ret }
+    oi: *u8 = XRRGetOutputInfo(d, res, out)
+    if oi != null {
+        crtc: u64 = rd_u64(oi, OUT_CRTC)
+        if crtc != 0 {
+            ci: *u8 = XRRGetCrtcInfo(d, res, crtc)
+            if ci != null {
+                m.rotation = rotation_degrees(rd_u16(ci, CRTC_ROTATION))
+                mode: u64 = rd_u64(ci, CRTC_MODE)
+                nmode: i32 = rd_i32(res, RES_NMODE)
+                modes: *u8 = rd_ptr(res, RES_MODES)
+                for k => 0..nmode {
+                    mp: *u8 = modes + @usize(k) * MODE_SIZE
+                    if rd_u64(mp, MODE_ID) == mode {
+                        m.refresh_hz = refresh_hz(rd_u64(mp, MODE_DOTCLOCK), rd_u32(mp, MODE_HTOTAL),
+                                                  rd_u32(mp, MODE_VTOTAL), rd_u64(mp, MODE_FLAGS))
+                    }
+                }
+                XRRFreeCrtcInfo(ci)
+            }
+        }
+        XRRFreeOutputInfo(oi)
+    }
+    XRRFreeScreenResources(res)
+}
+
+fn has_randr(d: *u8) -> bool {
+    eb: i32 = 0
+    erb: i32 = 0
+    ret XRRQueryExtension(d, &eb, &erb) != 0
+}
+
+# whole_screen: the fallback single monitor when RandR isn't available
+fn whole_screen(d: *u8) -> Monitor {
+    sc: i32 = XDefaultScreen(d)
+    ret Monitor{.index = 0, .name = "screen", .primary = true, .x = 0, .y = 0,
+                .width = XDisplayWidth(d, sc), .height = XDisplayHeight(d, sc),
+                .width_mm = XDisplayWidthMM(d, sc), .height_mm = XDisplayHeightMM(d, sc),
+                .refresh_hz = 0.0, .rotation = 0}
+}
+
+# count: how many monitors are active (0 if there's no display to connect to)
+fn count() -> i32 {
+    d: *u8 = display()
+    if d == null { ret 0 }
+    if !has_randr(d) { ret 1 }
+    n: i32 = 0
+    infos: *u8 = XRRGetMonitors(d, XRootWindow(d, XDefaultScreen(d)), 1, &n)
+    if infos == null { ret 1 }
+    XRRFreeMonitors(infos)
+    if n < 1 { ret 1 }
+    ret n
+}
+
+# get: monitor i, 0 <= i < count(). Error 1: out of range; 2: no display.
+# The name is a new heap string.
+fn get(i: i32) -> !Monitor {
+    d: *u8 = display()
+    if d == null { ret @err(2) }
+    if i < 0 { ret @err(1) }
+    if !has_randr(d) {
+        if i != 0 { ret @err(1) }
+        ret @ok(whole_screen(d))
+    }
+    root: u64 = XRootWindow(d, XDefaultScreen(d))
+    n: i32 = 0
+    infos: *u8 = XRRGetMonitors(d, root, 1, &n)
+    if infos == null || n < 1 {
+        if infos != null { XRRFreeMonitors(infos) }
+        if i != 0 { ret @err(1) }
+        ret @ok(whole_screen(d))
+    }
+    if i >= n {
+        XRRFreeMonitors(infos)
+        ret @err(1)
+    }
+    m: Monitor = decode(infos, i)
+    p: *u8 = infos + @usize(i) * MI_SIZE
+    an: *u8 = XGetAtomName(d, rd_u64(p, MI_NAME))
+    m.name = copy_cstr(an)
+    if an != null { XFree(an) }
+    if rd_i32(p, MI_NOUTPUT) > 0 {
+        fill_mode_info(d, root, rd_u64(rd_ptr(p, MI_OUTPUTS), 0), &m)
+    }
+    XRRFreeMonitors(infos)
+    ret @ok(m)
+}
+
+# primary: the primary monitor (the first one if none is marked primary)
+fn primary() -> !Monitor {
+    n: i32 = count()
+    if n == 0 { ret @err(2) }
+    for i => 0..n {
+        m, e: !Monitor = get(i)
+        if e == 0 && m.primary { ret @ok(m) }
+    }
+    ret get(0)
+}
+
+# index_at: which of `ms` contains the point, else the one whose center is
+# closest to it; -1 if `ms` is empty
+fn index_at(ms: []Monitor, px: i32, py: i32) -> i32 {
+    best: i32 = -1
+    best_d: i64 = 0
+    for i => 0..ms.len {
+        m: Monitor = ms[i]
+        if m.contains(px, py) { ret @i32(i) }
+        dx: i64 = @i64(m.x + m.width / 2 - px)
+        dy: i64 = @i64(m.y + m.height / 2 - py)
+        dd: i64 = dx * dx + dy * dy
+        if best < 0 || dd < best_d {
+            best = @i32(i)
+            best_d = dd
+        }
+    }
+    ret best
+}
+
+# current: the monitor the open window is on (by the window's center).
+# Error 3 if no window is open.
+fn current() -> !Monitor {
+    if gfx.x_display() == null { ret @err(3) }
+    n: i32 = count()
+    if n == 0 { ret @err(2) }
+    ms: *Monitor = @alo(Monitor, @usize(n))
+    defer @free(@bitcast(*u8, ms))
+    for i => 0..n {
+        m, e: !Monitor = get(i)
+        ms[i] = m
+    }
+    pos: (i32, i32) = gfx.get_window_position()
+    size: (i32, i32) = gfx.get_window_size()
+    idx: i32 = index_at(@slice(ms, @usize(n)), pos.0 + size.0 / 2, pos.1 + size.1 / 2)
+    ret @ok(ms[idx])
+}
+
+# screen_size: the whole screen — all monitors together, as X11 lays them out
+fn screen_size() -> (i32, i32) {
+    d: *u8 = display()
+    if d == null { ret (0, 0) }
+    sc: i32 = XDefaultScreen(d)
+    ret (XDisplayWidth(d, sc), XDisplayHeight(d, sc))
+}
+
+# set_fullscreen: make the window cover monitor `m` exactly;
+# win.set_fullscreen(false) restores it
+fn set_fullscreen(w: gfx.Window, m: Monitor) {
+    w.set_fullscreen_rect(m.rect())
+}

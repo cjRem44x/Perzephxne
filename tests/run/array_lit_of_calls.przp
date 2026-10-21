@@ -1,0 +1,9 @@
+# An array literal whose elements are struct-returning calls (call results
+# are values, not alloca pointers, so they must not be loaded again).
+struct P { x: i32, name: str }
+fn mk(x: i32) -> P { ret P{.x = x, .name = "p"} }
+fn main() {
+    ps: [3]P = [mk(1), mk(2), P{.x = 3, .name = "lit"}]
+    for p => ps { @pf("{p.x}{p.name} ") }
+    @pf("\n")
+}

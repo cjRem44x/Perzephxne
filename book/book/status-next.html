@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-f90215b4.js";
+            window.path_to_searchindex_js = "searchindex-6bf3bb77.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-4e58bc13.js"></script>
@@ -221,7 +221,8 @@
 <tr><th>Need</th><th>Status</th></tr>
 </thead>
 <tbody>
-<tr><td>Window, resize, fullscreen</td><td><code>std/graphics</code> <code>Window</code></td></tr>
+<tr><td>Window, resize, fullscreen</td><td><code>std/graphics</code> <code>Window</code>; <code>get_window_size</code>/<code>get_window_position</code></td></tr>
+<tr><td>Monitors: count, resolution, position, size in mm, refresh rate, rotation</td><td><code>std/graphics/monitor</code> (RandR); fullscreen on one monitor</td></tr>
 <tr><td>Typed text input</td><td><code>get_char_pressed</code> (Shift/Caps applied), <code>is_key_pressed</code> (with auto-repeat), Backspace/Tab/Delete/Home/End/PageUp/PageDown/digits/Shift/Ctrl keys, mouse wheel</td></tr>
 <tr><td>Text: position, size, color, typeface</td><td><code>draw_text</code> with a scale and tint; one bitmap atlas per typeface, made from any monospace TTF with <code>tools/make_font_atlas.py</code>. No proportional fonts or kerning; no TTF at runtime</td></tr>
 <tr><td>Word wrap, text boxes</td><td>in the example’s <code>ui.przp</code> (<code>wrap</code>, <code>TextField</code>) — not in the standard library yet</td></tr>
@@ -234,6 +235,9 @@
 </table>
 </div>
 <h2 id="bugs-found-and-fixed-along-the-way"><a class="header" href="#bugs-found-and-fixed-along-the-way">Bugs Found and Fixed Along the Way</a></h2>
+<ul>
+<li><strong>An array literal of struct-returning calls (<code>[mk(1), mk(2)]</code>) didn’t compile</strong> — each element was loaded as if it were a pointer, the same call-results-are-values issue as the struct-literal and <code>f().field</code> fixes below. Found writing <code>std/graphics/monitor</code>’s tests. Covered by <code>tests/run/array_lit_of_calls.przp</code>.</li>
+</ul>
 <p>Found while building <code>examples/games/text_adventure</code>:</p>
 <ul>
 <li><strong>A call’s return type could be emitted as the wrong struct</strong> — <code>llvm_type()</code> returned strings from small rotating static buffers; a call computed its return type, then evaluating its arguments made enough further <code>llvm_type()</code> calls to overwrite it (<code>call %gfx__Rectangle @term__new(...)</code> for a function returning a <code>Terminal</code>). The earlier <code>cur_fn_ret</code> fix below was one instance of the same hazard. Fixed at the root: <code>llvm_type</code> now interns every type string, so a result stays valid for the whole compile.</li>
