@@ -4166,7 +4166,8 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
             for (size_t i = 0; i < n; i++) {
                 Type *ev_ty = NULL;
                 Val ev = cg_expr(cg, e->array_lit.data[i], &ev_ty);
-                if (elem_needs_load) {
+                /* a call result is already the value, not an alloca ptr */
+                if (elem_needs_load && e->array_lit.data[i]->kind != EXPR_CALL) {
                     int lv = new_tmp(cg);
                     emit(cg, "  %%t%d = load %s, ptr %s\n", lv, elem_llt, ev.buf);
                     ev = val_tmp(lv);

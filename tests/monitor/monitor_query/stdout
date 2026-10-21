@@ -1,0 +1,10 @@
+count=1
+get(0) err=0 1024x768+0+0 rotation=0 portrait=0
+get(count) err=1
+primary err=0 1024x768
+screen 1024x768
+current before a window: err=3
+window 300x200
+current err=0 1024x768
+fullscreen 1024x768 is_fullscreen=1
+restored 300x200 is_fullscreen=0

@@ -1,0 +1,7 @@
+#0 primary=1 2560x1440+0+0 portrait=0 dpi=108
+#1 primary=0 1080x1920+2560+0 portrait=1 dpi=102
+#2 primary=0 1280x1024+0+1440 portrait=0 dpi=96
+at(100,100)=0 at(3000,1500)=1 at(500,2000)=2 at(9000,9000)=1
+contains edge: 1 0
+hz 60.000000 144.050354 60.000000 0.000000
+rot 0 90 180 270 90

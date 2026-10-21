@@ -224,10 +224,15 @@ impl Window {
     fn set_min_size(self, w: i32, h: i32)     # only takes effect while resizable
     fn set_max_size(self, w: i32, h: i32)     # only takes effect while resizable
     fn resize(self, w: i32, h: i32)           # programmatic resize, not just a WM-negotiated constraint
-    fn set_fullscreen(self, enabled: bool)    # covers the screen; restores the pre-fullscreen size on false
+    fn set_fullscreen(self, enabled: bool)    # covers the whole screen (every monitor); restores the pre-fullscreen size on false
+    fn set_fullscreen_rect(self, r: Rectangle)   # cover just r — e.g. one monitor (see Monitors below)
+    fn is_fullscreen(self) -> bool
     fn configs(self, flags: u32)              # raylib-shaped: apply several WindowFlag bits in one call
     fn close(self)
 }
+
+fn get_window_size() -> (i32, i32)     # current size — follows resizes/fullscreen, unlike Window.w/h
+fn get_window_position() -> (i32, i32) # top-left corner in screen coordinates
 
 fn is_key_down(k: Key) -> bool         # held right now
 fn is_key_pressed(k: Key) -> bool      # went down this frame (and on each keyboard auto-repeat)
@@ -259,6 +264,101 @@ if gfx.is_key_pressed(gfx.Key.Enter) { submit(line.to_str()) }
 `tests/gui/text_input` drives this through real X11 key events with `xdotool` (typing shifted characters, Backspace, Enter, and the mouse wheel) and checks what the program received; `examples/games/text_adventure` builds a full terminal-style input line on it. A `KeyPress`/`KeyRelease` event's raw X11 `KeySym` is mapped to a `Key` by `keysym_to_key`, tested directly against hardcoded `KeySym` constants from `X11/keysymdef.h` (`tests/gl/graphics_layer2`) rather than through a real key event, since the actual `KeySym` a keycode produces depends on the test machine's keyboard layout.
 
 `resize`/`set_fullscreen`/`configs` are programmatic — distinct from `set_min_size`/`set_max_size`, which only *constrain* what the window manager/user is allowed to resize to, never resize anything themselves. `resize(w, h)` calls `XResizeWindow` directly; `set_fullscreen(true)` covers the screen (`XDisplayWidth`/`XDisplayHeight`, then `XMoveResizeWindow` to `(0, 0, screen_w, screen_h)`) and remembers the pre-fullscreen size to restore on `set_fullscreen(false)` — deliberately WM-independent (a direct geometry change) rather than the EWMH `_NET_WM_STATE_FULLSCREEN` `ClientMessage` a real desktop compositor would negotiate, since this project's own Xvfb-based test environment has no window manager running at all to answer that message. `configs(flags)` is the raylib-shaped bulk form — `win.configs(@u32(gfx.WindowFlag.Resizable) | @u32(gfx.WindowFlag.Fullscreen))` instead of one call per flag — currently covering only `Resizable`/`Fullscreen`, not a placeholder for raylib flags (MSAA hints, VSYNC, ...) nothing here backs yet.
+
+### Monitors — `std/graphics/monitor`
+
+How many monitors there are and what each one is: resolution, position, physical size, refresh rate and rotation. It uses X11's RandR extension, so a program importing it links `-lXrandr` too (`link = ["X11", "GL", "z", "Xrandr"]` in `przp.toml`; Debian/Ubuntu package `libxrandr-dev`). It's a separate module so programs that don't need it don't need the library.
+
+```
+struct Monitor {
+    index:      i32,
+    name:       str,    # e.g. "HDMI-1", "eDP-1"
+    primary:    bool,
+    x:          i32,    # position in screen coordinates
+    y:          i32,
+    width:      i32,    # resolution in pixels, as displayed (after rotation)
+    height:     i32,
+    width_mm:   i32,    # physical size; 0 if the monitor doesn't report it
+    height_mm:  i32,
+    refresh_hz: f32,    # 0.0 if unknown
+    rotation:   i32,    # 0, 90, 180 or 270
+}
+impl Monitor {
+    fn is_portrait(self) -> bool       # taller than wide
+    fn dpi(self) -> f32                # pixels per inch; 0.0 if the physical size is unknown
+    fn rect(self) -> gfx.Rectangle     # its area in screen coordinates
+    fn contains(self, x: i32, y: i32) -> bool
+}
+
+fn count() -> i32                       # 0 if there's no display
+fn get(i: i32) -> !Monitor              # error 1: out of range, 2: no display
+fn primary() -> !Monitor                # the primary monitor (else the first)
+fn current() -> !Monitor                # the one the window is on; error 3 if no window is open
+fn screen_size() -> (i32, i32)          # all monitors together, as X11 lays them out
+fn set_fullscreen(w: gfx.Window, m: Monitor)   # cover exactly monitor m
+```
+
+Every call asks the X server afresh, so monitors plugged in, unplugged or rotated while the program runs are picked up. The queries work before a window is opened, so a program can choose a monitor and size its window first. Without RandR, the whole screen is reported as a single monitor.
+
+**List every monitor:**
+
+```
+import(mon = "std/graphics/monitor")
+
+fn main() {
+    for i => 0..mon.count() {
+        m, err: !mon.Monitor = mon.get(i)
+        @pf("{m.name}: {m.width}x{m.height} at ({m.x}, {m.y}), {m.refresh_hz} Hz\n")
+        @pf("  {m.width_mm}x{m.height_mm} mm, {@i32(m.dpi())} dpi, rotated {m.rotation}\n")
+    }
+}
+```
+
+On a laptop with an external screen this prints something like:
+
+```
+eDP-1: 1920x1200 at (0, 0), 60.000000 Hz
+  301x188 mm, 162 dpi, rotated 0
+HDMI-1: 2560x1440 at (1920, 0), 144.000000 Hz
+  597x336 mm, 108 dpi, rotated 0
+```
+
+**Size a window from the monitor it will open on:**
+
+```
+import(gfx = "std/graphics", mon = "std/graphics/monitor")
+
+p, err: !mon.Monitor = mon.primary()
+win: gfx.Window = gfx.Window.open("game", p.width * 3 / 4, p.height * 3 / 4)
+```
+
+**Fullscreen on the window's own monitor** (`win.set_fullscreen(true)` would stretch across every monitor, since X11 treats them as one big screen):
+
+```
+if gfx.is_key_pressed(gfx.Key.F) {
+    if win.is_fullscreen() {
+        win.set_fullscreen(false)              # back to the previous size
+    } else {
+        m, err: !mon.Monitor = mon.current()
+        if err == 0 { mon.set_fullscreen(win, m) }
+    }
+}
+```
+
+**Adapt a layout to the screen**, e.g. stack panels on a portrait monitor and, for crisp text, scale with the monitor's density:
+
+```
+m, err: !mon.Monitor = mon.current()
+if m.is_portrait() {
+    # panels above each other
+} else {
+    # panels side by side
+}
+text_scale: f32 = 1.0
+if m.dpi() > 140.0 { text_scale = 1.5 }
+```
+
+`examples/graphics/monitor_info` puts these together. `tests/monitor/monitor_query` checks the live queries, `current()` and per-monitor fullscreen against the test suite's virtual display. Xvfb can't simulate several monitors, so `tests/monitor/monitor_logic` feeds hand-built RandR data through the same decoding, DPI, point-to-monitor and refresh-rate code instead. The RandR struct layouts are read by byte offset (there's no C header importer), measured with `offsetof` against libXrandr 1.5's headers.
 
 Writing this surfaced a real, previously-unnoticed bug: `glViewport` was declared (`std/graphics/gl.przp`) but never actually *called* anywhere — every resize path, including the pre-existing window-manager-driven one (`poll_events`'s own `EVENT_CONFIGURE_NOTIFY` handling), updated the GL projection matrix (`set_ortho_2d`) but left the GL *viewport* pinned to whatever size the window had when its context was created, so rendered content stayed stretched/cropped into a stale sub-rectangle instead of actually filling a resized window. Fixed by folding `glViewport(0, 0, w, h)` into `set_ortho_2d` itself, the one place every resize path already calls. A second fix, `gl.on_resize` (re-issuing `glXMakeCurrent` before `set_ortho_2d`, standard GLX practice after a bound drawable's size changes), turned out to be unverifiable end-to-end here: under this project's own Xvfb + software-GL (llvmpipe/swrast, no GPU) test setup, `XResizeWindow` on a window with a bound GLX context breaks rendering entirely, confirmed even with zero GL-side handling involved — an environment limitation, not a bug this code can route around. `tests/gl/window_resize` verifies what *is* verifiable here (the real X11-level resize, via `XGetWindowAttributes`, the same technique `tests/gl/window_size_hints` already uses for WM size hints); a real GPU-backed X server is expected to render correctly across a resize the way any other GLX application does.
 

@@ -1,0 +1,35 @@
+# std/graphics/monitor's pure logic, against hand-built XRRMonitorInfo data:
+# decoding, DPI/portrait, point-to-monitor lookup, refresh-rate maths, rotation
+import(mon = "std/graphics/monitor")
+
+fn put_i32(p: *u8, off: usize, v: i32) { @bitcast(*i32, p + off).* = v }
+
+# lay out a fake XRRMonitorInfo entry exactly as libXrandr does
+fn fake(buf: *u8, i: usize, primary: i32, x: i32, y: i32, w: i32, h: i32, mw: i32, mh: i32) {
+    p: *u8 = buf + i * 56
+    put_i32(p, 8, primary)
+    put_i32(p, 20, x)
+    put_i32(p, 24, y)
+    put_i32(p, 28, w)
+    put_i32(p, 32, h)
+    put_i32(p, 36, mw)
+    put_i32(p, 40, mh)
+}
+
+fn main() {
+    buf: *u8 = @alo(u8, 3 * 56)
+    # a 2560x1440 primary, a 1080x1920 portrait to its right, a 1280x1024 below
+    fake(buf, 0, 1, 0, 0, 2560, 1440, 597, 336)
+    fake(buf, 1, 0, 2560, 0, 1080, 1920, 268, 476)
+    fake(buf, 2, 0, 0, 1440, 1280, 1024, 338, 270)
+    ms: [3]mon.Monitor = [mon.decode(buf, 0), mon.decode(buf, 1), mon.decode(buf, 2)]
+    for m => ms {
+        @pf("#{m.index} primary={m.primary} {m.width}x{m.height}+{m.x}+{m.y} portrait={m.is_portrait()} dpi={@i32(m.dpi())}\n")
+    }
+    @pf("at(100,100)={mon.index_at(ms, 100, 100)} at(3000,1500)={mon.index_at(ms, 3000, 1500)} at(500,2000)={mon.index_at(ms, 500, 2000)} at(9000,9000)={mon.index_at(ms, 9000, 9000)}\n")
+    @pf("contains edge: {ms[0].contains(2559, 0)} {ms[0].contains(2560, 0)}\n")
+    # 1920x1080@60: 148.5MHz / (2200 * 1125); 2560x1440@144-ish; interlaced 1080i
+    @pf("hz {mon.refresh_hz(148500000u64, 2200u32, 1125u32, 0u64)} {mon.refresh_hz(586550000u64, 2720u32, 1497u32, 0u64)} {mon.refresh_hz(74250000u64, 2200u32, 1125u32, 16u64)} {mon.refresh_hz(0u64, 0u32, 0u32, 0u64)}\n")
+    @pf("rot {mon.rotation_degrees(1u16)} {mon.rotation_degrees(2u16)} {mon.rotation_degrees(4u16)} {mon.rotation_degrees(8u16)} {mon.rotation_degrees(18u16)}\n")
+    @free(buf)
+}

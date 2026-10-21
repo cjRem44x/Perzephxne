@@ -378,29 +378,53 @@ impl Window {
     # hood, so it composes with `resize` rather than needing new
     # machinery — restores the pre-fullscreen size on `false` rather
     # than leaving the window pinned at screen size.
+    #
+    # With several monitors, X11 presents them as one combined screen, so
+    # this covers all of them; std/graphics/monitor's set_fullscreen fills
+    # just one monitor (via set_fullscreen_rect below).
     fn set_fullscreen(self, enabled: bool) {
-        if enabled == STATE.fullscreen { ret }
-        w: i32 = STATE.width
-        h: i32 = STATE.height
-        if enabled {
+        if !enabled {
+            self.leave_fullscreen()
+            ret
+        }
+        sw: i32 = win.XDisplayWidth(STATE.display, win.XDefaultScreen(STATE.display))
+        sh: i32 = win.XDisplayHeight(STATE.display, win.XDefaultScreen(STATE.display))
+        self.set_fullscreen_rect(Rectangle{.x = 0.0, .y = 0.0, .w = @f32(sw), .h = @f32(sh)})
+    }
+
+    # set_fullscreen_rect: cover `r` (screen coordinates) — fullscreen on one
+    # area of the screen, e.g. a single monitor. set_fullscreen(false)
+    # restores the size the window had before.
+    fn set_fullscreen_rect(self, r: Rectangle) {
+        if !STATE.fullscreen {
             STATE.pre_fs_w = STATE.width
             STATE.pre_fs_h = STATE.height
-            w = win.XDisplayWidth(STATE.display, win.XDefaultScreen(STATE.display))
-            h = win.XDisplayHeight(STATE.display, win.XDefaultScreen(STATE.display))
-        } else {
-            w = STATE.pre_fs_w
-            h = STATE.pre_fs_h
         }
-        # XMoveResizeWindow, not just resize()'s XResizeWindow: fullscreen
-        # must also pin the window back to (0, 0), not just cover the
-        # screen's pixel dimensions wherever the window already sits.
+        w: i32 = @i32(r.w)
+        h: i32 = @i32(r.h)
+        # XMoveResizeWindow, not just resize()'s XResizeWindow: the window
+        # must move to the area's corner, not just take its size
+        win.XMoveResizeWindow(STATE.display, STATE.window, @i32(r.x), @i32(r.y), @u32(w), @u32(h))
+        win.XFlush(STATE.display)
+        STATE.width  = w
+        STATE.height = h
+        gl.on_resize(STATE.backend_ctx, w, h)
+        STATE.fullscreen = true
+    }
+
+    fn leave_fullscreen(self) {
+        if !STATE.fullscreen { ret }
+        w: i32 = STATE.pre_fs_w
+        h: i32 = STATE.pre_fs_h
         win.XMoveResizeWindow(STATE.display, STATE.window, 0, 0, @u32(w), @u32(h))
         win.XFlush(STATE.display)
         STATE.width  = w
         STATE.height = h
         gl.on_resize(STATE.backend_ctx, w, h)
-        STATE.fullscreen = enabled
+        STATE.fullscreen = false
     }
+
+    fn is_fullscreen(self) -> bool { ret STATE.fullscreen }
 
     # configs: raylib-shaped bulk window configuration — apply every
     # WindowFlag set in `flags` in one call, e.g.
@@ -419,6 +443,27 @@ impl Window {
         win.XDestroyWindow(STATE.display, STATE.window)
         win.XCloseDisplay(STATE.display)
     }
+}
+
+# x_display / x_window: the open window's Xlib Display* and Window id
+# (null / 0 before Window.open), for modules that talk to X11 directly
+fn x_display() -> *u8 { ret STATE.display }
+fn x_window() -> u64 { ret STATE.window }
+
+# get_window_size: the window's current size in pixels — follows resizes
+# (by the user, resize(), or fullscreen), unlike Window.w/h, which keep
+# the size it was opened with
+fn get_window_size() -> (i32, i32) { ret (STATE.width, STATE.height) }
+
+# get_window_position: the window's top-left corner in screen coordinates
+# (the same coordinates std/graphics/monitor reports monitors in)
+fn get_window_position() -> (i32, i32) {
+    x: i32 = 0
+    y: i32 = 0
+    child: u64 = 0
+    root: u64 = win.XRootWindow(STATE.display, win.XDefaultScreen(STATE.display))
+    win.XTranslateCoordinates(STATE.display, STATE.window, root, 0, 0, &x, &y, &child)
+    ret (x, y)
 }
 
 fn is_key_down(k: Key) -> bool { ret STATE.keys_down[@i32(k)] }

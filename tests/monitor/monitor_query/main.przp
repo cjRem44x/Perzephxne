@@ -1,0 +1,32 @@
+# std/graphics/monitor against the suite's Xvfb (1024x768): the query works
+# before a window exists, current() finds the window's monitor, and
+# set_fullscreen covers exactly that monitor, then restores the window.
+import(gfx = "std/graphics", mon = "std/graphics/monitor")
+
+fn main() {
+    n: i32 = mon.count()
+    @pf("count={n}\n")
+    m, err: !mon.Monitor = mon.get(0)
+    @pf("get(0) err={err} {m.width}x{m.height}+{m.x}+{m.y} rotation={m.rotation} portrait={m.is_portrait()}\n")
+    bad, berr: !mon.Monitor = mon.get(n)
+    @pf("get(count) err={berr}\n")
+    p, perr: !mon.Monitor = mon.primary()
+    @pf("primary err={perr} {p.width}x{p.height}\n")
+    sz: (i32, i32) = mon.screen_size()
+    @pf("screen {sz.0}x{sz.1}\n")
+    nc, nce: !mon.Monitor = mon.current()
+    @pf("current before a window: err={nce}\n")
+
+    w: gfx.Window = gfx.Window.open("monitor_query", 300, 200)
+    ws: (i32, i32) = gfx.get_window_size()
+    @pf("window {ws.0}x{ws.1}\n")
+    cur, ce: !mon.Monitor = mon.current()
+    @pf("current err={ce} {cur.width}x{cur.height}\n")
+    mon.set_fullscreen(w, cur)
+    fs: (i32, i32) = gfx.get_window_size()
+    @pf("fullscreen {fs.0}x{fs.1} is_fullscreen={w.is_fullscreen()}\n")
+    w.set_fullscreen(false)
+    rs: (i32, i32) = gfx.get_window_size()
+    @pf("restored {rs.0}x{rs.1} is_fullscreen={w.is_fullscreen()}\n")
+    w.close()
+}
