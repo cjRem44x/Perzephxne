@@ -6089,7 +6089,10 @@ static void cg_extern_fn(CG *cg, Item *item) {
         return;
     }
 
-    /* Normal extern fn declaration */
+    /* Normal extern fn declaration — shares the C-symbol key with the
+       imported-extern path above, so a C function declared both here and
+       in an imported module is declared once */
+    if (!mark_declared(cg, item->name)) return;
     emit(cg, "declare %s @%s(", ret_llt, item->name);
     for (size_t i = 0; i < item->extern_fn.params.len; i++) {
         Param *par = &item->extern_fn.params.data[i];

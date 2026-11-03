@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-6bf3bb77.js";
+            window.path_to_searchindex_js = "searchindex-f1764d4c.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-4e58bc13.js"></script>
@@ -236,7 +236,12 @@
 </div>
 <h2 id="bugs-found-and-fixed-along-the-way"><a class="header" href="#bugs-found-and-fixed-along-the-way">Bugs Found and Fixed Along the Way</a></h2>
 <ul>
-<li><strong>An array literal of struct-returning calls (<code>[mk(1), mk(2)]</code>) didn’t compile</strong> — each element was loaded as if it were a pointer, the same call-results-are-values issue as the struct-literal and <code>f().field</code> fixes below. Found writing <code>std/graphics/monitor</code>’s tests. Covered by <code>tests/run/array_lit_of_calls.przp</code>.</li>
+<li>
+<p><strong>Declaring a C function in the main file that an imported module also declares failed</strong> (“invalid redefinition of function”), e.g. <code>extern fn system(...)</code> alongside <code>import(os = "std/os")</code>. Imported <code>extern fn</code>s already shared one guard per C symbol, but a main-file <code>extern fn</code> emitted its <code>declare</code> unconditionally; it now uses the same guard. Covered by <code>tests/run/extern_declared_twice.przp</code>.</p>
+</li>
+<li>
+<p><strong>An array literal of struct-returning calls (<code>[mk(1), mk(2)]</code>) didn’t compile</strong> — each element was loaded as if it were a pointer, the same call-results-are-values issue as the struct-literal and <code>f().field</code> fixes below. Found writing <code>std/graphics/monitor</code>’s tests. Covered by <code>tests/run/array_lit_of_calls.przp</code>.</p>
+</li>
 </ul>
 <p>Found while building <code>examples/games/text_adventure</code>:</p>
 <ul>

@@ -51,6 +51,8 @@ The core language surface is represented in the book and regression suite. The r
 
 ## Bugs Found and Fixed Along the Way
 
+- **Declaring a C function in the main file that an imported module also declares failed** ("invalid redefinition of function"), e.g. `extern fn system(...)` alongside `import(os = "std/os")`. Imported `extern fn`s already shared one guard per C symbol, but a main-file `extern fn` emitted its `declare` unconditionally; it now uses the same guard. Covered by `tests/run/extern_declared_twice.przp`.
+
 - **An array literal of struct-returning calls (`[mk(1), mk(2)]`) didn't compile** — each element was loaded as if it were a pointer, the same call-results-are-values issue as the struct-literal and `f().field` fixes below. Found writing `std/graphics/monitor`'s tests. Covered by `tests/run/array_lit_of_calls.przp`.
 
 Found while building `examples/games/text_adventure`:
