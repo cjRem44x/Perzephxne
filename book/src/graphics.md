@@ -394,7 +394,7 @@ fn free_image(img: Image)
 Scope: non-interlaced, 8-bit, RGB or RGBA only — the overwhelming majority of real-world PNG exports (every common browser/paint-tool default). 16-bit, palette (indexed-color), grayscale, and interlaced PNGs are rejected with a clear error rather than silently misdecoded; broadening this later only touches the per-pixel unpacking after defiltering, not the chunk/defilter machinery itself. `std/graphics`'s `Texture` wraps this with GPU upload:
 
 ```
-struct Texture { id: u32, w: i32, h: i32 }
+struct Texture { id: u32, w: i32, h: i32 }   # w, h: the image's size in pixels (read them; don't assign)
 impl Texture {
     fn load(path: str) -> !Texture   # std/image.load_png, then gl.create_texture
     fn unload(self)
@@ -406,6 +406,62 @@ fn fit_rect(w: i32, h: i32, box: Rectangle) -> Rectangle   # largest w:h rect ce
 ```
 
 To show a picture of any size in a fixed panel without distorting it, draw it into `fit_rect(t.w, t.h, panel)`. `AnimatedSprite` (GIF) and `VideoSprite` have the same `draw_scaled(dest: Rectangle)` alongside their native-size `draw(pos)`.
+
+#### Sizes
+
+How to get the size of everything you can draw, all in pixels:
+
+| Thing | Width × height | Notes |
+|---|---|---|
+| `gfx.Texture` (PNG) | `t.w`, `t.h` | Fields. The image's own size; drawing scaled doesn't change them |
+| `gdev.Sprite` | `s.frame.w`, `s.frame.h` | A sprite is a sub-rectangle (`frame`) of a texture, so its size is the frame's. The whole sheet is `s.texture.w`, `s.texture.h` |
+| `gdev.AnimatedSprite` (GIF) | `a.width()`, `a.height()` | Methods. Every frame of a GIF has the same size |
+| `video.VideoSprite` | `v.width()`, `v.height()` | Methods. The video's frame size |
+| One character of a `gfx.Font` | `f.glyph_w * scale`, `f.glyph_h * scale` | Fonts are monospace, so a line of `n` bytes is `n * glyph_w * scale` wide; there's no `measure_text` |
+| The window | `gfx.get_window_size()` → `(w, h)` | Current size, after any resize or fullscreen. `Window.w`/`.h` keep the size it was opened with |
+| A monitor | `m.width`, `m.height` | From `std/graphics/monitor` — see [Monitors](#monitors--stdgraphicsmonitor) |
+
+Sizes are `i32` while drawing positions are `f32`, so convert with `@f32(...)`. Center a picture in the window:
+
+```
+import(gfx = "std/graphics")
+
+win: gfx.Window = gfx.Window.open("demo", 800, 600)
+logo, err: !gfx.Texture = gfx.Texture.load("logo.png")
+win_size: (i32, i32) = gfx.get_window_size()
+x: f32 = @f32(win_size.0 - logo.w) / 2.0
+y: f32 = @f32(win_size.1 - logo.h) / 2.0
+gfx.draw_texture(logo, x, y)
+```
+
+GIFs and videos the same way, with the methods:
+
+```
+x: f32 = @f32(win_size.0 - anim.width()) / 2.0
+y: f32 = @f32(win_size.1 - anim.height()) / 2.0
+anim.draw(gfx.Vector2{.x = x, .y = y})
+```
+
+A sprite cut from a sprite sheet is as big as its frame:
+
+```
+hero: gdev.Sprite = gdev.Sprite{.texture = sheet,
+                                .frame = gfx.Rectangle{.x = 0.0, .y = 0.0, .w = 32.0, .h = 48.0}}
+feet_y: f32 = pos.y + hero.frame.h        # bottom edge of the sprite
+```
+
+Text: width is characters × cell width × scale. Right-align a line, or center it:
+
+```
+scale: f32 = 2.0
+text_w: f32 = @f32(label.len) * @f32(font.glyph_w) * scale
+text_h: f32 = @f32(font.glyph_h) * scale
+gfx.draw_text(font, label, @f32(win_size.0) - text_w - 10.0, 10.0, scale, gfx.WHITE)          # top right
+gfx.draw_text(font, label, (@f32(win_size.0) - text_w) / 2.0, (@f32(win_size.1) - text_h) / 2.0,
+              scale, gfx.WHITE)                                                                  # centered
+```
+
+`label.len` counts bytes, which is the number of characters for ASCII text; `draw_text` doesn't wrap, so split long text into lines yourself (see `wrap` in `examples/games/text_adventure/src/ui.przp`).
 
 Texture upload/draw goes through `std/graphics/gl`'s `create_texture`/`draw_textured_rect` (nearest-neighbor filtering, edge-clamped wrapping — real GL 1.1 texturing calls, no runtime loader needed), the same direct-to-GL coupling `draw_rect`/`draw_circle`/`draw_line` already have, for the same reason (no `Backend.submit` yet). `tests/gl/texture_load` verifies the full round trip — decode, upload, draw, read back — against two fixtures: a hand-rolled RGB PNG (every scanline filter type `None`) and a real libpng-encoded RGBA PNG using adaptive per-row filter selection, so all five PNG filter types (`None`/`Sub`/`Up`/`Average`/`Paeth`) are exercised, not just the trivial one.
 
@@ -590,7 +646,7 @@ fn check_collision_recs(a: gfx.Rectangle, b: gfx.Rectangle) -> bool
 fn check_collision_circles(c1: gfx.Vector2, r1: f32, c2: gfx.Vector2, r2: f32) -> bool
 fn check_collision_point_rec(p: gfx.Vector2, r: gfx.Rectangle) -> bool
 
-struct Sprite { texture: gfx.Texture, frame: gfx.Rectangle }
+struct Sprite { texture: gfx.Texture, frame: gfx.Rectangle }   # size: frame.w × frame.h (see Sizes above)
 impl Sprite {
     fn draw(self, pos: gfx.Vector2)   # draws just `frame`'s sub-rectangle of `texture`
 }
@@ -600,6 +656,7 @@ fn load_animated_sprite(path: str) -> !AnimatedSprite
 impl AnimatedSprite {
     fn update(self: *AnimatedSprite, dt: f32)
     fn draw(self, pos: gfx.Vector2)
+    fn draw_scaled(self, dest: gfx.Rectangle)   # stretched to fill dest
     fn width(self) -> i32    # the animation's frame size — every GIF frame shares one canvas size
     fn height(self) -> i32
     fn unload(self)
