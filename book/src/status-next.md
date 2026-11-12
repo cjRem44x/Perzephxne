@@ -51,6 +51,13 @@ The core language surface is represented in the book and regression suite. The r
 
 ## Bugs Found and Fixed Along the Way
 
+Found investigating memory use when loading images:
+
+- **`load_png` and `load_gif` leaked the whole file on every load** — the buffer from `file.read_all` was never freed, so each load kept the compressed file in memory for good (6 MB per load for a 1920×1080 photo). Freed on every path now. Covered by `tests/run/std_image_gif_stream.przp` (200 loads must not grow memory), and valgrind-clean.
+- **`gdev.AnimatedSprite` held every GIF frame decoded, as its own texture** — 480×360 × 120 frames cost ~155 MB for a 53 KB file. It now plays through a streaming `std/image` `GifDecoder` into one texture (~12 MB for the same GIF). `load_gif` is built on the decoder, with identical output. Covered by `tests/gl/animated_sprite_memory` and the existing `animated_sprite`/`std_image_gif` tests.
+- **A literal `%` in `@pf`/`@epf`/`@fmt` text reached C's `printf` as a conversion** — `"100% done"` printed garbage, and some patterns crashed. `%` is now literal except in the C-printf form with extra arguments. Covered by `tests/run/pf_percent_literal.przp`.
+- **`file.read_all` returned nothing for files that report size 0** (`/proc/...`, pipes); it now reads until end of file. Covered by `tests/run/read_all_unsized.przp`.
+
 - **Declaring a C function in the main file that an imported module also declares failed** ("invalid redefinition of function"), e.g. `extern fn system(...)` alongside `import(os = "std/os")`. Imported `extern fn`s already shared one guard per C symbol, but a main-file `extern fn` emitted its `declare` unconditionally; it now uses the same guard. Covered by `tests/run/extern_declared_twice.przp`.
 
 - **An array literal of struct-returning calls (`[mk(1), mk(2)]`) didn't compile** — each element was loaded as if it were a pointer, the same call-results-are-values issue as the struct-literal and `f().field` fixes below. Found writing `std/graphics/monitor`'s tests. Covered by `tests/run/array_lit_of_calls.przp`.

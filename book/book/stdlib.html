@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-f1764d4c.js";
+            window.path_to_searchindex_js = "searchindex-464d2fac.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-4e58bc13.js"></script>
@@ -380,7 +380,7 @@ os.sleep_ms(50)             # yields — near-zero CPU time used
 <tbody>
 <tr><td><code>exists(path)</code></td><td>true if path is accessible</td></tr>
 <tr><td><code>size(path)</code></td><td>byte size, or <code>-1</code> on error</td></tr>
-<tr><td><code>read_all(path)</code></td><td>read entire file into a heap string</td></tr>
+<tr><td><code>read_all(path)</code></td><td>read entire file into a heap string (also files that report no size, like <code>/proc/...</code> and pipes); empty if it can’t be read</td></tr>
 <tr><td><code>write_all(path, content)</code></td><td>create/overwrite file</td></tr>
 <tr><td><code>append(path, content)</code></td><td>append to file, creating if missing</td></tr>
 <tr><td><code>remove_file(path)</code></td><td>delete file</td></tr>

@@ -1,0 +1,44 @@
+# A 480x360, 120-frame GIF played through gdev.AnimatedSprite must not cost
+# a decoded frame (and texture) per frame: that was ~155 MB for this file
+# before AnimatedSprite decoded on the fly. Also checks the frames really
+# advance to the last one and loop back.
+import(gfx = "std/graphics", gdev = "std/gdev", file = "std/file", s = "std/str", gl = "std/graphics/gl")
+
+fn rss_kb() -> i64 {
+    st: str = file.read_all("/proc/self/status")
+    i: usize = s.find(st, "VmRSS:")
+    rest: str = s.slice(st, i + 6, st.len)
+    v, e: !i64 = @i64(s.trim(s.slice(rest, 0, s.index_of_char(rest, 107u8))))
+    ret v
+}
+
+fn main() -> i32 {
+    w: gfx.Window = gfx.Window.open("animated_sprite_memory", 480, 360)
+    gfx.end_drawing()
+    before: i64 = rss_kb()
+    anim, err: !gdev.AnimatedSprite = gdev.load_animated_sprite("tests/run/gif_fixtures/long_anim.gif")
+    if err != 0 {
+        @pf("load failed: {err}\n")
+        ret 1
+    }
+    @pf("{anim.width()}x{anim.height()} frames={anim.n_frames}\n")
+    max_frame: usize = 0
+    wrapped: bool = false
+    last: usize = 0
+    for f => 0..300 {
+        anim.update(0.030)
+        if anim.cur_frame > max_frame { max_frame = anim.cur_frame }
+        if anim.cur_frame < last { wrapped = true }
+        last = anim.cur_frame
+        gfx.begin_drawing()
+        gfx.clear_background(gfx.BLACK)
+        anim.draw(gfx.Vector2{.x = 0.0, .y = 0.0})
+        gfx.end_drawing()
+    }
+    grew_mb: i64 = (rss_kb() - before) / 1024
+    @pf("reached last frame: {max_frame == anim.n_frames - 1} looped: {wrapped}\n")
+    @pf("memory growth under 40 MB: {grew_mb < 40}\n")
+    anim.unload()
+    w.close()
+    ret 0
+}

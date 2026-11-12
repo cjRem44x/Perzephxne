@@ -59,8 +59,27 @@ fn read_all(path: str) -> str {
     sz: i64 = ftell(f)
     rewind(f)
     if sz <= 0 {
+        # size unknown (a /proc file, a pipe): read until end of file
+        cap: usize = 4096
+        buf: *u8 = malloc(cap)
+        got: usize = 0
+        while true {
+            if got + 1 >= cap {
+                cap = cap * 2
+                buf = realloc(buf, cap)
+            }
+            r: usize = fread(buf + got, 1, cap - got - 1, f)
+            if r == 0 { break }
+            got += r
+        }
         fclose(f)
-        ret @str_raw(path.data, 0)
+        if got == 0 {
+            @free(buf)
+            ret @str_raw(path.data, 0)
+        }
+        end: *u8 = buf + got
+        end.* = 0u8
+        ret @str_raw(buf, got)
     }
     n: usize = @usize(sz)
     buf: *u8 = malloc(n + 1)

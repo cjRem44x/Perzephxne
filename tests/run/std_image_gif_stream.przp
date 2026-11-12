@@ -1,0 +1,53 @@
+# std/image GifDecoder: frames streamed one at a time match load_gif's
+# byte for byte, rewind restarts identically, and repeated loads don't
+# leak (load_gif used to keep the whole file in memory on every load).
+import(img = "std/image", file = "std/file", s = "std/str")
+
+extern fn memcmp(a: *u8, b: *u8, n: usize) -> i32
+
+fn rss_kb() -> i64 {
+    st: str = file.read_all("/proc/self/status")
+    i: usize = s.find(st, "VmRSS:")
+    rest: str = s.slice(st, i + 6, st.len)
+    kb: str = s.trim(s.slice(rest, 0, s.index_of_char(rest, 107u8)))
+    v, e: !i64 = @i64(kb)
+    ret v
+}
+
+fn main() {
+    path: str = "tests/run/gif_fixtures/long_anim.gif"
+    g, ge: !img.Gif = img.load_gif(path)
+    @pf("load_gif: err={ge} {g.width}x{g.height} frames={g.n_frames} delay0={g.frames[0].delay_ms}\n")
+
+    d, de: !img.GifDecoder = img.open_gif(path)
+    @pf("open_gif: err={de} frames={d.n_frames} delay0={d.delays[0]}\n")
+    n_bytes: usize = @usize(d.width) * @usize(d.height) * 4
+    mismatches: i32 = 0
+    decoded: i32 = 0
+    for pass => 0..2 {
+        for i => 0..g.n_frames {
+            delay: i32 = d.next_frame()
+            if delay < 0 || memcmp(d.canvas, g.frames[i].pixels, n_bytes) != 0 { mismatches += 1 }
+            decoded += 1
+        }
+        end: i32 = d.next_frame()
+        @pf("pass {pass}: past the end -> {end}\n")
+        d.rewind()
+    }
+    @pf("streamed {decoded} frames, mismatches vs load_gif: {mismatches}\n")
+    d.close()
+    img.free_gif(g)
+
+    before: i64 = rss_kb()
+    for k => 0..200 {
+        g2, e2: !img.Gif = img.load_gif(path)
+        img.free_gif(g2)
+        d2, e3: !img.GifDecoder = img.open_gif(path)
+        d2.close()
+    }
+    grew_mb: i64 = (rss_kb() - before) / 1024
+    @pf("200 loads grew memory < 8 MB: {grew_mb < 8}\n")
+
+    bad, be: !img.GifDecoder = img.open_gif("tests/run/gif_fixtures/CREDITS.md")
+    @pf("not a gif: err={be}\n")
+}

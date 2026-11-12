@@ -1,0 +1,11 @@
+# file.read_all on files that report size 0 (/proc, pipes) reads to end of file
+import(file = "std/file", s = "std/str")
+fn main() {
+    st: str = file.read_all("/proc/self/status")
+    has: bool = s.contains(st, "VmRSS")
+    @pf("read {st.len > 100} has VmRSS={has}\n")
+    e: str = file.read_all("/no/such/file")
+    @pf("missing len={e.len}\n")
+    big: str = file.read_all("/proc/self/maps")
+    @pf("maps nonempty={big.len > 0}\n")
+}

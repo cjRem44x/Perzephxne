@@ -463,6 +463,19 @@ gfx.draw_text(font, label, (@f32(win_size.0) - text_w) / 2.0, (@f32(win_size.1) 
 
 `label.len` counts bytes, which is the number of characters for ASCII text; `draw_text` doesn't wrap, so split long text into lines yourself (see `wrap` in `examples/games/text_adventure/src/ui.przp`).
 
+#### Memory
+
+What a graphics program's memory goes to, measured on Linux with Mesa:
+
+| What | Cost |
+|---|---|
+| Opening a window | ~75–80 MB: the OpenGL driver itself. Real GPU drivers are similar |
+| A texture (`Texture.load`) | width × height × 4 bytes (a 1920×1080 image is 8.3 MB), held by the driver. On integrated graphics or software rendering that's in your program's RAM, often about twice over |
+| A GIF (`AnimatedSprite`) | the file, plus a few width × height × 4 buffers, regardless of frame count |
+| A video (`VideoSprite`) | one frame's texture plus ffmpeg's decoder state |
+
+So a few large images can legitimately reach a few hundred MB. To keep it down: load each image once (not inside the frame loop), size images to how big they're drawn, `unload()` what you no longer need, and use video rather than a GIF for long full-screen animations. Memory often doesn't fall back right after `unload()` — the freed space is kept for the next load — so the sign of a leak is memory that keeps growing as you load and unload the same things, not memory that stays put.
+
 Texture upload/draw goes through `std/graphics/gl`'s `create_texture`/`draw_textured_rect` (nearest-neighbor filtering, edge-clamped wrapping — real GL 1.1 texturing calls, no runtime loader needed), the same direct-to-GL coupling `draw_rect`/`draw_circle`/`draw_line` already have, for the same reason (no `Backend.submit` yet). `tests/gl/texture_load` verifies the full round trip — decode, upload, draw, read back — against two fixtures: a hand-rolled RGB PNG (every scanline filter type `None`) and a real libpng-encoded RGBA PNG using adaptive per-row filter selection, so all five PNG filter types (`None`/`Sub`/`Up`/`Average`/`Paeth`) are exercised, not just the trivial one.
 
 **GIF decoding is also implemented**, for animated textures — GIF87a/89a, non-interlaced only (same "reject rather than misdecode" precedent as PNG's own scope note above). Unlike PNG's DEFLATE, GIF's own LZW variant predates it and has no system-library equivalent, so it's entirely hand-written:
@@ -470,19 +483,29 @@ Texture upload/draw goes through `std/graphics/gl`'s `create_texture`/`draw_text
 ```
 struct GifFrame { pixels: *u8, delay_ms: i32 }   # width*height*4 (RGBA), one decoded+composited frame
 struct Gif { width: i32, height: i32, frames: *GifFrame, n_frames: usize }
-fn load_gif(path: str) -> !Gif
+fn load_gif(path: str) -> !Gif     # every frame decoded up front: n_frames * width * height * 4 bytes
 fn free_gif(g: Gif)
+
+# Streaming: one frame at a time onto a single canvas
+struct GifDecoder { width: i32, height: i32, n_frames: usize, delays: *i32, canvas: *u8, /* ... */ }
+fn open_gif(path: str) -> !GifDecoder   # reads the file, counts frames and their delays
+impl GifDecoder {
+    fn next_frame(self: *GifDecoder) -> i32   # composite the next frame into canvas (RGBA); its delay in ms, -1 at the end
+    fn rewind(self: *GifDecoder)              # back to frame 0
+    fn close(self: *GifDecoder)
+}
 ```
+
+`load_gif` holds every frame decoded at once, which adds up fast: a 480×360, 120-frame clip is 83 MB, even though the file is 53 KB. `GifDecoder` keeps only the file's bytes and two frame-sized canvases, and decodes each frame when it's asked for; `load_gif` is built on it. Errors from both: `1` not a GIF, `2` truncated header, `3` interlaced (unsupported), `4` no frames.
 
 Every frame is fully composited against a persistent canvas honoring the Graphic Control Extension's disposal method (0/1 leave in place, 2 restore to background, 3 restore to previous) and transparent color index — real animated GIFs routinely only redraw the changed region per frame and rely on this compositing, so skipping it would visibly corrupt most real-world animated GIFs, not just an edge case. `tests/run/std_image_gif.przp` verifies this against three fixtures (two-color, a moving dot over a persistent background, and transparency layered over a previous frame), each cross-checked pixel-for-pixel against Pillow's independent GIF decoder while writing it.
 
 **`gdev` wraps this into a real animated sprite** — `AnimatedSprite`, in `compiler/std/gdev.przp`:
 
 ```
-struct AnimFrame { texture: gfx.Texture, delay_ms: i32 }
 struct AnimatedSprite {
-    frames: *AnimFrame, n_frames: usize,
-    cur_frame: usize, elapsed_ms: i64,
+    dec: *image.GifDecoder, texture: gfx.Texture,   # the decoder and the current frame
+    n_frames: usize, cur_frame: usize, elapsed_ms: i64,
     looping: bool, playing: bool,
 }
 
@@ -495,9 +518,7 @@ impl AnimatedSprite {
 }
 ```
 
-`load_animated_sprite` uploads every decoded frame as its own GL texture up front, then frees the CPU-side pixel buffers immediately (once a frame is on the GPU there's no reason to keep its CPU copy for the sprite's lifetime, the same reasoning `Texture.load` already applies to a PNG's `Image`) — a real GIF used as a game asset has few enough frames and small enough resolution that this costs far less GPU memory than repeated per-frame re-upload traffic would cost during playback. `update` is a catch-up loop, not a single step, driven by whatever `dt` you pass it (`gdev.get_frame_time()`, typically) — accumulates into `elapsed_ms` and repeatedly subtracts the current frame's own `delay_ms`, so a hitch (or a very short delay relative to `dt`) still lands on the right frame instead of falling behind by one call. `looping=true` (the default) wraps back to frame 0 at the end; `false` stops there and sets `playing=false`, after which `update` is a no-op. Frame delays below `ANIM_MIN_DELAY_MS` (20ms) are clamped at load time — some GIF encoders write a 0 delay meaning "as fast as reasonable," not literally 0, and without a floor `update`'s catch-up loop would spin advancing frames every call for such a file. `tests/gl/animated_sprite` verifies this end to end (decode, upload, timed frame advance, looping and non-looping stop-at-end, and a pixel read-back proving the *right* texture actually got drawn, not just that the frame-index bookkeeping is correct) against `tests/run/gif_fixtures/moving_dot.gif`. `examples/graphics/animated_gif` is the same pipeline as an actual runnable program rather than a test fixture — `przp run` from its own directory plays a bouncing-ball GIF (`src/assets/bounce.gif`, generated for the example — see its own `CREDITS.md`) through a real window for a fixed number of frames.
-
-No struct in this codebase holds a `[]T` slice field anywhere (checked before writing this) — `AnimatedSprite.frames` follows `Gif`/`GifFrame`'s own raw-pointer-plus-count shape instead, freed the same per-element-then-array way `free_gif` already does it, for consistency with the type it's built from rather than introducing a new pattern.
+`AnimatedSprite` plays a GIF through a `GifDecoder` and a single GL texture: when `update` moves to a new frame, that frame is decoded and the texture re-uploaded. Its memory is the file plus a few frame-sized buffers however many frames the GIF has — about 12 MB for the 480×360, 120-frame clip above, against roughly 155 MB when every frame was kept as its own texture. The cost is decoding one frame per new frame shown, well under a millisecond at that size. `update` is a catch-up loop, not a single step, driven by whatever `dt` you pass it (`gdev.get_frame_time()`, typically) — accumulates into `elapsed_ms` and repeatedly subtracts the current frame's own `delay_ms`, so a hitch (or a very short delay relative to `dt`) still lands on the right frame instead of falling behind by one call. `looping=true` (the default) wraps back to frame 0 at the end; `false` stops there and sets `playing=false`, after which `update` is a no-op. Frame delays below `ANIM_MIN_DELAY_MS` (20ms) are clamped at load time — some GIF encoders write a 0 delay meaning "as fast as reasonable," not literally 0, and without a floor `update`'s catch-up loop would spin advancing frames every call for such a file. `tests/gl/animated_sprite` verifies this end to end (decode, upload, timed frame advance, looping and non-looping stop-at-end, and a pixel read-back proving the *right* texture actually got drawn, not just that the frame-index bookkeeping is correct) against `tests/run/gif_fixtures/moving_dot.gif`. `tests/gl/animated_sprite_memory` plays a 120-frame GIF and fails if memory grows by more than 40 MB; `tests/run/std_image_gif_stream.przp` checks that streamed frames match `load_gif`'s byte for byte and that repeated loads don't leak. `examples/graphics/animated_gif` is the same pipeline as an actual runnable program rather than a test fixture — `przp run` from its own directory plays a bouncing-ball GIF (`src/assets/bounce.gif`, generated for the example — see its own `CREDITS.md`) through a real window for a fixed number of frames.
 
 **`draw_text` is implemented, as a monospace bitmap font, not real text layout** (real layout — proportional spacing, line wrapping, kerning — is still open, see prerequisite #5 and `guix` below):
 

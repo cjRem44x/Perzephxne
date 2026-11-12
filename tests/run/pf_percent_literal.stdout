@@ -1,0 +1,6 @@
+plain: 100% done
+interp: 50% of %s and %d
+50% and %s here
+50% plain len=9
+printf style: 50% of total
+printf 50%

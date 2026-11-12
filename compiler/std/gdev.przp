@@ -171,22 +171,14 @@ impl Sprite {
 # to special-case it.
 ANIM_MIN_DELAY_MS: i32 : 20
 
-struct AnimFrame {
-    texture:  gfx.Texture,
-    delay_ms: i32,
-}
-
-# AnimatedSprite: a decoded, GPU-uploaded GIF — each frame gets its own
-# texture (uploaded once, at load time; a typical GIF used as a game
-# asset is small enough in frame count/resolution that this costs far
-# less GPU memory than it saves in per-frame upload traffic during
-# playback) plus the delay that frame's own Graphic Control Extension
-# specified. `frames`/`n_frames` follow the same raw-pointer-plus-count
-# shape std/image's own `Gif`/`GifFrame` use (see load_gif) rather than a
-# `[]T` slice field — no existing struct in this codebase holds a slice,
-# and this stays consistent with the type it's built from.
+# AnimatedSprite: a GIF played by decoding one frame at a time
+# (std/image's GifDecoder) into a single GL texture. Memory is the file's
+# size plus a few frame-sized buffers, however many frames the GIF has —
+# rather than a decoded copy (and a texture) for every frame. Each update
+# that moves to a new frame decodes it and re-uploads the texture.
 struct AnimatedSprite {
-    frames:     *AnimFrame,
+    dec:        *image.GifDecoder,
+    texture:    gfx.Texture,   # the current frame
     n_frames:   usize,
     cur_frame:  usize,
     elapsed_ms: i64,
@@ -194,103 +186,86 @@ struct AnimatedSprite {
     playing:    bool,
 }
 
-# load_animated_sprite: decode `path` (std/image.load_gif) and upload every
-# frame as its own GL texture, defaulting to looping playback from frame 0.
-# The decoded CPU-side pixel buffers are freed immediately after upload —
-# once a frame is on the GPU there's no reason to keep its CPU copy
-# around for the sprite's lifetime, the same reasoning `Texture.load`
-# already applies to a PNG's `Image` in std/graphics.
+fn frame_delay(d: *image.GifDecoder, i: usize) -> i64 {
+    delay: i32 = d.delays[i]
+    if delay < ANIM_MIN_DELAY_MS { delay = ANIM_MIN_DELAY_MS }
+    ret @i64(delay)
+}
+
+# load_animated_sprite: open `path`, decode its first frame and upload it,
+# ready to play (looping) from frame 0. Errors as std/image's open_gif.
 fn load_animated_sprite(path: str) -> !AnimatedSprite {
-    g, err: !image.Gif = image.load_gif(path)
+    d, err: !image.GifDecoder = image.open_gif(path)
     if err != 0 { ret @err(err) }
-
-    frames: *AnimFrame = @alo(AnimFrame, g.n_frames)
-    i: usize = 0
-    while i < g.n_frames {
-        tex_id: u32 = gl.create_texture(g.frames[i].pixels, g.width, g.height, 4)
-        delay: i32 = g.frames[i].delay_ms
-        if delay < ANIM_MIN_DELAY_MS { delay = ANIM_MIN_DELAY_MS }
-        frames[i] = AnimFrame{
-            .texture  = gfx.Texture{.id=tex_id, .w=g.width, .h=g.height},
-            .delay_ms = delay,
-        }
-        i += 1
-    }
-    n: usize = g.n_frames
-    image.free_gif(g)
-
+    dec: *image.GifDecoder = @alo(image.GifDecoder)
+    dec.* = d
+    dec.next_frame()
+    tex: u32 = gl.create_texture(dec.canvas, dec.width, dec.height, 4)
     ret @ok(AnimatedSprite{
-        .frames=frames, .n_frames=n, .cur_frame=0,
-        .elapsed_ms=0, .looping=true, .playing=true,
+        .dec = dec, .texture = gfx.Texture{.id = tex, .w = dec.width, .h = dec.height},
+        .n_frames = dec.n_frames, .cur_frame = 0,
+        .elapsed_ms = 0, .looping = true, .playing = true,
     })
 }
 
 impl AnimatedSprite {
-    # update: advance playback by `dt` seconds (pass gdev.get_frame_time()
-    # or std/graphics/gl equivalent, the same value driving movement/
-    # physics elsewhere) — a catch-up loop, not a single step, so a frame
-    # that took longer than one animation frame's delay (a hitch, or a
-    # very short delay relative to dt) still lands on the right frame
-    # rather than falling behind. No-op once a non-looping animation has
-    # reached its last frame (`playing` goes false) or if decoding
-    # produced zero frames.
+    # update: advance playback by `dt` seconds (pass gdev.get_frame_time()).
+    # A catch-up loop, not a single step, so a frame that took longer than
+    # one animation frame's delay still lands on the right frame. No-op once
+    # a non-looping animation has reached its last frame (`playing` goes
+    # false).
     fn update(self: *AnimatedSprite, dt: f32) {
         if !self.playing || self.n_frames == 0 { ret }
         self.elapsed_ms += @i64(dt * 1000.0)
-        while self.elapsed_ms >= @i64(self.frames[self.cur_frame].delay_ms) {
-            self.elapsed_ms -= @i64(self.frames[self.cur_frame].delay_ms)
-            self.cur_frame += 1
-            if self.cur_frame >= self.n_frames {
-                if self.looping {
-                    self.cur_frame = 0
-                } else {
-                    self.cur_frame = self.n_frames - 1
+        changed: bool = false
+        while self.elapsed_ms >= frame_delay(self.dec, self.cur_frame) {
+            self.elapsed_ms -= frame_delay(self.dec, self.cur_frame)
+            if self.cur_frame + 1 >= self.n_frames {
+                if !self.looping {
                     self.playing = false
-                    ret
+                    break
                 }
+                self.cur_frame = 0
+                self.dec.rewind()
+            } else {
+                self.cur_frame += 1
             }
+            if self.dec.next_frame() < 0 {
+                # fewer frames decoded than the pre-scan counted (a truncated
+                # file): start over rather than show a stale frame
+                self.cur_frame = 0
+                self.dec.rewind()
+                self.dec.next_frame()
+            }
+            changed = true
+        }
+        if changed {
+            gl.update_texture(self.texture.id, self.dec.canvas, self.dec.width, self.dec.height, 4)
         }
     }
 
     fn draw(self, pos: gfx.Vector2) {
         if self.n_frames == 0 { ret }
-        gfx.draw_texture(self.frames[self.cur_frame].texture, pos.x, pos.y)
+        gfx.draw_texture(self.texture, pos.x, pos.y)
     }
 
     # draw_scaled: the current frame stretched to fill `dest`
     # (see gfx.fit_rect to keep the aspect ratio)
     fn draw_scaled(self, dest: gfx.Rectangle) {
         if self.n_frames == 0 { ret }
-        gfx.draw_texture_scaled(self.frames[self.cur_frame].texture, dest, gfx.WHITE)
+        gfx.draw_texture_scaled(self.texture, dest, gfx.WHITE)
     }
 
-    # width/height: the animation's frame size in pixels — every frame of
-    # a GIF composites onto the same fixed-size canvas (the GIF spec's
-    # own logical screen descriptor), so any frame's texture dimensions
-    # (frame 0's, here) give the whole animation's size, not just the
-    # current frame's. 0 if decoding produced no frames at all, rather
-    # than reading out of bounds.
-    fn width(self) -> i32 {
-        if self.n_frames == 0 { ret 0 }
-        ret self.frames[0].texture.w
-    }
+    # width/height: the animation's frame size in pixels — every frame of a
+    # GIF shares one canvas size
+    fn width(self) -> i32 { ret self.texture.w }
+    fn height(self) -> i32 { ret self.texture.h }
 
-    fn height(self) -> i32 {
-        if self.n_frames == 0 { ret 0 }
-        ret self.frames[0].texture.h
-    }
-
-    # unload: delete every frame's GPU texture, then free the frame array
-    # itself — mirrors std/image's free_gif (per-element cleanup, then
-    # the outer array), just at the GL-texture layer instead of a raw
-    # pixel buffer.
+    # unload: delete the texture and release the decoder and its file data
     fn unload(self) {
-        i: usize = 0
-        while i < self.n_frames {
-            self.frames[i].texture.unload()
-            i += 1
-        }
-        if self.frames != null { @free(self.frames) }
+        self.texture.unload()
+        self.dec.close()
+        @free(self.dec)
     }
 }
 

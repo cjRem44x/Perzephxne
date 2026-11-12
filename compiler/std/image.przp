@@ -69,8 +69,15 @@ fn paeth_predictor(a: i32, b: i32, c: i32) -> i32 {
     ret c
 }
 
+# free_file: release a buffer from file.read_all. An empty result points at
+# the caller's path string rather than a heap buffer, so only free real data.
+fn free_file(data: str) {
+    if data.len > 0 { free(data.data) }
+}
+
 fn load_png(path: str) -> !Image {
     data: str = file.read_all(path)
+    defer free_file(data)
     if data.len < 8 { ret @err(1) }
 
     sig: *u8 = data.data
@@ -380,188 +387,301 @@ fn gif_composite_frame(canvas: *u8, canvas_w: i32, canvas_h: i32, x: i32, y: i32
     }
 }
 
-fn load_gif(path: str) -> !Gif {
-    data: str = file.read_all(path)
-    if data.len < 13 { ret @err(1) }
+# ── Streaming GIF decoding ──────────────────────────────────────────────────
+# GifDecoder keeps the file's bytes and decodes one frame at a time onto a
+# single canvas, so an animation costs its file size plus two canvases,
+# not width * height * 4 bytes for every frame. gdev.AnimatedSprite plays
+# GIFs this way; load_gif (below) uses it to decode every frame up front.
+#
+#   d, err: !img.GifDecoder = img.open_gif("anim.gif")
+#   delay: i32 = d.next_frame()     # composited RGBA is now in d.canvas
+#   d.rewind()                       # back to frame 0
+#   d.close()
 
+struct GifDecoder {
+    data:      str,     # the whole file (owned)
+    width:     i32,
+    height:    i32,
+    n_frames:  usize,
+    delays:    *i32,    # each frame's delay in ms, from the pre-scan
+    canvas:    *u8,     # width * height * 4 RGBA: the current frame
+    saved:     *u8,     # snapshot for disposal method 3
+    gct:       *u8,     # global color table (points into data), or null
+    start:     usize,   # where frame data begins
+    pos:       usize,
+    frame:     usize,   # index of the next frame next_frame() decodes
+    # Graphic Control Extension waiting for the next image descriptor
+    gce_delay_ms:        i32,
+    gce_transparent_idx: i32,
+    gce_disposal:        u32,
+    # the previous frame's region and disposal, applied before the next
+    have_prev:     bool,
+    prev_disposal: u32,
+    prev_x: i32,
+    prev_y: i32,
+    prev_w: i32,
+    prev_h: i32,
+}
+
+# gif_skip_sub_blocks: advance past a run of data sub-blocks and its
+# zero-length terminator
+fn gif_skip_sub_blocks(data: str, pos: usize) -> usize {
+    p: usize = pos
+    while p < data.len {
+        sz: u8 = (data.data + p).*
+        p += 1
+        if sz == 0u8 { break }
+        p += @usize(sz)
+    }
+    ret p
+}
+
+# open_gif: read and validate a GIF and pre-scan its frames (count, delays).
+# Errors: 1 not a GIF, 2 truncated header, 3 interlaced (unsupported),
+# 4 no frames.
+fn open_gif(path: str) -> !GifDecoder {
+    data: str = file.read_all(path)
+    if data.len < 13 {
+        free_file(data)
+        ret @err(1)
+    }
     sig: *u8 = data.data
     is_gif: bool = sig.* == 71u8 && (sig+1).* == 73u8 && (sig+2).* == 70u8 && (sig+3).* == 56u8
         && ((sig+4).* == 55u8 || (sig+4).* == 57u8) && (sig+5).* == 97u8
-    if !is_gif { ret @err(1) } # not a GIF ("GIF87a"/"GIF89a")
-
+    if !is_gif {
+        free_file(data)
+        ret @err(1) # not a GIF ("GIF87a"/"GIF89a")
+    }
     width: i32  = @i32(read_le16(data.data + 6))
     height: i32 = @i32(read_le16(data.data + 8))
-    if width <= 0 || height <= 0 { ret @err(2) }
-
+    if width <= 0 || height <= 0 {
+        free_file(data)
+        ret @err(2)
+    }
     lsd_packed: u8 = (data.data + 10).*
-    has_gct: bool = (lsd_packed & 0x80u8) != 0u8
-    gct_size: u32 = 1u32 << (@u32(lsd_packed & 0x07u8) + 1u32)
     pos: usize = 13
-
-    gct: [768]u8 = undef # up to 256 entries * 3 bytes (RGB)
-    if has_gct {
-        n: usize = @usize(gct_size) * 3
-        if pos + n > data.len { ret @err(2) }
-        memcpy(&gct[0], data.data + pos, n)
+    gct: *u8 = null
+    if (lsd_packed & 0x80u8) != 0u8 {
+        n: usize = @usize(1u32 << (@u32(lsd_packed & 0x07u8) + 1u32)) * 3
+        if pos + n > data.len {
+            free_file(data)
+            ret @err(2)
+        }
+        gct = data.data + pos
         pos += n
     }
 
-    canvas_len: usize = @usize(width) * @usize(height) * 4
-    canvas: *u8 = malloc(canvas_len)
-    memset(canvas, 0, canvas_len)
-    saved: *u8 = malloc(canvas_len) # snapshot for disposal method 3
-
-    frames_cap: usize = 8
-    frames: *GifFrame = @alo(GifFrame, frames_cap)
+    # pre-scan: count frames, collect delays, reject interlacing
+    delays_cap: usize = 16
+    delays: *i32 = @alo(i32, delays_cap)
     n_frames: usize = 0
-
-    # Graphic Control Extension state, pending until the *next* image
-    # descriptor consumes it
-    gce_delay_ms: i32 = 100
-    gce_transparent_idx: i32 = -1
-    gce_disposal: u32 = 0
-
-    # the *previous* frame's region + disposal, applied to `canvas` right
-    # before compositing the next one
-    have_prev: bool = false
-    prev_disposal: u32 = 0
-    prev_x: i32 = 0
-    prev_y: i32 = 0
-    prev_w: i32 = 0
-    prev_h: i32 = 0
-
-    done: bool = false
-    while !done && pos < data.len {
-        introducer: u8 = (data.data + pos).*
-
-        if introducer == 0x3Bu8 { # trailer
-            done = true
-        } elif introducer == 0x21u8 { # extension
-            pos += 1
-            if pos >= data.len { break }
-            label: u8 = (data.data + pos).*
-            pos += 1
-            if label == 0xF9u8 && pos + 5 <= data.len { # Graphic Control Extension
-                gce_packed: u8 = (data.data + pos + 1).*
-                gce_disposal = @u32((gce_packed >> 2u8) & 0x07u8)
-                has_transparent: bool = (gce_packed & 0x01u8) != 0u8
-                delay100: u32 = read_le16(data.data + pos + 2)
-                trans_idx: u8 = (data.data + pos + 4).*
-                gce_delay_ms = @i32(delay100) * 10
-                gce_transparent_idx = if has_transparent { @i32(trans_idx) } else { -1 }
-                pos += 5 # block size byte + 4 data bytes
-                pos += 1 # block terminator — GCE has no further sub-blocks
-                # to skip, unlike Application/Comment/Plain Text below, so
-                # it's fully consumed here rather than falling into that loop.
-            } else {
-                if label == 0x01u8 && pos + 13 <= data.len {
-                    pos += 13 # Plain Text Extension's fixed-size block, before its sub-blocks
-                }
-                # skip this extension's data sub-blocks (Application,
-                # Comment, or Plain Text's actual text data)
-                while pos < data.len {
-                    sz: u8 = (data.data + pos).*
-                    pos += 1
-                    if sz == 0u8 { break }
-                    pos += @usize(sz)
-                }
+    delay: i32 = 100
+    p: usize = pos
+    while p < data.len {
+        intro: u8 = (data.data + p).*
+        if intro == 0x3Bu8 { break }
+        if intro == 0x21u8 {
+            if p + 2 > data.len { break }
+            label: u8 = (data.data + p + 1).*
+            p += 2
+            if label == 0xF9u8 && p + 5 <= data.len {
+                delay = @i32(read_le16(data.data + p + 2)) * 10
             }
-        } elif introducer == 0x2Cu8 { # image descriptor
-            pos += 1
-            if pos + 9 > data.len { break }
-            img_x: i32 = @i32(read_le16(data.data + pos))
-            img_y: i32 = @i32(read_le16(data.data + pos + 2))
-            img_w: i32 = @i32(read_le16(data.data + pos + 4))
-            img_h: i32 = @i32(read_le16(data.data + pos + 6))
-            id_packed: u8 = (data.data + pos + 8).*
-            pos += 9
-
-            has_lct: bool = (id_packed & 0x80u8) != 0u8
-            interlaced: bool = (id_packed & 0x40u8) != 0u8
-            if interlaced {
-                free(canvas)
-                free(saved)
-                free_gif(Gif{.width=width, .height=height, .frames=frames, .n_frames=n_frames})
+            if label == 0x01u8 && p + 13 <= data.len { p += 13 }
+            p = gif_skip_sub_blocks(data, p)
+        } elif intro == 0x2Cu8 {
+            if p + 10 > data.len { break }
+            id_packed: u8 = (data.data + p + 9).*
+            if (id_packed & 0x40u8) != 0u8 {
+                @free(delays)
+                free_file(data)
                 ret @err(3) # interlaced GIF not supported
             }
+            p += 10
+            if (id_packed & 0x80u8) != 0u8 {
+                p += @usize(1u32 << (@u32(id_packed & 0x07u8) + 1u32)) * 3
+            }
+            p += 1 # LZW minimum code size
+            p = gif_skip_sub_blocks(data, p)
+            if n_frames == delays_cap {
+                delays_cap *= 2
+                delays = @realo(delays, i32, delays_cap)
+            }
+            delays[n_frames] = delay
+            n_frames += 1
+            delay = 100
+        } else {
+            p += 1
+        }
+    }
+    if n_frames == 0 {
+        @free(delays)
+        free_file(data)
+        ret @err(4)
+    }
 
-            lct_size: u32 = 1u32 << (@u32(id_packed & 0x07u8) + 1u32)
-            active_table: *u8 = &gct[0]
-            if has_lct {
-                active_table = data.data + pos
-                pos += @usize(lct_size) * 3
+    canvas_len: usize = @usize(width) * @usize(height) * 4
+    d: GifDecoder = GifDecoder{.data = data, .width = width, .height = height,
+                               .n_frames = n_frames, .delays = delays,
+                               .canvas = malloc(canvas_len), .saved = malloc(canvas_len),
+                               .gct = gct, .start = pos, .pos = pos, .frame = 0,
+                               .gce_delay_ms = 100, .gce_transparent_idx = -1, .gce_disposal = 0,
+                               .have_prev = false, .prev_disposal = 0,
+                               .prev_x = 0, .prev_y = 0, .prev_w = 0, .prev_h = 0}
+    memset(d.canvas, 0, canvas_len)
+    ret @ok(d)
+}
+
+impl GifDecoder {
+    # rewind: start again from frame 0 with a cleared canvas
+    fn rewind(self: *GifDecoder) {
+        memset(self.canvas, 0, @usize(self.width) * @usize(self.height) * 4)
+        self.pos = self.start
+        self.frame = 0
+        self.gce_delay_ms = 100
+        self.gce_transparent_idx = -1
+        self.gce_disposal = 0
+        self.have_prev = false
+    }
+
+    # next_frame: decode the next frame onto `canvas`; returns its delay in
+    # ms, or -1 when there are no more frames (call rewind to loop)
+    fn next_frame(self: *GifDecoder) -> i32 {
+        data: str = self.data
+        while self.pos < data.len {
+            introducer: u8 = (data.data + self.pos).*
+            if introducer == 0x3Bu8 { ret -1 } # trailer
+            if introducer == 0x21u8 { # extension
+                self.pos += 1
+                if self.pos >= data.len { ret -1 }
+                label: u8 = (data.data + self.pos).*
+                self.pos += 1
+                if label == 0xF9u8 && self.pos + 5 <= data.len { # Graphic Control Extension
+                    gce_packed: u8 = (data.data + self.pos + 1).*
+                    self.gce_disposal = @u32((gce_packed >> 2u8) & 0x07u8)
+                    self.gce_delay_ms = @i32(read_le16(data.data + self.pos + 2)) * 10
+                    if (gce_packed & 0x01u8) != 0u8 {
+                        self.gce_transparent_idx = @i32((data.data + self.pos + 4).*)
+                    } else {
+                        self.gce_transparent_idx = -1
+                    }
+                    self.pos += 6 # block size, 4 data bytes, terminator
+                } else {
+                    if label == 0x01u8 && self.pos + 13 <= data.len { self.pos += 13 }
+                    self.pos = gif_skip_sub_blocks(data, self.pos)
+                }
+                continue
+            }
+            if introducer != 0x2Cu8 {
+                self.pos += 1 # unrecognized byte — skip rather than loop forever
+                continue
             }
 
-            if pos >= data.len { break }
-            min_code_size: u8 = (data.data + pos).*
-            pos += 1
+            # image descriptor
+            self.pos += 1
+            if self.pos + 9 > data.len { ret -1 }
+            img_x: i32 = @i32(read_le16(data.data + self.pos))
+            img_y: i32 = @i32(read_le16(data.data + self.pos + 2))
+            img_w: i32 = @i32(read_le16(data.data + self.pos + 4))
+            img_h: i32 = @i32(read_le16(data.data + self.pos + 6))
+            id_packed: u8 = (data.data + self.pos + 8).*
+            self.pos += 9
+            table: *u8 = self.gct
+            if (id_packed & 0x80u8) != 0u8 {
+                table = data.data + self.pos
+                self.pos += @usize(1u32 << (@u32(id_packed & 0x07u8) + 1u32)) * 3
+            }
+            if self.pos >= data.len { ret -1 }
+            min_code_size: u8 = (data.data + self.pos).*
+            self.pos += 1
 
+            # gather the LZW stream across its sub-blocks
             lzw_cap: usize = 256
             lzw: *u8 = malloc(lzw_cap)
             lzw_len: usize = 0
-            while pos < data.len {
-                sz: u8 = (data.data + pos).*
-                pos += 1
+            while self.pos < data.len {
+                sz: u8 = (data.data + self.pos).*
+                self.pos += 1
                 if sz == 0u8 { break }
                 n: usize = @usize(sz)
                 if lzw_len + n > lzw_cap {
                     lzw_cap = (lzw_len + n) * 2 + 256
                     lzw = realloc(lzw, lzw_cap)
                 }
-                if pos + n > data.len { n = data.len - pos }
-                memcpy(lzw + lzw_len, data.data + pos, n)
+                if self.pos + n > data.len { n = data.len - self.pos }
+                memcpy(lzw + lzw_len, data.data + self.pos, n)
                 lzw_len += n
-                pos += n
+                self.pos += n
             }
 
-            if have_prev {
-                if prev_disposal == 2u32 {
-                    gif_clear_region(canvas, width, prev_x, prev_y, prev_w, prev_h)
-                } elif prev_disposal == 3u32 {
-                    gif_copy_region(canvas, saved, width, prev_x, prev_y, prev_w, prev_h)
+            if self.have_prev {
+                if self.prev_disposal == 2u32 {
+                    gif_clear_region(self.canvas, self.width, self.prev_x, self.prev_y, self.prev_w, self.prev_h)
+                } elif self.prev_disposal == 3u32 {
+                    gif_copy_region(self.canvas, self.saved, self.width, self.prev_x, self.prev_y, self.prev_w, self.prev_h)
                 }
             }
-            gif_copy_region(saved, canvas, width, img_x, img_y, img_w, img_h)
+            gif_copy_region(self.saved, self.canvas, self.width, img_x, img_y, img_w, img_h)
 
             idx_len: usize = @usize(img_w) * @usize(img_h)
             indices: *u8 = gif_lzw_decode(lzw, lzw_len, @u32(min_code_size), idx_len)
             free(lzw)
-
-            gif_composite_frame(canvas, width, height, img_x, img_y, img_w, img_h,
-                                 indices, idx_len, active_table, gce_transparent_idx)
+            if table != null {
+                gif_composite_frame(self.canvas, self.width, self.height, img_x, img_y, img_w, img_h,
+                                     indices, idx_len, table, self.gce_transparent_idx)
+            }
             free(indices)
 
-            if n_frames >= frames_cap {
-                frames_cap *= 2
-                frames = @realo(frames, GifFrame, frames_cap)
-            }
-            frame_pixels: *u8 = malloc(canvas_len)
-            memcpy(frame_pixels, canvas, canvas_len)
-            frames[n_frames] = GifFrame{.pixels=frame_pixels, .delay_ms=gce_delay_ms}
-            n_frames += 1
-
-            prev_disposal = gce_disposal
-            prev_x = img_x
-            prev_y = img_y
-            prev_w = img_w
-            prev_h = img_h
-            have_prev = true
-            gce_delay_ms = 100
-            gce_transparent_idx = -1
-            gce_disposal = 0
-        } else {
-            pos += 1 # unrecognized byte — skip rather than loop forever
+            delay: i32 = self.gce_delay_ms
+            self.prev_disposal = self.gce_disposal
+            self.prev_x = img_x
+            self.prev_y = img_y
+            self.prev_w = img_w
+            self.prev_h = img_h
+            self.have_prev = true
+            self.gce_delay_ms = 100
+            self.gce_transparent_idx = -1
+            self.gce_disposal = 0
+            self.frame += 1
+            ret delay
         }
+        ret -1
     }
 
-    free(canvas)
-    free(saved)
+    fn close(self: *GifDecoder) {
+        free_file(self.data)
+        free(self.canvas)
+        free(self.saved)
+        @free(self.delays)
+        self.canvas = null
+        self.saved = null
+        self.delays = null
+        self.n_frames = 0
+    }
+}
 
-    if n_frames == 0 {
+# load_gif: decode every frame up front into its own RGBA buffer (see
+# GifDecoder to decode as you go instead). Errors as open_gif.
+fn load_gif(path: str) -> !Gif {
+    d, err: !GifDecoder = open_gif(path)
+    if err != 0 { ret @err(err) }
+    canvas_len: usize = @usize(d.width) * @usize(d.height) * 4
+    frames: *GifFrame = @alo(GifFrame, d.n_frames)
+    n: usize = 0
+    while n < d.n_frames {
+        delay: i32 = d.next_frame()
+        if delay < 0 { break }
+        px: *u8 = malloc(canvas_len)
+        memcpy(px, d.canvas, canvas_len)
+        frames[n] = GifFrame{.pixels = px, .delay_ms = delay}
+        n += 1
+    }
+    w: i32 = d.width
+    h: i32 = d.height
+    d.close()
+    if n == 0 {
         free(@bitcast(*u8, frames))
         ret @err(4)
     }
-
-    g: Gif = Gif{.width=width, .height=height, .frames=frames, .n_frames=n_frames}
-    ret @ok(g)
+    ret @ok(Gif{.width = w, .height = h, .frames = frames, .n_frames = n})
 }

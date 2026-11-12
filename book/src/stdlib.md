@@ -194,7 +194,7 @@ Path-based file utilities.
 |---|---|
 | `exists(path)` | true if path is accessible |
 | `size(path)` | byte size, or `-1` on error |
-| `read_all(path)` | read entire file into a heap string |
+| `read_all(path)` | read entire file into a heap string (also files that report no size, like `/proc/...` and pipes); empty if it can't be read |
 | `write_all(path, content)` | create/overwrite file |
 | `append(path, content)` | append to file, creating if missing |
 | `remove_file(path)` | delete file |

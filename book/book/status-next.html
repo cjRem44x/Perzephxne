@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-f1764d4c.js";
+            window.path_to_searchindex_js = "searchindex-464d2fac.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-4e58bc13.js"></script>
@@ -235,7 +235,20 @@
 </table>
 </div>
 <h2 id="bugs-found-and-fixed-along-the-way"><a class="header" href="#bugs-found-and-fixed-along-the-way">Bugs Found and Fixed Along the Way</a></h2>
+<p>Found investigating memory use when loading images:</p>
 <ul>
+<li>
+<p><strong><code>load_png</code> and <code>load_gif</code> leaked the whole file on every load</strong> — the buffer from <code>file.read_all</code> was never freed, so each load kept the compressed file in memory for good (6 MB per load for a 1920×1080 photo). Freed on every path now. Covered by <code>tests/run/std_image_gif_stream.przp</code> (200 loads must not grow memory), and valgrind-clean.</p>
+</li>
+<li>
+<p><strong><code>gdev.AnimatedSprite</code> held every GIF frame decoded, as its own texture</strong> — 480×360 × 120 frames cost ~155 MB for a 53 KB file. It now plays through a streaming <code>std/image</code> <code>GifDecoder</code> into one texture (~12 MB for the same GIF). <code>load_gif</code> is built on the decoder, with identical output. Covered by <code>tests/gl/animated_sprite_memory</code> and the existing <code>animated_sprite</code>/<code>std_image_gif</code> tests.</p>
+</li>
+<li>
+<p><strong>A literal <code>%</code> in <code>@pf</code>/<code>@epf</code>/<code>@fmt</code> text reached C’s <code>printf</code> as a conversion</strong> — <code>"100% done"</code> printed garbage, and some patterns crashed. <code>%</code> is now literal except in the C-printf form with extra arguments. Covered by <code>tests/run/pf_percent_literal.przp</code>.</p>
+</li>
+<li>
+<p><strong><code>file.read_all</code> returned nothing for files that report size 0</strong> (<code>/proc/...</code>, pipes); it now reads until end of file. Covered by <code>tests/run/read_all_unsized.przp</code>.</p>
+</li>
 <li>
 <p><strong>Declaring a C function in the main file that an imported module also declares failed</strong> (“invalid redefinition of function”), e.g. <code>extern fn system(...)</code> alongside <code>import(os = "std/os")</code>. Imported <code>extern fn</code>s already shared one guard per C symbol, but a main-file <code>extern fn</code> emitted its <code>declare</code> unconditionally; it now uses the same guard. Covered by <code>tests/run/extern_declared_twice.przp</code>.</p>
 </li>

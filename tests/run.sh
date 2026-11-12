@@ -1225,13 +1225,14 @@ for src in "$ROOT"/tests/run/*.przp; do
     # std_image_gif needs -lz (std/image's uncompress() extern) — run via
     # run_lz_case below instead of the plain no-extra-links case here.
     case "$(basename "$src")" in
-        std_image_gif.przp|std_audio.przp|std_audio_control.przp|std_audio_mixer.przp|std_video_decode.przp) continue ;;
+        std_image_gif.przp|std_image_gif_stream.przp|std_audio.przp|std_audio_control.przp|std_audio_mixer.przp|std_video_decode.przp) continue ;;
     esac
     run_success_case "$src"
 done
 
 if ldconfig -p 2>/dev/null | grep -q "libz\.so"; then
     run_lz_case "$ROOT/tests/run/std_image_gif.przp"
+    run_lz_case "$ROOT/tests/run/std_image_gif_stream.przp"
 else
     printf 'skip  std_image_gif: libz not installed\n'
 fi
