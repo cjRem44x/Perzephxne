@@ -786,6 +786,18 @@ static const char *rewrite_pf_percent_s(CG *cg, const char *fmt, ExprList args) 
     char *buf = malloc(cap);
     size_t bi = 0;
     size_t argi = 1; /* args.data[0] is the format string itself */
+    if (args.len <= 1) {
+        /* no printf-style arguments: the text is printed as written, so a
+           '%' is a literal percent sign, not a conversion */
+        for (size_t i = 0; i < len; i++) {
+            if (fmt[i] == '%') buf[bi++] = '%';
+            buf[bi++] = fmt[i];
+        }
+        buf[bi] = '\0';
+        const char *lit = arena_strdup(cg->arena, buf);
+        free(buf);
+        return lit;
+    }
     for (size_t i = 0; i < len; ) {
         if (fmt[i] != '%') { buf[bi++] = fmt[i++]; continue; }
         if (i + 1 < len && fmt[i+1] == '%') {
@@ -1198,6 +1210,10 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                                     pf_fmt[pff++] = *sp;
                             }
                             ai++;
+                        } else if (*fs == '%') {
+                            /* literal text: a '%' is printed as-is */
+                            pf_fmt[pff++] = '%';
+                            pf_fmt[pff++] = '%';
                         } else {
                             pf_fmt[pff++] = *fs;
                         }
@@ -1615,7 +1631,8 @@ static Val cg_expr(CG *cg, Expr *e, Type **out_ty) {
                                 }
                             } else { const char *as=pf_specifier(fty[ai2]); for(const char*sp=as+1;*sp;sp++) pf2[pf2n++]=*sp; }
                             ai2++;
-                        } else { pf2[pf2n++] = *fs; }
+                        } else if (*fs == '%') { pf2[pf2n++] = '%'; pf2[pf2n++] = '%'; }
+                        else { pf2[pf2n++] = *fs; }
                     }
                 } else {
                     const char *s2 = fmt_arg2->sval ? fmt_arg2->sval : "";

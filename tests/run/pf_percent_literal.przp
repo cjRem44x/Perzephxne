@@ -1,0 +1,15 @@
+# A literal % in @pf/@fmt/@epf text is printed as-is (it used to reach C's
+# printf as a conversion); the C-printf form with extra arguments keeps %d, %%.
+fn main() {
+    n: i32 = 50
+    @pf("plain: 100% done\n")
+    @pf("interp: {n}% of %s and %d\n")
+    a: str = @fmt("{n}% and %s here")
+    @pf("{a}\n")
+    b: str = @fmt("50% plain")
+    @pf("{b} len={b.len}\n")
+    @epf("to stderr: 7%\n")
+    @pf("printf style: %d%% of %s\n", n, "total")
+    c: str = @fmt("printf %d%%", n)
+    @pf("{c}\n")
+}

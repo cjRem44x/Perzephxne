@@ -1,0 +1,7 @@
+load_gif: err=0 480x360 frames=120 delay0=30
+open_gif: err=0 frames=120 delay0=30
+pass 0: past the end -> -1
+pass 1: past the end -> -1
+streamed 240 frames, mismatches vs load_gif: 0
+200 loads grew memory < 8 MB: 1
+not a gif: err=1

@@ -33,7 +33,9 @@ hashed := crypto.hash_pk(crypto.hshknd.Argon2id, pw)
 Interpolated `bool` values are printed as C-style integers (`1` or `0`). Use
 `@str(value)` when you need `"true"` or `"false"` text.
 
-Use `{{` and `}}` to emit literal braces.
+Use `{{` and `}}` to emit literal braces. `/{` and `/}` are also literal braces, so a `/` directly before an interpolation stops it from interpolating: `"/proc/{pid}"` prints `/proc{pid}` literally. Put something between them, or build the string in pieces.
+
+A `%` is printed as written: `@pf("{done}% complete\n")` prints `40% complete`. The one exception is the C-printf form, where extra arguments follow the format string — `@pf("%d of %d\n", a, b)` — and `%` keeps its C meaning; write `%%` there for a literal percent sign.
 
 A compile error inside an interpolated expression (e.g. `{f.typo}` referencing a field that doesn't exist) is reported at its real line and column in the source file, mapped back from the position inside the format string literal — precise for a format string with no escape sequences before the interpolation on that line; an escape like `\n` or `\t` earlier on the same line can drift the reported column by a character or two, since it decodes to fewer characters than it occupies in the source, but the line is always exact.
 
